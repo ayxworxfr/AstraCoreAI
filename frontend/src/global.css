@@ -1,0 +1,104 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* RAG 检索结果 Markdown 渲染样式 */
+.rag-md-content {
+  line-height: 1.7;
+  font-size: 14px;
+}
+
+.rag-md-content > *:first-child {
+  margin-top: 0;
+}
+
+.rag-md-content > *:last-child {
+  margin-bottom: 0;
+}
+
+.rag-md-content h1,
+.rag-md-content h2,
+.rag-md-content h3 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+}
+
+.rag-md-content h1 { font-size: 16px; }
+.rag-md-content h2 { font-size: 15px; }
+.rag-md-content h3 { font-size: 14px; }
+
+.rag-md-content p {
+  margin: 6px 0;
+}
+
+.rag-md-content ul,
+.rag-md-content ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+
+.rag-md-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.rag-md-content th,
+.rag-md-content td {
+  border: 1px solid #e8e8e8;
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.rag-md-content th {
+  background: #fafafa;
+  font-weight: 600;
+}
+
+.rag-md-content code:not(pre code) {
+  background: #f5f5f5;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 13px;
+  color: #d32029;
+}
+
+.rag-md-content pre {
+  background: #f6f8fa;
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+/* ---- 暗黑模式覆盖 ---- */
+[data-theme="dark"] .rag-md-content th,
+[data-theme="dark"] .rag-md-content td {
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .rag-md-content th {
+  background: #161b22;
+}
+
+[data-theme="dark"] .rag-md-content code:not(pre code) {
+  background: rgba(110, 118, 129, 0.2);
+  color: #ffa198;
+}
+
+[data-theme="dark"] .rag-md-content pre {
+  background: #161b22;
+}

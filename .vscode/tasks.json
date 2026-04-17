@@ -1,0 +1,33 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "AstraCore: Setup",
+            "type": "shell",
+            "command": "make setup",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "AstraCore: Run API",
+            "type": "shell",
+            "command": "make api",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "AstraCore: Format current file",
+            "type": "shell",
+            "command": "HATCH_DATA_DIR=\"${workspaceFolder}/.hatch/data\" HATCH_CACHE_DIR=\"${workspaceFolder}/.hatch/cache\" HATCH_ENV_TYPE_VIRTUAL_PATH=\"${workspaceFolder}/.hatch/venvs\" PIP_CACHE_DIR=\"${workspaceFolder}/.cache/pip\" python3 -m hatch run ruff format \"${file}\"",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        }
+    ]
+}
