@@ -10,9 +10,15 @@ from astracore.core.ports.llm import LLMAdapter, LLMResponse, StreamEvent, Strea
 class AnthropicAdapter(LLMAdapter):
     """Anthropic Claude LLM adapter."""
 
-    def __init__(self, api_key: str, default_model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(
+        self,
+        api_key: str,
+        default_model: str = "claude-3-5-sonnet-20241022",
+        base_url: str | None = None,
+    ):
         self.api_key = api_key
         self.default_model = default_model
+        self._base_url = base_url
         self._client: Any = None
 
     def _get_client(self) -> Any:
@@ -21,7 +27,10 @@ class AnthropicAdapter(LLMAdapter):
             try:
                 from anthropic import AsyncAnthropic
 
-                self._client = AsyncAnthropic(api_key=self.api_key)
+                kwargs: dict[str, Any] = {"api_key": self.api_key}
+                if self._base_url:
+                    kwargs["base_url"] = self._base_url
+                self._client = AsyncAnthropic(**kwargs)
             except ImportError as e:
                 raise ImportError(
                     "anthropic package not installed. Install with: pip install anthropic"
