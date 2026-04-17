@@ -39,7 +39,7 @@ install: ## 安装 Hatch（如果未安装）
 
 deps: ## 安装项目依赖（默认不含重型向量模型包）
 	@echo "$(GREEN)📦 安装项目依赖...$(NC)"
-	@$(HATCH) run pip install -e ".[anthropic,dev]"
+	@$(HATCH) run pip install -e ".[anthropic,openai,dev]"
 	@echo "$(GREEN)✅ 依赖安装完成$(NC)"
 
 rag-deps: ## 安装 RAG 轻量依赖（仅 chromadb）

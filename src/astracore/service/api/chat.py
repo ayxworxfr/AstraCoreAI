@@ -10,12 +10,13 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from astracore.adapters.llm.anthropic import AnthropicAdapter
+from astracore.adapters.llm.openai import OpenAIAdapter
 from astracore.adapters.memory.hybrid import HybridMemoryAdapter
 from astracore.core.application.chat import ChatUseCase
 from astracore.core.application.tool_loop import ToolLoopUseCase
 from astracore.core.domain.message import Message, MessageRole
 from astracore.core.domain.session import SessionState
-from astracore.core.ports.llm import StreamEventType
+from astracore.core.ports.llm import LLMAdapter, StreamEventType
 from astracore.runtime.policy.engine import PolicyEngine
 from astracore.service.api import rag as rag_api
 from astracore.service.builtin_tools import build_tool_adapter
@@ -24,20 +25,56 @@ router = APIRouter()
 
 
 def _get_required_api_key() -> str:
-    """Read LLM API key from environment."""
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    """读取统一 LLM API Key。"""
+    api_key = os.getenv("LLM_API_KEY", "").strip()
     if not api_key:
-        api_key = os.getenv("ASTRACORE_LLM__API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("Missing API key: set ANTHROPIC_API_KEY or ASTRACORE_LLM__API_KEY")
+        raise RuntimeError("必须设置 LLM_API_KEY")
     return api_key
 
 
+def _get_provider() -> str:
+    """读取并校验 LLM Provider。"""
+    provider = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
+    if provider not in {"deepseek", "anthropic"}:
+        raise RuntimeError("LLM_PROVIDER 仅支持 deepseek 或 anthropic")
+    return provider
+
+
+def _default_model(provider: str) -> str:
+    """按 provider 提供默认模型。"""
+    if provider == "deepseek":
+        return "deepseek-chat"
+    return "claude-sonnet-4-6"
+
+
+def _resolved_base_url(provider: str) -> str | None:
+    """读取统一 base_url；DeepSeek 未配置时使用官方默认地址。"""
+    base = os.getenv("LLM_BASE_URL", "").strip()
+    if provider == "deepseek":
+        return base or "https://api.deepseek.com"
+    return base or None
+
+
 @lru_cache(maxsize=1)
-def _get_llm_adapter() -> AnthropicAdapter:
-    """Single shared Anthropic adapter — not recreated per request."""
-    model = os.getenv("MODEL", "claude-sonnet-4-6")
-    return AnthropicAdapter(api_key=_get_required_api_key(), default_model=model)
+def _get_llm_adapter() -> LLMAdapter:
+    """按统一配置选择适配器（provider + base_url + api_key + model）。"""
+    provider = _get_provider()
+    model = os.getenv("MODEL", "").strip() or _default_model(provider)
+    api_key = _get_required_api_key()
+    base_url = _resolved_base_url(provider)
+
+    if provider == "deepseek":
+        return OpenAIAdapter(
+            api_key=api_key,
+            default_model=model,
+            base_url=base_url,
+        )
+
+    return AnthropicAdapter(
+        api_key=api_key,
+        default_model=model,
+        base_url=base_url,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -241,6 +278,9 @@ async def chat_stream(request: ChatRequest) -> EventSourceResponse:
                         yield {"event": "done", "data": "[DONE]"}
 
         except Exception as e:
-            yield {"event": "error", "data": str(e)}
+            detail = str(e)
+            if e.__cause__ is not None:
+                detail = f"{detail} — {e.__cause__!s}"
+            yield {"event": "error", "data": detail}
 
     return EventSourceResponse(event_generator())

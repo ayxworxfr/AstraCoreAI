@@ -1,4 +1,4 @@
-# Python AI Framework A 设计文档
+# Python AI Framework 设计文档
 
 ## 1. 背景与目标
 
