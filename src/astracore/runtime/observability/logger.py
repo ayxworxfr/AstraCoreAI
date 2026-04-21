@@ -2,10 +2,41 @@
 
 import json
 import logging
+import sys
 from datetime import datetime
 from typing import Any
 
 from astracore.core.ports.audit import AuditEvent, AuditEventType, AuditLogger
+
+_PACKAGE = "astracore"
+
+
+def setup_logging(level: str | int = "INFO") -> None:
+    """Configure the astracore package logger.
+
+    Call once at application startup (e.g., in the FastAPI lifespan).
+    Safe to call multiple times — re-calling only adjusts the log level.
+    """
+    pkg_logger = logging.getLogger(_PACKAGE)
+    pkg_logger.setLevel(level)
+
+    if pkg_logger.handlers:
+        return
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s %(levelname)-8s %(name)s  %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    pkg_logger.addHandler(handler)
+    pkg_logger.propagate = False
+
+
+def get_logger(name: str) -> logging.Logger:
+    """Return a logger scoped under the astracore package hierarchy."""
+    return logging.getLogger(name)
 
 
 class StructuredLogger(AuditLogger):

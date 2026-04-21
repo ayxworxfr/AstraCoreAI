@@ -70,14 +70,16 @@ class ChatUseCase:
         model: str | None = None,
         temperature: float = 0.7,
         inject_system: str | None = None,
+        context_max_messages: int = 0,
         **llm_kwargs: Any,
     ) -> AsyncIterator[StreamEvent]:
         """Execute a streaming chat interaction.
 
         inject_system: 在会话消息前注入额外系统提示（用于 RAG 上下文）。
+        context_max_messages: 发给 LLM 的历史消息条数上限，0 表示不限制。
         llm_kwargs: 透传给 LLM 适配器的额外参数（如 enable_thinking）。
         """
-        session = await self._load_session(session_id)
+        session = await self._load_session(session_id, context_max_messages)
 
         user_msg = Message(role=MessageRole.USER, content=user_message)
         session.add_message(user_msg)
@@ -114,9 +116,14 @@ class ChatUseCase:
 
         await self._save_session(session)
 
-    async def _load_session(self, session_id: UUID) -> SessionState:
-        """Load or create session. Uses restore_messages to avoid token double-counting."""
+    async def _load_session(self, session_id: UUID, context_max_messages: int = 0) -> SessionState:
+        """Load or create session. Uses restore_messages to avoid token double-counting.
+
+        context_max_messages: 0 = no limit; >0 = keep only the last N messages.
+        """
         messages = await self.memory.load_short_term(session_id)
+        if context_max_messages > 0 and len(messages) > context_max_messages:
+            messages = messages[-context_max_messages:]
         session = SessionState(session_id=session_id)
         if messages:
             session.restore_messages(messages)

@@ -3,7 +3,7 @@
 # Usage: make <command>
 # ============================================================
 
-.PHONY: help setup install deps rag-deps dev api sdk-chat fe-install fe-dev fe-build fe-preview test test-cov lint type-check check fmt clean clean-rag clean-old-hatch
+.PHONY: help setup install deps rag-deps dev api stop sdk-chat fe-install fe-dev fe-build fe-preview test test-cov lint type-check check fmt clean clean-rag clean-old-hatch
 
 .DEFAULT_GOAL := help
 
@@ -57,6 +57,17 @@ api: ## 启动 FastAPI 服务（http://127.0.0.1:8000）
 
 dev: api ## api 的别名
 
+stop: ## 停止前后端服务（API:8000 前端:5173）
+	@echo "$(YELLOW)⏹  停止服务...$(NC)"
+ifeq ($(OS),Windows_NT)
+	-@powershell -NoProfile -Command 'foreach($$port in 8000,5173){ $$p=(Get-NetTCPConnection -LocalPort $$port -State Listen -EA 0).OwningProcess | Select-Object -First 1; if($$p){Stop-Process -Id $$p -Force -EA 0; Write-Host ("port "+$$port+" stopped")}else{Write-Host ("port "+$$port+" not running")} }'
+	-@powershell -NoProfile -Command '$$procs=Get-CimInstance Win32_Process | Where-Object{$$_.Name -eq "node.exe" -and $$_.CommandLine -match "server-filesystem"}; if($$procs){$$procs|ForEach-Object{Stop-Process -Id $$_.ProcessId -Force -EA 0}; Write-Host "stale node process cleaned"}else{Write-Host "no stale node process"}' 2>/dev/null
+else
+	-@for port in 8000 5173; do pid=$$(lsof -ti tcp:$$port 2>/dev/null | head -n 1); if [ -n "$$pid" ]; then kill -9 "$$pid" >/dev/null 2>&1 || true; echo "port $$port stopped"; else echo "port $$port not running"; fi; done
+	-@pkill -f "server-filesystem" >/dev/null 2>&1 || true
+endif
+	@echo "$(GREEN)✅ 完成$(NC)"
+
 sdk-chat: ## 运行基础 SDK 对话示例
 	@echo "$(GREEN)💬 运行基础对话示例...$(NC)"
 	@$(ENV_RUN) $(HATCH) run python examples/basic_chat.py
@@ -98,11 +109,11 @@ fmt: ## 代码格式化
 
 ##@ 清理
 
-clean: ## 清理 Python 缓存
-	@echo "$(YELLOW)🧹 清理缓存...$(NC)"
-	-@rm -rf .pytest_cache .mypy_cache .ruff_cache build dist *.egg-info 2>/dev/null || true
-	-@find . -type f -name "*.pyc" -delete 2>/dev/null || true
-	-@find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+clean: ## 清理 Python 缓存、日志文件、Node 依赖
+	@echo "$(YELLOW)🧹 清理缓存/日志/依赖...$(NC)"
+	-@rm -rf .pytest_cache .cache .mypy_cache .ruff_cache build dist *.egg-info 2>/dev/null || true
+	-@rm -rf logs *.log frontend/node_modules frontend/*.log 2>/dev/null || true
+	-@$(PYTHON) -c "from pathlib import Path; import shutil; [p.unlink() for p in Path('.').rglob('*.pyc') if p.is_file()]; [shutil.rmtree(p, ignore_errors=True) for p in Path('.').rglob('__pycache__') if p.is_dir()]"
 	@echo "$(GREEN)✅ 清理完成$(NC)"
 
 clean-rag: ## 清空 ChromaDB 向量数据库（需先停止 API 服务）

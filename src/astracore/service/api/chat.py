@@ -1,14 +1,15 @@
 """Chat API endpoints."""
 
-import os
 from functools import lru_cache
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
+from astracore.adapters.db.models import SkillRow, UserSettingsRow
+from astracore.adapters.db.session import get_session
 from astracore.adapters.llm.anthropic import AnthropicAdapter
 from astracore.adapters.llm.openai import OpenAIAdapter
 from astracore.adapters.memory.hybrid import HybridMemoryAdapter
@@ -17,80 +18,44 @@ from astracore.core.application.tool_loop import ToolLoopUseCase
 from astracore.core.domain.message import Message, MessageRole
 from astracore.core.domain.session import SessionState
 from astracore.core.ports.llm import LLMAdapter, StreamEventType
+from astracore.core.ports.tool import ToolAdapter
 from astracore.runtime.policy.engine import PolicyEngine
+from astracore.sdk.config import AstraCoreConfig
 from astracore.service.api import rag as rag_api
 from astracore.service.builtin_tools import build_tool_adapter
 
 router = APIRouter()
 
 
-def _get_required_api_key() -> str:
-    """读取统一 LLM API Key。"""
-    api_key = os.getenv("LLM_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("必须设置 LLM_API_KEY")
-    return api_key
-
-
-def _get_provider() -> str:
-    """读取并校验 LLM Provider。"""
-    provider = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
-    if provider not in {"deepseek", "anthropic"}:
-        raise RuntimeError("LLM_PROVIDER 仅支持 deepseek 或 anthropic")
-    return provider
-
-
-def _default_model(provider: str) -> str:
-    """按 provider 提供默认模型。"""
-    if provider == "deepseek":
-        return "deepseek-chat"
-    return "claude-sonnet-4-6"
-
-
-def _resolved_base_url(provider: str) -> str | None:
-    """读取统一 base_url；DeepSeek 未配置时使用官方默认地址。"""
-    base = os.getenv("LLM_BASE_URL", "").strip()
-    if provider == "deepseek":
-        return base or "https://api.deepseek.com"
-    return base or None
+@lru_cache(maxsize=1)
+def _get_settings() -> AstraCoreConfig:
+    return AstraCoreConfig()
 
 
 @lru_cache(maxsize=1)
 def _get_llm_adapter() -> LLMAdapter:
-    """按统一配置选择适配器（provider + base_url + api_key + model）。"""
-    provider = _get_provider()
-    model = os.getenv("MODEL", "").strip() or _default_model(provider)
-    api_key = _get_required_api_key()
-    base_url = _resolved_base_url(provider)
-
-    if provider == "deepseek":
-        return OpenAIAdapter(
-            api_key=api_key,
-            default_model=model,
-            base_url=base_url,
+    cfg = _get_settings().llm
+    if cfg.provider == "anthropic":
+        return AnthropicAdapter(
+            api_key=cfg.api_key,
+            default_model=cfg.model,
+            base_url=cfg.base_url,
         )
-
-    return AnthropicAdapter(
-        api_key=api_key,
-        default_model=model,
-        base_url=base_url,
+    return OpenAIAdapter(
+        api_key=cfg.api_key,
+        default_model=cfg.model,
+        base_url=cfg.base_url,
     )
 
 
 @lru_cache(maxsize=1)
 def _get_memory_adapter() -> HybridMemoryAdapter:
-    """Single shared memory adapter."""
-    redis_url = os.getenv("ASTRACORE__MEMORY__REDIS_URL", "redis://localhost:6379/0")
-    postgres_url = os.getenv(
-        "ASTRACORE__MEMORY__POSTGRES_URL",
-        "postgresql+asyncpg://localhost/astracore",
-    )
-    return HybridMemoryAdapter(redis_url=redis_url, postgres_url=postgres_url)
+    cfg = _get_settings().memory
+    return HybridMemoryAdapter(redis_url=cfg.redis_url, db_url=cfg.db_url)
 
 
 @lru_cache(maxsize=1)
 def _get_chat_use_case() -> ChatUseCase:
-    """Get chat use case instance (cached)."""
     return ChatUseCase(
         llm_adapter=_get_llm_adapter(),
         memory_adapter=_get_memory_adapter(),
@@ -98,14 +63,33 @@ def _get_chat_use_case() -> ChatUseCase:
     )
 
 
-@lru_cache(maxsize=1)
-def _get_tool_loop_use_case() -> ToolLoopUseCase:
-    """Get tool loop use case instance (cached, shares LLM adapter)."""
+def _resolve_tool_adapter(http_request: Request) -> ToolAdapter:
+    """Get the tool adapter from app.state (set by lifespan) or fall back to builtins."""
+    adapter = getattr(http_request.app.state, "tool_adapter", None)
+    return adapter if adapter is not None else build_tool_adapter()
+
+
+def _get_tool_loop_use_case(tool_adapter: ToolAdapter) -> ToolLoopUseCase:
     return ToolLoopUseCase(
         llm_adapter=_get_llm_adapter(),
-        tool_adapter=build_tool_adapter(),
+        tool_adapter=tool_adapter,
         policy_engine=PolicyEngine(),
     )
+
+
+async def _load_skill(skill_id: str) -> SkillRow | None:
+    """Fetch a skill by id; return None if not found."""
+    db_url = _get_settings().memory.db_url
+    async with get_session(db_url) as db:
+        return await db.get(SkillRow, skill_id)
+
+
+async def _get_setting_value(key: str) -> str:
+    """Fetch a single user-settings value; return '' if not set."""
+    db_url = _get_settings().memory.db_url
+    async with get_session(db_url) as db:
+        row = await db.get(UserSettingsRow, key)
+        return row.value if row else ""
 
 
 class ChatRequest(BaseModel):
@@ -114,12 +98,14 @@ class ChatRequest(BaseModel):
     message: str
     session_id: UUID | None = None
     model: str | None = None
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     use_tools: bool = False
     enable_thinking: bool = False
     thinking_budget: int = Field(default=8000, ge=1000, le=32000)
     enable_rag: bool = False
     enable_web: bool = False
+    skill_id: UUID | None = None
+    disable_skill: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -131,10 +117,43 @@ class ChatResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-async def _run_with_tools(request: ChatRequest, session_id: UUID) -> str:
+async def _build_system_prompt(
+    skill_id: UUID | None,
+    disable_skill: bool,
+    enable_rag: bool,
+    message: str,
+) -> str | None:
+    """Compose the three-layer system prompt: skill → global instruction → RAG context."""
+    parts: list[str] = []
+
+    # Layer 1: Skill
+    if not disable_skill:
+        resolved_id = str(skill_id) if skill_id else await _get_setting_value("default_skill_id")
+        if resolved_id:
+            skill = await _load_skill(resolved_id)
+            if skill and skill.system_prompt:
+                parts.append(skill.system_prompt)
+
+    # Layer 2: Global instruction
+    instruction = await _get_setting_value("global_instruction")
+    if instruction:
+        parts.append(instruction)
+
+    # Layer 3: RAG context
+    if enable_rag:
+        rag_ctx = await _build_rag_context(message)
+        if rag_ctx:
+            parts.append(rag_ctx)
+
+    return "\n\n---\n\n".join(parts) or None
+
+
+async def _run_with_tools(
+    request: "ChatRequest", session_id: UUID, tool_adapter: ToolAdapter
+) -> str:
     """Execute a chat turn through the tool loop."""
     memory = _get_memory_adapter()
-    tool_loop = _get_tool_loop_use_case()
+    tool_loop = _get_tool_loop_use_case(tool_adapter)
 
     messages = await memory.load_short_term(session_id)
     session = SessionState(session_id=session_id)
@@ -152,22 +171,32 @@ async def _run_with_tools(request: ChatRequest, session_id: UUID) -> str:
     return last_assistant.content if last_assistant else ""
 
 
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(session_id: UUID) -> None:
+    """删除指定会话的后端记忆（短期消息历史）。"""
+    await _get_memory_adapter().delete_session_memory(session_id)
+
+
 @router.post("/", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     """Chat endpoint. Set use_tools=true to route through the tool loop."""
     session_id = request.session_id or uuid4()
 
     try:
         if request.use_tools:
-            content = await _run_with_tools(request, session_id)
+            tool_adapter = _resolve_tool_adapter(http_request)
+            content = await _run_with_tools(request, session_id, tool_adapter)
             return ChatResponse(session_id=session_id, message=content, model=request.model)
 
+        temperature = request.temperature
+        if temperature is None:
+            temperature = float(await _get_setting_value("temperature") or "0.7")
         use_case = _get_chat_use_case()
         response_message = await use_case.execute(
             session_id=session_id,
             user_message=request.message,
             model=request.model,
-            temperature=request.temperature,
+            temperature=temperature,
         )
         return ChatResponse(
             session_id=session_id,
@@ -182,8 +211,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
 async def _build_rag_context(query: str) -> str | None:
     """检索相关文档，构建 RAG 上下文系统提示。"""
     try:
+        top_k = int(await _get_setting_value("rag_top_k") or "4")
         pipeline = rag_api._get_rag_pipeline()
-        chunks = await pipeline.retrieve_with_citations(query=query, top_k=4)
+        chunks = await pipeline.retrieve_with_citations(query=query, top_k=top_k)
         if not chunks:
             return None
         parts = [
@@ -193,26 +223,35 @@ async def _build_rag_context(query: str) -> str | None:
         context = "\n\n---\n\n".join(parts)
         return (
             "以下是从知识库检索到的相关内容，请优先基于这些内容回答用户问题，"
-            "并在回答中注明引用的来源：\n\n"
-            + context
+            "并在回答中注明引用的来源：\n\n" + context
         )
     except Exception:
         return None
 
 
 @router.post("/stream")
-async def chat_stream(request: ChatRequest) -> EventSourceResponse:
+async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourceResponse:
     """Streaming chat endpoint.
 
     use_tools=True 时走工具循环流式路径，每轮思考产生独立 thinking_start/thinking 事件对。
     """
     session_id = request.session_id or uuid4()
+    tool_adapter = _resolve_tool_adapter(http_request)
 
     async def event_generator() -> Any:
         try:
-            inject_system: str | None = None
-            if request.enable_rag:
-                inject_system = await _build_rag_context(request.message)
+            inject_system = await _build_system_prompt(
+                skill_id=request.skill_id,
+                disable_skill=request.disable_skill,
+                enable_rag=request.enable_rag,
+                message=request.message,
+            )
+
+            temperature = request.temperature
+            if temperature is None:
+                temperature = float(await _get_setting_value("temperature") or "0.7")
+
+            context_max = int(await _get_setting_value("context_max_messages") or "20")
 
             llm_kwargs: dict[str, Any] = {}
             if request.enable_thinking:
@@ -220,15 +259,17 @@ async def chat_stream(request: ChatRequest) -> EventSourceResponse:
                 llm_kwargs["thinking_budget"] = request.thinking_budget
 
             if request.use_tools or request.enable_web:
-                # 工具循环流式路径
-                # 基础工具始终可用；web_search 仅在 enable_web=True 时开放
-                _BASE_TOOLS = {"get_current_time", "calculate", "search_knowledge_base"}
-                allowed_tools = _BASE_TOOLS | ({"web_search"} if request.enable_web else set())
+                # 工具循环流式路径：动态获取所有已注册工具（含 MCP 工具）
+                all_tools = {d.name for d in tool_adapter.get_definitions()}
+                # web_search 仅在 enable_web=True 时开放
+                allowed_tools = all_tools if request.enable_web else all_tools - {"web_search"}
 
                 memory = _get_memory_adapter()
-                tool_loop = _get_tool_loop_use_case()
+                tool_loop = _get_tool_loop_use_case(tool_adapter)
 
                 messages = await memory.load_short_term(session_id)
+                if len(messages) > context_max:
+                    messages = messages[-context_max:]
                 session = SessionState(session_id=session_id)
                 if messages:
                     session.restore_messages(messages)
@@ -248,7 +289,7 @@ async def chat_stream(request: ChatRequest) -> EventSourceResponse:
                     **llm_kwargs,
                 ):
                     if event.event_type == StreamEventType.ROUND_START:
-                        yield {"event": "thinking_start", "data": str(event.metadata.get("round", 1))}
+                        yield {"event": "thinking_start", "data": str(event.metadata.get("round", 1))}  # noqa: E501
                     elif event.event_type == StreamEventType.TEXT_DELTA:
                         yield {"event": "message", "data": event.content}
                     elif event.event_type == StreamEventType.THINKING_DELTA:
@@ -266,8 +307,9 @@ async def chat_stream(request: ChatRequest) -> EventSourceResponse:
                     session_id=session_id,
                     user_message=request.message,
                     model=request.model,
-                    temperature=request.temperature,
+                    temperature=temperature,
                     inject_system=inject_system,
+                    context_max_messages=context_max,
                     **llm_kwargs,
                 ):
                     if event.event_type == StreamEventType.TEXT_DELTA:

@@ -5,6 +5,9 @@ from typing import Any
 
 from astracore.core.domain.message import Message, MessageRole, ToolCall
 from astracore.core.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
+from astracore.runtime.observability.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class AnthropicAdapter(LLMAdapter):
@@ -42,22 +45,38 @@ class AnthropicAdapter(LLMAdapter):
 
         Anthropic Messages API 只允许 "user" / "assistant" 两种 role。
         工具结果消息必须以 role="user" + type="tool_result" 形式发送。
+        若上下文裁剪导致 tool_result 丢失对应 tool_use，则跳过无效结果，
+        避免触发 Anthropic 的 ``unexpected tool_use_id`` 请求错误。
         """
         converted = []
+        known_tool_use_ids: set[str] = set()
         for msg in messages:
             if msg.role == MessageRole.SYSTEM:
                 continue
 
             # 工具结果：role 必须是 "user"，content 是 tool_result 块列表
             if msg.has_tool_results():
+                valid_results = [
+                    tr for tr in msg.tool_results if tr.tool_call_id in known_tool_use_ids
+                ]
+                skipped_count = len(msg.tool_results) - len(valid_results)
+                if skipped_count > 0:
+                    logger.warning(
+                        "Skipped %d orphan tool_result block(s) due to missing tool_use context",
+                        skipped_count,
+                    )
+                if not valid_results:
+                    continue
+
                 content: Any = [
                     {
                         "type": "tool_result",
                         "tool_use_id": tr.tool_call_id,
-                        "content": tr.content,
+                        # Anthropic API 要求 is_error=true 时 content 不能为空
+                        "content": tr.content or "Tool execution failed",
                         "is_error": tr.is_error,
                     }
-                    for tr in msg.tool_results
+                    for tr in valid_results
                 ]
                 converted.append({"role": "user", "content": content})
                 continue
@@ -76,6 +95,8 @@ class AnthropicAdapter(LLMAdapter):
                     }
                     for tc in msg.tool_calls
                 )
+                for tc in msg.tool_calls:
+                    known_tool_use_ids.add(tc.id)
                 converted.append({"role": "assistant", "content": blocks})
                 continue
 

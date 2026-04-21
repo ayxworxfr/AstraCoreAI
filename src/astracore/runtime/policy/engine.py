@@ -6,7 +6,6 @@ from typing import Any
 from pydantic import BaseModel
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from astracore.core.domain.message import Message
 from astracore.core.domain.session import SessionState
 from astracore.runtime.policy.rules import (
     BudgetRule,
@@ -65,7 +64,7 @@ class PolicyEngine:
         return session
 
     def _apply_truncation(self, session: SessionState) -> None:
-        """Apply context truncation."""
+        """Apply context truncation: keep the N most recent messages."""
         rules = self.config.truncation
 
         if not rules.enable_auto_truncation:
@@ -74,19 +73,10 @@ class PolicyEngine:
         context = session.context_window
         available_tokens = session.token_budget.available_input_tokens()
 
-        if rules.summarize_older and len(context.messages) > rules.keep_recent_messages:
-            older_messages = context.messages[: -rules.keep_recent_messages]
-            context.summary = self._create_summary(older_messages, rules.summary_max_tokens)
-            context.messages = context.messages[-rules.keep_recent_messages :]
+        if len(context.messages) > rules.keep_recent_messages:
+            context.messages = context.messages[-rules.keep_recent_messages:]
         else:
             context.truncate_to_budget(available_tokens)
-
-    def _create_summary(self, messages: list[Message], max_tokens: int) -> str:
-        """Create summary of messages."""
-        summary_parts = []
-        for msg in messages:
-            summary_parts.append(f"{msg.role.value}: {msg.content[:100]}...")
-        return " | ".join(summary_parts[:10])
 
     def check_security_policy(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """Check if tool execution is allowed."""

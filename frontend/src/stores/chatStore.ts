@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { normalizeError } from '../services/apiClient';
-import { sendChatMessage, sendChatStream } from '../services/chatService';
+import { deleteSession, sendChatMessage, sendChatStream } from '../services/chatService';
 import type { ChatMessage, ConversationMeta } from '../types/chat';
 
 function uuid(): string {
@@ -42,6 +42,7 @@ type ChatStore = {
   enableRag: boolean;
   enableTools: boolean;
   enableWeb: boolean;
+  activeSkillId: string | null;  // null = use default, 'none' = explicitly disabled, uuid = specific skill
   abortController: AbortController | null;
   sessionError: string | null;   // 当前会话错误，不持久化，刷新自动清除
 
@@ -57,6 +58,7 @@ type ChatStore = {
   setEnableRag: (value: boolean) => void;
   setEnableTools: (value: boolean) => void;
   setEnableWeb: (value: boolean) => void;
+  setActiveSkillId: (id: string | null) => void;
   setSessionError: (msg: string | null) => void;
   deleteMessage: (conversationId: string, messageId: string) => void;
   sendMessage: (prompt: string) => Promise<void>;
@@ -78,6 +80,7 @@ export const useChatStore = create<ChatStore>()(
       enableRag: false,
       enableTools: false,
       enableWeb: false,
+      activeSkillId: null,
       abortController: null,
       sessionError: null,
 
@@ -120,21 +123,23 @@ export const useChatStore = create<ChatStore>()(
               activeConversationId: fresh.id,
             };
           });
-          return;
+        } else {
+          const nextId =
+            activeConversationId === id
+              ? sortConversations(remaining)[0].id
+              : activeConversationId;
+          set((s) => {
+            const msgs = { ...s.messagesByConversation };
+            delete msgs[id];
+            return {
+              conversations: sortConversations(remaining),
+              messagesByConversation: msgs,
+              activeConversationId: nextId,
+            };
+          });
         }
-        const nextId =
-          activeConversationId === id
-            ? sortConversations(remaining)[0].id
-            : activeConversationId;
-        set((s) => {
-          const msgs = { ...s.messagesByConversation };
-          delete msgs[id];
-          return {
-            conversations: sortConversations(remaining),
-            messagesByConversation: msgs,
-            activeConversationId: nextId,
-          };
-        });
+        // 异步清理后端记忆，失败静默忽略（不影响前端状态）
+        void deleteSession(id).catch(() => undefined);
       },
 
       clearConversation: (id) => {
@@ -148,6 +153,7 @@ export const useChatStore = create<ChatStore>()(
             ),
           ),
         }));
+        void deleteSession(id).catch(() => undefined);
       },
 
       togglePin: (id) => {
@@ -163,6 +169,7 @@ export const useChatStore = create<ChatStore>()(
       setEnableRag: (value) => set({ enableRag: value }),
       setEnableTools: (value) => set({ enableTools: value }),
       setEnableWeb: (value) => set({ enableWeb: value }),
+      setActiveSkillId: (id) => set({ activeSkillId: id }),
       setSessionError: (msg) => set({ sessionError: msg }),
 
       deleteMessage: (conversationId, messageId) => {
@@ -207,7 +214,7 @@ export const useChatStore = create<ChatStore>()(
       },
 
       sendMessage: async (prompt) => {
-        const { activeConversationId, useStream, enableThinking, enableRag, enableTools, enableWeb, conversations } = get();
+        const { activeConversationId, useStream, enableThinking, enableRag, enableTools, enableWeb, activeSkillId, conversations } = get();
         const trimmed = prompt.trim();
         if (!trimmed || get().isStreaming) return;
 
@@ -223,11 +230,13 @@ export const useChatStore = create<ChatStore>()(
           createdAt: nowIso(),
         };
         const assistantId = uuid();
+        const thinkingMode = enableThinking ? 'deep' : 'normal';
         const assistantMsg: ChatMessage = {
           id: assistantId,
           role: 'assistant',
           content: '',
           thinkingBlocks: undefined,
+          thinkingMode,
           status: 'streaming',
           createdAt: nowIso(),
         };
@@ -256,7 +265,7 @@ export const useChatStore = create<ChatStore>()(
         });
 
         const updateAssistant = (
-          patch: Partial<Pick<ChatMessage, 'content' | 'thinkingBlocks' | 'status'>>,
+          patch: Partial<Pick<ChatMessage, 'content' | 'thinkingBlocks' | 'status' | 'toolActivity'>>,
         ) => {
           set((s) => {
             const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) =>
@@ -299,16 +308,38 @@ export const useChatStore = create<ChatStore>()(
                 enable_rag: enableRag,
                 use_tools: enableTools || enableWeb,
                 enable_web: enableWeb,
+                skill_id: activeSkillId !== null && activeSkillId !== 'none' ? activeSkillId : undefined,
+                disable_skill: activeSkillId === 'none',
               },
               {
                 onMessage: (delta) => {
                   textBuffer += delta;
                   updateAssistant({ content: textBuffer, status: 'streaming' });
                 },
+                onToolUse: (toolName) => {
+                  set((s) => {
+                    const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) =>
+                      m.id !== assistantId
+                        ? m
+                        : {
+                            ...m,
+                            thinkingMode: 'tool' as const,
+                            toolActivity: [...(m.toolActivity ?? []), { name: toolName, done: false }],
+                          },
+                    );
+                    return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
+                  });
+                },
                 onThinkingStart: () => {
-                  // 新一轮思考开始，push 空字符串占位
+                  // 新一轮思考开始：标记所有工具为完成，push 新思考块占位
                   thinkingBlocks.push('');
-                  updateAssistant({ thinkingBlocks: getUpdatedBlocks(), status: 'streaming' });
+                  const currentMsg = (get().messagesByConversation[activeConversationId] ?? [])
+                    .find((m) => m.id === assistantId);
+                  updateAssistant({
+                    thinkingBlocks: getUpdatedBlocks(),
+                    status: 'streaming',
+                    toolActivity: currentMsg?.toolActivity?.map((t) => ({ ...t, done: true })),
+                  });
                 },
                 onThinking: (delta) => {
                   // 首条 thinking delta 若没有收到 thinking_start，自动初始化第一块
@@ -317,7 +348,13 @@ export const useChatStore = create<ChatStore>()(
                   updateAssistant({ thinkingBlocks: getUpdatedBlocks(), status: 'streaming' });
                 },
                 onDone: () => {
-                  updateAssistant({ content: textBuffer || '（空响应）', status: 'done' });
+                  const currentMsg = (get().messagesByConversation[activeConversationId] ?? [])
+                    .find((m) => m.id === assistantId);
+                  updateAssistant({
+                    content: textBuffer || '（空响应）',
+                    status: 'done',
+                    toolActivity: currentMsg?.toolActivity?.map((t) => ({ ...t, done: true })),
+                  });
                   set({ isStreaming: false, streamingConversationId: null, abortController: null });
                 },
                 onError: (msg) => {
@@ -374,6 +411,7 @@ export const useChatStore = create<ChatStore>()(
         enableRag: s.enableRag,
         enableTools: s.enableTools,
         enableWeb: s.enableWeb,
+        activeSkillId: s.activeSkillId,
         // sessionError 故意不持久化，刷新自动清除
       }),
     },

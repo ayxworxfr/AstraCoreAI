@@ -31,7 +31,7 @@ class AstraCoreClient:
         self._llm = self._create_llm_adapter()
         self._memory = HybridMemoryAdapter(
             redis_url=config.memory.redis_url,
-            postgres_url=config.memory.postgres_url,
+            db_url=config.memory.db_url,
         )
         self._tools = NativeToolAdapter()
         self._retriever = ChromaRetrieverAdapter(
@@ -64,15 +64,14 @@ class AstraCoreClient:
         if self.config.llm.provider == "anthropic":
             return AnthropicAdapter(
                 api_key=self.config.llm.api_key,
-                default_model=self.config.llm.default_model,
+                default_model=self.config.llm.model,
+                base_url=self.config.llm.base_url,
             )
-        elif self.config.llm.provider == "openai":
-            return OpenAIAdapter(
-                api_key=self.config.llm.api_key,
-                default_model=self.config.llm.default_model,
-            )
-        else:
-            raise ValueError(f"Unsupported LLM provider: {self.config.llm.provider}")
+        return OpenAIAdapter(
+            api_key=self.config.llm.api_key,
+            default_model=self.config.llm.model,
+            base_url=self.config.llm.base_url,
+        )
 
     async def chat(
         self,

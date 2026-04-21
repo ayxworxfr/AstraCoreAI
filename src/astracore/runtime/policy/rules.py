@@ -36,8 +36,6 @@ class TruncationRule(BaseModel):
 
     enable_auto_truncation: bool = True
     keep_recent_messages: int = 20
-    summarize_older: bool = True
-    summary_max_tokens: int = 2000
 
 
 class SecurityRule(BaseModel):

@@ -9,12 +9,23 @@ export type ConversationMeta = {
 
 export type MessageStatus = 'pending' | 'streaming' | 'done' | 'error';
 
+export type ToolActivity = {
+  name: string;
+  done: boolean;
+};
+
+export type ThinkingMode = 'normal' | 'deep' | 'tool';
+
 export type ChatMessage = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   /** 每个元素对应一轮工具调用的思考内容，普通模式只有一个元素 */
   thinkingBlocks?: string[];
+  /** 思考模式：deep=深度思考，tool=工具分析（Agent 轮次） */
+  thinkingMode?: ThinkingMode;
+  /** 工具调用记录，done=false 表示执行中，done=true 表示已完成 */
+  toolActivity?: ToolActivity[];
   status: MessageStatus;
   createdAt: string;    // ISO string，避免 Date 序列化问题
 };

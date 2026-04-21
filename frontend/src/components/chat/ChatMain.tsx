@@ -16,7 +16,8 @@ import {
 import { Flex, Typography, Alert, Avatar, Button, Collapse, Tooltip, theme } from 'antd';
 import { useChatStore } from '../../stores/chatStore';
 import MarkdownContent from './MarkdownContent';
-import type { ChatMessage } from '../../types/chat';
+import SkillSelector from '../skills/SkillSelector';
+import type { ChatMessage, ThinkingMode, ToolActivity } from '../../types/chat';
 
 const SUGGESTED_PROMPTS = [
   { key: '1', label: '你能做什么？', icon: <ThunderboltOutlined /> },
@@ -28,10 +29,12 @@ function ThinkingBlock({
   thinking,
   streaming,
   roundLabel,
+  mode,
 }: {
   thinking: string;
   streaming: boolean;
   roundLabel?: string;
+  mode: ThinkingMode;
 }) {
   const { token } = theme.useToken();
   const isDark = token.colorBgBase < '#888888';
@@ -65,7 +68,9 @@ function ThinkingBlock({
                 <span style={{ color: accentColor, fontSize: 12, lineHeight: 1 }}>✦</span>
               )}
               <Typography.Text style={{ fontSize: 12, color: textColor, fontWeight: 600 }}>
-                {streaming ? '深度思考中...' : roundLabel ?? '思考过程'}
+                {streaming
+                  ? (mode === 'deep' ? '深度思考中...' : mode === 'tool' ? '处理中...' : '思考中...')
+                  : roundLabel ?? '思考过程'}
               </Typography.Text>
               {!streaming && (
                 <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
@@ -167,9 +172,39 @@ function MessageActions({
   );
 }
 
+function ToolActivityRow({ tools }: { tools: ToolActivity[] }) {
+  const { token } = theme.useToken();
+  return (
+    <Flex wrap gap={6} style={{ marginBottom: 8 }}>
+      {tools.map((t, i) => (
+        <span
+          key={i}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            padding: '2px 10px',
+            borderRadius: 12,
+            fontSize: 12,
+            background: t.done ? token.colorSuccessBg : token.colorWarningBg,
+            border: `1px solid ${t.done ? token.colorSuccessBorder : token.colorWarningBorder}`,
+            color: t.done ? token.colorSuccessText : token.colorWarningText,
+          }}
+        >
+          {t.done
+            ? <CheckOutlined style={{ fontSize: 10 }} />
+            : <LoadingOutlined style={{ fontSize: 10 }} spin />}
+          {t.name}
+        </span>
+      ))}
+    </Flex>
+  );
+}
+
 function AssistantContent({ message }: { message: ChatMessage }) {
   const blocks = message.thinkingBlocks ?? [];
   const isStreaming = message.status === 'streaming';
+  const mode: ThinkingMode = message.thinkingMode ?? (message.toolActivity?.length ? 'tool' : 'normal');
 
   // 只渲染有内容的块，或最后一个正在流式生成的块（内容还没来）
   const visible = blocks
@@ -190,8 +225,12 @@ function AssistantContent({ message }: { message: ChatMessage }) {
           thinking={block}
           streaming={streaming}
           roundLabel={multiRound ? `第 ${renderedIdx + 1} 轮思考` : undefined}
+          mode={mode}
         />
       ))}
+      {message.toolActivity && message.toolActivity.length > 0 && (
+        <ToolActivityRow tools={message.toolActivity} />
+      )}
       <MarkdownContent content={message.content} />
     </div>
   );
@@ -355,12 +394,105 @@ export default function ChatMain(): JSX.Element {
       {/* 输入区域 */}
       <div
         style={{
-          padding: '12px 24px 20px',
+          padding: '8px 24px 20px',
           borderTop: '1px solid rgba(5, 5, 5, 0.06)',
           flexShrink: 0,
         }}
       >
         <div style={{ maxWidth: 860, margin: '0 auto' }}>
+          {/* 工具栏独立一行，不占 Sender 内部空间 */}
+          <Flex align="center" gap={6} style={{ marginBottom: 8, flexWrap: 'wrap' }}>
+            <Tooltip title={enableThinking ? '关闭深度思考' : '开启深度思考（Extended Thinking）'}>
+              <Button
+                size="small"
+                type={enableThinking ? 'primary' : 'default'}
+                ghost={enableThinking}
+                disabled={isStreaming}
+                onClick={() => setEnableThinking(!enableThinking)}
+                style={{
+                  borderRadius: 20,
+                  fontSize: 12,
+                  height: 26,
+                  padding: '0 10px',
+                  ...(enableThinking
+                    ? { borderColor: '#722ed1', color: '#722ed1', background: '#f9f0ff' }
+                    : {}),
+                }}
+                icon={<span style={{ fontSize: 11 }}>✦</span>}
+              >
+                深度思考
+              </Button>
+            </Tooltip>
+
+            <Tooltip title={enableRag ? '关闭知识库检索' : '开启知识库检索（RAG）'}>
+              <Button
+                size="small"
+                type={enableRag ? 'primary' : 'default'}
+                ghost={enableRag}
+                disabled={isStreaming}
+                onClick={() => setEnableRag(!enableRag)}
+                style={{
+                  borderRadius: 20,
+                  fontSize: 12,
+                  height: 26,
+                  padding: '0 10px',
+                  ...(enableRag
+                    ? { borderColor: '#1677ff', color: '#1677ff', background: '#e6f4ff' }
+                    : {}),
+                }}
+                icon={<DatabaseOutlined />}
+              >
+                知识库
+              </Button>
+            </Tooltip>
+
+            <Tooltip title={enableTools ? '关闭工具调用（Agent 模式）' : '开启工具调用，AI 会多轮思考并使用工具'}>
+              <Button
+                size="small"
+                type={enableTools ? 'primary' : 'default'}
+                ghost={enableTools}
+                disabled={isStreaming}
+                onClick={() => setEnableTools(!enableTools)}
+                style={{
+                  borderRadius: 20,
+                  fontSize: 12,
+                  height: 26,
+                  padding: '0 10px',
+                  ...(enableTools
+                    ? { borderColor: '#fa8c16', color: '#fa8c16', background: '#fff7e6' }
+                    : {}),
+                }}
+                icon={<ToolOutlined />}
+              >
+                工具
+              </Button>
+            </Tooltip>
+
+            <Tooltip title={enableWeb ? '关闭联网搜索' : '开启联网搜索（需配置 TAVILY_API_KEY）'}>
+              <Button
+                size="small"
+                type={enableWeb ? 'primary' : 'default'}
+                ghost={enableWeb}
+                disabled={isStreaming}
+                onClick={() => setEnableWeb(!enableWeb)}
+                style={{
+                  borderRadius: 20,
+                  fontSize: 12,
+                  height: 26,
+                  padding: '0 10px',
+                  ...(enableWeb
+                    ? { borderColor: '#13c2c2', color: '#13c2c2', background: '#e6fffb' }
+                    : {}),
+                }}
+                icon={<GlobalOutlined />}
+              >
+                联网
+              </Button>
+            </Tooltip>
+
+            <SkillSelector disabled={isStreaming} />
+          </Flex>
+
           <Sender
             value={inputValue}
             onChange={setInputValue}
@@ -371,103 +503,6 @@ export default function ChatMain(): JSX.Element {
             }}
             onCancel={cancelStream}
             placeholder="输入问题，Enter 发送，Shift+Enter 换行"
-            actions={(defaultActions) => (
-              <Flex align="center" gap={8}>
-                {/* 深度思考按钮 */}
-                <Tooltip title={enableThinking ? '关闭深度思考' : '开启深度思考（Extended Thinking）'}>
-                  <Button
-                    size="small"
-                    type={enableThinking ? 'primary' : 'default'}
-                    ghost={enableThinking}
-                    disabled={isStreaming}
-                    onClick={() => setEnableThinking(!enableThinking)}
-                    style={{
-                      borderRadius: 20,
-                      fontSize: 12,
-                      height: 26,
-                      padding: '0 10px',
-                      ...(enableThinking
-                        ? { borderColor: '#722ed1', color: '#722ed1', background: '#f9f0ff' }
-                        : {}),
-                    }}
-                    icon={<span style={{ fontSize: 11 }}>✦</span>}
-                  >
-                    深度思考
-                  </Button>
-                </Tooltip>
-
-                {/* RAG 检索按钮 */}
-                <Tooltip title={enableRag ? '关闭知识库检索' : '开启知识库检索（RAG）'}>
-                  <Button
-                    size="small"
-                    type={enableRag ? 'primary' : 'default'}
-                    ghost={enableRag}
-                    disabled={isStreaming}
-                    onClick={() => setEnableRag(!enableRag)}
-                    style={{
-                      borderRadius: 20,
-                      fontSize: 12,
-                      height: 26,
-                      padding: '0 10px',
-                      ...(enableRag
-                        ? { borderColor: '#1677ff', color: '#1677ff', background: '#e6f4ff' }
-                        : {}),
-                    }}
-                    icon={<DatabaseOutlined />}
-                  >
-                    知识库
-                  </Button>
-                </Tooltip>
-
-                {/* 工具调用按钮 */}
-                <Tooltip title={enableTools ? '关闭工具调用（Agent 模式）' : '开启工具调用，AI 会多轮思考并使用工具'}>
-                  <Button
-                    size="small"
-                    type={enableTools ? 'primary' : 'default'}
-                    ghost={enableTools}
-                    disabled={isStreaming}
-                    onClick={() => setEnableTools(!enableTools)}
-                    style={{
-                      borderRadius: 20,
-                      fontSize: 12,
-                      height: 26,
-                      padding: '0 10px',
-                      ...(enableTools
-                        ? { borderColor: '#fa8c16', color: '#fa8c16', background: '#fff7e6' }
-                        : {}),
-                    }}
-                    icon={<ToolOutlined />}
-                  >
-                    工具
-                  </Button>
-                </Tooltip>
-
-                {/* 联网搜索按钮 */}
-                <Tooltip title={enableWeb ? '关闭联网搜索' : '开启联网搜索（需配置 TAVILY_API_KEY）'}>
-                  <Button
-                    size="small"
-                    type={enableWeb ? 'primary' : 'default'}
-                    ghost={enableWeb}
-                    disabled={isStreaming}
-                    onClick={() => setEnableWeb(!enableWeb)}
-                    style={{
-                      borderRadius: 20,
-                      fontSize: 12,
-                      height: 26,
-                      padding: '0 10px',
-                      ...(enableWeb
-                        ? { borderColor: '#13c2c2', color: '#13c2c2', background: '#e6fffb' }
-                        : {}),
-                    }}
-                    icon={<GlobalOutlined />}
-                  >
-                    联网
-                  </Button>
-                </Tooltip>
-
-                {defaultActions}
-              </Flex>
-            )}
           />
         </div>
       </div>

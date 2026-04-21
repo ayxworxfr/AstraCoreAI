@@ -79,6 +79,10 @@ class ToolAdapter(ABC):
         """Get all tool definitions."""
         pass
 
+
+class MutableToolAdapter(ToolAdapter):
+    """ToolAdapter that supports dynamic tool registration at runtime."""
+
     @abstractmethod
     def register_tool(
         self,

@@ -53,14 +53,26 @@ def test_convert_messages_formats_tool_calls(adapter):
 
 
 def test_convert_messages_formats_tool_results(adapter):
+    tc = ToolCall(id="tc_1", name="search", arguments={"q": "python"})
     tr = ToolResult(tool_call_id="tc_1", name="search", content="results here")
-    msg = Message(role=MessageRole.TOOL, content="", tool_results=[tr])
-    result = adapter._convert_messages([msg])
+    result = adapter._convert_messages([
+        Message(role=MessageRole.ASSISTANT, content="", tool_calls=[tc]),
+        Message(role=MessageRole.TOOL, content="", tool_results=[tr]),
+    ])
 
-    content = result[0]["content"]
+    assert result[1]["role"] == "user"
+    content = result[1]["content"]
     assert content[0]["type"] == "tool_result"
     assert content[0]["content"] == "results here"
     assert content[0]["tool_use_id"] == "tc_1"
+
+
+def test_convert_messages_skips_orphan_tool_results(adapter):
+    tr = ToolResult(tool_call_id="missing_tool_use", name="search", content="results here")
+    result = adapter._convert_messages([
+        Message(role=MessageRole.TOOL, content="", tool_results=[tr]),
+    ])
+    assert result == []
 
 
 def test_convert_messages_plain_assistant_message(adapter):

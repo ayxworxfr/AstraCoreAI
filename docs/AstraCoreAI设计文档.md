@@ -129,10 +129,11 @@ flowchart TD
 
 ### 5.3 Memory 系统
 
-- 短期记忆：Redis 存最近对话片段与中间状态
+- 短期记忆：三层架构 — Redis（TTL 淘汰 + 容量上限，热路径）→ 本地字典缓存（fallback）→ SQLite 持久化（重启恢复）
 - 长期记忆：PostgreSQL 存会话摘要、用户偏好、关键事件
 - 自动摘要：当上下文逼近预算阈值时触发
 - 记忆检索：按会话、用户、场景标签召回
+- 会话清理：删除或清空对话时同步删除后端短期记忆，防止数据孤岛
 
 ### 5.4 RAG 系统
 
@@ -147,6 +148,14 @@ flowchart TD
 - 协作协议：任务拆分、状态回写、交付验收
 - 人工审批：关键节点可暂停并等待人工确认
 - 故障恢复：保存工作流快照，支持断点续跑
+
+### 5.6 Skill 系统
+
+- **Skill 提示词库**：内置 Skill + 用户自定义 Skill，CRUD 全量管理，支持标记内置不可删除
+- **三层系统提示**：Skill 专属提示 → 全局指令 → RAG 上下文，按顺序拼接注入
+- **用户设置**：默认 Skill（对话自动激活）+ 全局指令（所有对话追加）
+- **运行时参数**：Temperature、RAG top_k、对话上下文长度（context_max_messages）— 存储在 `UserSettingsRow` 键值表，按请求读取，无需重启
+- **系统信息 API**：`GET /api/v1/system/` 返回 LLM Provider/Model/base_url 与 Tavily 状态，供前端只读展示
 
 ## 6. 与 LangGraph 的兼容策略
 

@@ -7,14 +7,14 @@ from collections.abc import Callable
 from typing import Any
 
 from astracore.core.ports.tool import (
-    ToolAdapter,
+    MutableToolAdapter,
     ToolDefinition,
     ToolExecutionResult,
     ToolParameter,
 )
 
 
-class NativeToolAdapter(ToolAdapter):
+class NativeToolAdapter(MutableToolAdapter):
     """Native Python function tool adapter."""
 
     def __init__(self):

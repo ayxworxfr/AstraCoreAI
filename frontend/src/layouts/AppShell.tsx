@@ -8,6 +8,7 @@ const { Header, Content } = Layout;
 const NAV_ITEMS = [
   { key: '/chat', label: <NavLink to="/chat">对话</NavLink> },
   { key: '/rag', label: <NavLink to="/rag">RAG</NavLink> },
+  { key: '/skills', label: <NavLink to="/skills">Skill</NavLink> },
   { key: '/system', label: <NavLink to="/system">系统</NavLink> },
 ];
 
@@ -38,7 +39,7 @@ export default function AppShell(): JSX.Element {
             style={{
               background: 'transparent',
               border: 'none',
-              minWidth: 220,
+              minWidth: 320,
               height: 56,
               lineHeight: '56px',
               fontSize: 14,

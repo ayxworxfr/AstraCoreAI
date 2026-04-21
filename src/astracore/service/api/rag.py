@@ -1,6 +1,5 @@
 """RAG API endpoints."""
 
-import os
 from functools import lru_cache
 from typing import Any
 
@@ -9,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from astracore.adapters.retrieval.chroma import ChromaRetrieverAdapter
 from astracore.core.application.rag import RAGPipeline
+from astracore.sdk.config import AstraCoreConfig
 
 router = APIRouter()
 
@@ -47,11 +47,10 @@ class RetrievalResponse(BaseModel):
 @lru_cache(maxsize=1)
 def _get_rag_pipeline() -> RAGPipeline:
     """Get RAG pipeline instance (cached — avoids creating a new ChromaDB connection per request)."""
-    collection_name = os.getenv("ASTRACORE__RETRIEVAL__COLLECTION_NAME", "astracore")
-    persist_directory = os.getenv("ASTRACORE__RETRIEVAL__PERSIST_DIRECTORY", "./chroma_db")
+    cfg = AstraCoreConfig().retrieval
     retriever = ChromaRetrieverAdapter(
-        collection_name=collection_name,
-        persist_directory=persist_directory,
+        collection_name=cfg.collection_name,
+        persist_directory=cfg.persist_directory,
     )
     return RAGPipeline(retriever=retriever)
 

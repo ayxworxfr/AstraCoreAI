@@ -10,6 +10,10 @@ type StreamHandlers = {
   onError: (msg: string) => void;
 };
 
+export async function deleteSession(sessionId: string): Promise<void> {
+  await apiClient.delete(`/api/v1/chat/sessions/${sessionId}`);
+}
+
 export async function sendChatMessage(payload: ChatRequest): Promise<ChatResponse> {
   const { data } = await apiClient.post<ChatResponse>('/api/v1/chat/', {
     ...payload,

@@ -8,13 +8,15 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 
 - **Clean Architecture**：Ports & Adapters 模式，Domain 层零外部依赖
 - **多 Provider LLM 支持**：Anthropic Claude（流式 tool args 正确累积）、OpenAI GPT，易于扩展
-- **工具执行**：并行/串行工具调用，带安全白名单与 XSS 检测
-- **记忆系统**：Redis 短期（TTL 淘汰 + 容量上限）+ PostgreSQL 长期混合存储
+- **工具执行**：原生工具并行/串行调用，带安全白名单与 XSS 检测
+- **MCP 工具集成**：通过 fastmcp 接入任意 MCP 服务器（内置 filesystem、shell，支持自定义）
+- **记忆系统**：Redis 短期（TTL 淘汰）+ SQLite 短期持久化（重启恢复）+ PostgreSQL 长期存储，Redis 不可用时自动降级到 SQLite
 - **RAG 管道**：ChromaDB 向量搜索（幂等 upsert）、文档分块、引用支持
+- **Skill 系统**：Skill 提示词管理（CRUD + 内置/自定义）、全局指令编辑、对话时动态切换激活 Skill
 - **多 Agent 编排**：Planner/Executor/Reviewer 协作 + Workflow checkpoint 持久化
 - **策略引擎**：tenacity retry + asyncio timeout 实际生效，Token 预算 O(n) 截断
 - **双形态交付**：SDK 嵌入 + FastAPI 服务 HTTP 访问
-- **前端 SPA 控制台**：React + Vite + Zustand 会话式 Playground
+- **前端 SPA 控制台**：React + Vite + Zustand 会话式 Playground，含 Skill 管理、RAG 调试、系统运行参数配置
 - **安全基线**：CORS 环境变量白名单、输入验证预编译、敏感字段脱敏
 
 ## 测试状态
@@ -59,7 +61,7 @@ ruff: 0 errors             ✅
      └────┬─────┘    └─────┬──────┘   └─────┬─────┘
           │                │                 │
           ▼                ▼                 ▼
-    外部 APIs         Redis/PG          ChromaDB
+    外部 APIs         Redis/SQLite        ChromaDB
 ```
 
 ## 快速开始
@@ -68,10 +70,11 @@ ruff: 0 errors             ✅
 
 ```bash
 # 使用 Hatch（推荐）
-hatch env create
+make setup
 
-# 或使用 pip
-pip install -e ".[dev,anthropic,openai,vector]"
+# 或手动
+hatch env create
+hatch run pip install -e ".[anthropic,openai,dev]"
 ```
 
 ### 基础用法 - SDK
@@ -106,13 +109,11 @@ asyncio.run(main())
 ### 基础用法 - 服务
 
 ```bash
-# 运行 FastAPI 服务
-python examples/run_service.py
+# 启动 FastAPI 服务
+make api
 
-# 访问 API（需设置 ASTRACORE__SERVICE__ALLOWED_ORIGINS）
-curl -X POST http://localhost:8000/api/v1/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "你好！", "stream": false}'
+# 访问
+# http://127.0.0.1:8000/docs
 ```
 
 ### 基础用法 - 前端 SPA
@@ -138,16 +139,18 @@ src/astracore/
 │   └── ports/           # 适配器接口（LLM、Memory、Retriever、Tool、Workflow）
 ├── adapters/
 │   ├── llm/             # Anthropic（流式累积）、OpenAI 适配器
-│   ├── tools/           # 工具执行与注册
-│   ├── memory/          # HybridMemoryAdapter（Redis TTL + PostgreSQL 长期）
+│   ├── tools/           # 工具执行与注册（native、MCP、composite）
+│   ├── memory/          # HybridMemoryAdapter（Redis + SQLite 持久化）
 │   ├── retrieval/       # ChromaDB 适配器（run_in_executor + upsert）
 │   └── workflow/        # NativeWorkflowOrchestrator（Redis checkpoint）
+├── mcp_servers/
+│   └── shell_server.py  # 内置 MCP Shell Server（受控命令执行）
 ├── runtime/
 │   ├── policy/          # PolicyEngine（tenacity retry + asyncio timeout）
 │   ├── observability/   # 结构化日志、指标端口
 │   └── security/        # SecurityValidator（XSS、长度、内容过滤）
 ├── service/
-│   ├── api/             # FastAPI 路由（Chat、RAG、System）
+│   ├── api/             # FastAPI 路由（Chat、RAG、Skills、Settings、System）
 │   └── middleware/      # HTTP 中间件
 └── sdk/
     ├── client.py        # 主 SDK 客户端
@@ -155,10 +158,63 @@ src/astracore/
 
 frontend/
 ├── src/app             # 应用入口与路由
-├── src/pages           # Chat / RAG / System 页面
-├── src/components      # 复用 UI 组件
-├── src/stores          # Zustand 会话与系统状态
-└── src/services        # API 与 SSE 通信
+├── src/pages           # Chat / RAG / Skills / System 页面
+├── src/components      # 复用 UI 组件（chat / rag / skills / system）
+├── src/stores          # Zustand（chatStore / skillStore / settingsStore）
+└── src/services        # API、SSE、Skill 与系统信息通信
+```
+
+## 配置
+
+创建 `.env` 文件（参考 `.env.example`）：
+
+```bash
+# LLM 配置（provider: anthropic | deepseek）
+ASTRACORE__LLM__PROVIDER=anthropic
+ASTRACORE__LLM__API_KEY=sk-ant-xxx
+ASTRACORE__LLM__MODEL=claude-sonnet-4-6
+
+# 记忆配置
+ASTRACORE__MEMORY__REDIS_URL=redis://localhost:6379/0
+ASTRACORE__MEMORY__DB_URL=sqlite+aiosqlite:///./astracore.db
+
+# 检索配置
+ASTRACORE__RETRIEVAL__COLLECTION_NAME=astracore
+ASTRACORE__RETRIEVAL__PERSIST_DIRECTORY=./chroma_db
+
+# CORS（生产环境）
+ALLOWED_ORIGINS=http://localhost:5173,https://your-domain.com
+
+# Tavily 联网搜索（可选）
+TAVILY_API_KEY=tvly-xxx
+
+# MCP 工具服务器（可选）
+# filesystem — 读写本地文件，需 Node.js
+# shell      — 在指定目录内执行受控 shell 命令
+ASTRACORE__MCP__SERVERS='[{"type":"filesystem","paths":["D:/project"]},{"type":"shell","allow_dirs":["D:/project"]}]'
+```
+
+### MCP 服务器类型
+
+| type | 说明 | 必填字段 |
+|------|------|---------|
+| `filesystem` | @modelcontextprotocol/server-filesystem，需 Node.js | `paths: list[str]` |
+| `shell` | 内置受控 shell server | `allow_dirs: list[str]`，`timeout: float`（默认 30s） |
+| `custom` | 任意外部 MCP 进程 | `name`, `command`, `args`, `env` |
+
+## 开发
+
+```bash
+make setup        # 一键初始化环境
+make api          # 启动后端服务（http://127.0.0.1:8000）
+make fe-dev       # 启动前端服务（http://127.0.0.1:5173）
+make test         # 运行测试
+make test-cov     # 运行测试覆盖率
+make lint         # ruff 检查
+make type-check   # mypy 类型检查
+make fmt          # 代码格式化
+make clean        # 清理缓存
+make clean-rag    # 清空 ChromaDB 数据
 ```
 
 ## 示例
@@ -169,49 +225,6 @@ frontend/
 - **多 Agent**：`examples/multi_agent.py`
 - **服务运行**：`examples/run_service.py`
 - **前端调试台**：`frontend/`
-
-## 配置
-
-创建 `.env` 文件：
-
-```bash
-# LLM 配置
-ANTHROPIC_API_KEY=sk-ant-xxx
-OPENAI_API_KEY=sk-xxx
-
-# 记忆配置
-ASTRACORE__MEMORY__REDIS_URL=redis://localhost:6379/0
-ASTRACORE__MEMORY__POSTGRES_URL=postgresql+asyncpg://localhost/astracore
-
-# 检索配置
-ASTRACORE__RETRIEVAL__COLLECTION_NAME=astracore
-ASTRACORE__RETRIEVAL__PERSIST_DIRECTORY=./chroma_db
-
-# 安全配置（生产环境必填）
-ASTRACORE__SERVICE__ALLOWED_ORIGINS=http://localhost:5173,https://your-domain.com
-```
-
-## 开发
-
-```bash
-# 安装开发依赖
-hatch env create
-
-# 运行测试
-hatch run test
-
-# 运行测试和覆盖率
-hatch run test-cov
-
-# 类型检查
-hatch run type-check
-
-# 代码检查（ruff，当前 0 errors）
-hatch run lint
-
-# 代码格式化
-hatch run format
-```
 
 ## 核心设计原则
 
@@ -226,10 +239,11 @@ hatch run format
 - **语言**：Python 3.11+
 - **项目管理**：Hatch
 - **架构**：Clean Architecture + Ports & Adapters
-- **Web 框架**：FastAPI
-- **数据验证**：Pydantic 2.x（SettingsConfigDict + StrEnum）
+- **Web 框架**：FastAPI + uvicorn
+- **数据验证**：Pydantic 2.x（SettingsConfigDict + discriminated union）
 - **LLM Providers**：Anthropic Claude、OpenAI
-- **存储**：Redis（aioredis）、PostgreSQL（SQLAlchemy 2.x async）
+- **MCP**：fastmcp（Model Context Protocol 工具集成）
+- **存储**：Redis（短期记忆）、SQLite/aiosqlite（持久化）、PostgreSQL/asyncpg（长期存储）
 - **向量数据库**：ChromaDB
 - **策略**：tenacity、asyncio
 - **测试**：pytest-asyncio（auto mode）、unittest.mock
@@ -241,14 +255,14 @@ hatch run format
 - [x] M2：记忆、预算、策略、可观测性
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
-- [ ] M5（进行中）：质量闭环 — 后端优化 ✅ 单元测试 99 个 ✅ 集成测试待建立
+- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 99 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅
 - [ ] M6：可靠性与安全 — 熔断器、API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档
 
 ## 文件统计
 
-- **54 个 Python 源模块**：覆盖 Domain / Application / Ports / Adapters / Runtime / Service / SDK 全栈
+- **55 个 Python 源模块**：覆盖 Domain / Application / Ports / Adapters / Runtime / Service / SDK 全栈
 - **10 个测试文件，99 个测试**：单元测试全部通过（0.88s）
 - **4 个完整示例**：可直接运行的用例
 - **双形态交付**：SDK + Service 可用

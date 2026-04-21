@@ -55,7 +55,8 @@ class ToolLoopUseCase:
         while iterations < self.max_iterations:
             iterations += 1
 
-            response = await self.llm.generate(
+            response = await self.policy.apply_retry_policy(
+                self.llm.generate,
                 messages=session.get_messages(),
                 model=model,
                 tools=tool_definitions if tool_definitions else None,
@@ -84,7 +85,9 @@ class ToolLoopUseCase:
                     )
                     continue
 
-                exec_result = await self.tools.execute(
+                exec_result = await self.policy.apply_timeout_policy(
+                    self.tools.execute,
+                    "tool",
                     tool_name=tool_call.name,
                     arguments=tool_call.arguments,
                 )
@@ -92,7 +95,7 @@ class ToolLoopUseCase:
                     ToolResult(
                         tool_call_id=tool_call.id,
                         name=exec_result.tool_name,
-                        content=exec_result.output,
+                        content=exec_result.output or exec_result.error or "Tool execution failed",
                         is_error=not exec_result.success,
                         metadata=exec_result.metadata,
                     )
@@ -171,7 +174,9 @@ class ToolLoopUseCase:
                     )
                     continue
 
-                exec_result = await self.tools.execute(
+                exec_result = await self.policy.apply_timeout_policy(
+                    self.tools.execute,
+                    "tool",
                     tool_name=tool_call.name,
                     arguments=tool_call.arguments,
                 )
@@ -179,7 +184,7 @@ class ToolLoopUseCase:
                     ToolResult(
                         tool_call_id=tool_call.id,
                         name=exec_result.tool_name,
-                        content=exec_result.output,
+                        content=exec_result.output or exec_result.error or "Tool execution failed",
                         is_error=not exec_result.success,
                     )
                 )

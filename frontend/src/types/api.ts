@@ -8,6 +8,8 @@ export type ChatRequest = {
   enable_rag?: boolean;
   use_tools?: boolean;
   enable_web?: boolean;
+  skill_id?: string;
+  disable_skill?: boolean;
 };
 
 export type ChatResponse = {

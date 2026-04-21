@@ -32,7 +32,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  AstraCoreAI     [对话]  [RAG]  [系统]            [☀️/🌙]  │  ← Header 56px（固定）
+│  AstraCoreAI     [对话]  [RAG]  [Skill]  [系统]   [☀️/🌙]  │  ← Header 56px（固定）
 ├──────────────────┬──────────────────────────────────────────┤
 │                  │                                          │
 │  左侧面板        │           主内容区                       │
@@ -43,7 +43,7 @@
 ```
 
 - **Chat 页**：左侧显示会话列表面板，右侧为完整聊天区
-- **RAG / System 页**：无左侧面板，全宽内容区
+- **RAG / Skills / System 页**：无左侧面板，全宽内容区
 - Header 固定，左侧 Logo，中间导航，右侧主题切换按钮
 
 ### 3.2 Chat 页布局
@@ -144,7 +144,7 @@ frontend/src/
 ├── main.tsx                         ← 入口，挂载 ConfigProvider + Router
 ├── app/
 │   ├── App.tsx                      ← RouterProvider
-│   ├── router.tsx                   ← 路由定义
+│   ├── router.tsx                   ← 路由定义（chat / rag / skills / system）
 │   └── theme.ts                     ← antd light/dark token 配置
 ├── layouts/
 │   ├── AppShell.tsx                 ← Header（Logo + Nav + 主题切换）+ Outlet
@@ -152,28 +152,41 @@ frontend/src/
 ├── pages/
 │   ├── ChatPage.tsx                 ← 使用 ChatLayout，持有对话业务逻辑
 │   ├── RagPage.tsx                  ← RAG 检索页
-│   └── SystemPage.tsx               ← 健康检查页
+│   ├── SkillsPage.tsx               ← Skill CRUD 管理页（全局指令 + Skill 列表）
+│   └── SystemPage.tsx               ← 系统状态 / LLM 信息 / 运行参数（Tabs）
 ├── components/
 │   ├── chat/
 │   │   ├── ConversationSidebar.tsx  ← @ant-design/x Conversations + 新建/搜索
-│   │   ├── ChatMain.tsx             ← Bubble.List + Welcome + Sender
+│   │   ├── ChatMain.tsx             ← Bubble.List + Welcome + Sender + SkillSelector
 │   │   └── MarkdownContent.tsx      ← react-markdown 渲染器（代码高亮）
 │   ├── rag/
+│   │   ├── RagMarkdownEditor.tsx    ← Markdown 预览 + 编辑切换（复用于 Skill 编辑）
 │   │   ├── RagQueryPanel.tsx        ← 查询输入 + top_k 参数
+│   │   ├── RagIndexPanel.tsx        ← RAG 文档索引管理面板
 │   │   └── RagResultList.tsx        ← 结果卡片列表（score badge + 引用内容）
+│   ├── skills/
+│   │   ├── SkillCard.tsx            ← Skill 卡片（查看/编辑/删除）
+│   │   ├── SkillModal.tsx           ← Skill 创建/编辑弹窗
+│   │   ├── SkillSelector.tsx        ← 对话工具栏 Skill 切换下拉
+│   │   └── GlobalInstructionEditor.tsx  ← 默认 Skill 选择 + 全局指令编辑
 │   └── system/
 │       └── HealthStatusCard.tsx     ← 健康/就绪状态卡片
 ├── stores/
-│   ├── chatStore.ts                 ← 会话 + 消息 + 流式状态
+│   ├── chatStore.ts                 ← 会话 + 消息 + 流式状态 + activeSkillId
+│   ├── skillStore.ts                ← Skills 列表 + 用户设置（持久化）
 │   └── settingsStore.ts             ← theme: 'light' | 'dark'（持久化）
 ├── services/
 │   ├── apiClient.ts                 ← axios 实例 + 错误规范化
-│   ├── chatService.ts               ← POST /chat/ + fetch SSE /chat/stream
+│   ├── chatService.ts               ← POST /chat/ + SSE /chat/stream + DELETE /sessions/:id
 │   ├── ragService.ts                ← POST /rag/retrieve
-│   └── healthService.ts            ← GET /health/ 和 /health/ready
+│   ├── skillService.ts              ← GET/POST/PUT/DELETE /skills/ + GET/PUT /settings/
+│   ├── systemService.ts             ← GET /system/（LLM 信息 + Tavily 状态）
+│   └── healthService.ts             ← GET /health/ 和 /health/ready
 └── types/
     ├── api.ts                       ← 后端接口类型
-    └── chat.ts                      ← 前端会话/消息类型
+    ├── chat.ts                      ← 前端会话/消息类型
+    ├── skill.ts                     ← Skill + UserSettings 类型
+    └── system.ts                    ← SystemInfo 类型
 ```
 
 ### 各层职责边界
@@ -221,43 +234,61 @@ messagesByConversation: Record<string, ChatMessage[]>
 isStreaming: boolean
 streamingConversationId: string | null
 useStream: boolean              // 流式开关，持久化
+activeSkillId: string | null    // 当前激活的 Skill ID（null = 使用默认）
 
 // 动作
 createConversation()            // 新建，自动切换为当前
 switchConversation(id)          // 切换（流式中禁止切换）
 renameConversation(id, title)
-deleteConversation(id)          // 删除后自动切到最近会话或新建
-clearConversation(id)           // 清空消息，保留会话
+deleteConversation(id)          // 删除后自动切到最近会话或新建，并清除后端 session 记忆
+clearConversation(id)           // 清空消息，保留会话，并清除后端 session 记忆
+setActiveSkillId(id)            // 切换激活 Skill
 sendMessage(prompt)             // 非流式
 sendStreamMessage(prompt)       // SSE 流式
 cancelStream()                  // 中断流式请求
 hydrateFromStorage()            // 启动时从 localStorage 恢复
 ```
 
-### 6.3 settingsStore
+### 6.3 skillStore
+
+```typescript
+// 状态（持久化到 localStorage）
+skills: Skill[]
+settings: UserSettings        // { default_skill_id, global_instruction, temperature, rag_top_k, context_max_messages }
+isLoading: boolean
+
+// 动作
+fetchSkills()                 // GET /api/v1/skills/
+createSkill(data)             // POST /api/v1/skills/
+updateSkill(id, data)         // PUT /api/v1/skills/:id
+deleteSkill(id)               // DELETE /api/v1/skills/:id
+fetchSettings()               // GET /api/v1/settings/
+updateSettings(patch)         // PUT /api/v1/settings/
+```
+
+### 6.4 settingsStore
 
 ```typescript
 theme: 'light' | 'dark'
 toggleTheme()
 ```
 
-### 6.4 持久化键
+### 6.5 持久化键
 
 | 键 | 内容 |
 |---|---|
 | `astracore.conversations.v1` | 会话元数据列表 |
 | `astracore.messages.<id>.v1` | 各会话消息（按会话分桶） |
 | `astracore.settings.v1` | 主题偏好 |
+| `astracore.skill-store.v1` | Skills 列表与用户设置（Zustand persist） |
 
 ## 7. API 契约
-
-与现有后端完全兼容，后端无需改动。
 
 ### 7.1 Chat 非流式
 
 ```
 POST /api/v1/chat/
-Body: { message, session_id, model?, temperature? }
+Body: { message, session_id, skill_id?, model?, temperature? }
 Response: { session_id, message, model?, metadata }
 ```
 
@@ -265,7 +296,7 @@ Response: { session_id, message, model?, metadata }
 
 ```
 POST /api/v1/chat/stream
-Body: { message, session_id, model?, temperature? }
+Body: { message, session_id, skill_id?, model?, temperature? }
 
 SSE 事件：
   event: message  data: <文本增量>
@@ -279,7 +310,15 @@ SSE 事件：
 3. 收到 `done` → 置 `status: 'done'`
 4. 收到 `error` 或网络异常 → 置 `status: 'error'`，展示重试入口
 
-### 7.3 RAG 检索
+### 7.3 Session 记忆清理
+
+```
+DELETE /api/v1/chat/sessions/:session_id   → 204 No Content
+```
+
+删除或清空对话时 fire-and-forget 调用，清除后端 SQLite 中的短期记忆。
+
+### 7.4 RAG 检索
 
 ```
 POST /api/v1/rag/retrieve
@@ -287,7 +326,31 @@ Body: { query, top_k? }
 Response: { results: [{ content, score, citation? }] }
 ```
 
-### 7.4 健康检查
+### 7.5 Skill 管理
+
+```
+GET    /api/v1/skills/        → Skill[]
+POST   /api/v1/skills/        Body: SkillCreate  → Skill
+PUT    /api/v1/skills/:id     Body: SkillUpdate  → Skill
+DELETE /api/v1/skills/:id     → 204 No Content
+```
+
+### 7.6 用户设置
+
+```
+GET /api/v1/settings/         → { default_skill_id, global_instruction, temperature, rag_top_k, context_max_messages }
+PUT /api/v1/settings/         Body: 以上字段的子集  → 同上
+```
+
+运行时参数（temperature、rag_top_k、context_max_messages）按请求从 DB 读取，修改后立即生效，无需重启。
+
+### 7.7 系统信息
+
+```
+GET /api/v1/system/   → { llm: { provider, model, base_url, api_key_configured }, tavily_configured }
+```
+
+### 7.8 健康检查
 
 ```
 GET /health/        → { status }
@@ -354,13 +417,23 @@ GET /health/ready   → { ready }
 
 验收：多会话不串消息，流式稳定，Markdown 正确渲染。
 
-### FE-M4：RAG + System + 收尾
+### FE-M4：RAG + System + 收尾 ✅
 
-- RagPage（查询 + 结果卡片）
+- RagPage（查询 + 结果卡片 + 索引管理）
 - SystemPage（健康状态卡片 + 自动刷新）
 - 统一空态、加载态、错误态
 
 验收：三个页面均可正常使用，无 TODO 残留。
+
+### FE-M5：Skill 系统 + 系统配置扩展 ✅
+
+- SkillsPage（GlobalInstructionEditor + SkillCard 列表 CRUD）
+- SkillSelector（Chat 工具栏 Skill 切换下拉，流式时禁用）
+- SystemPage 重构为三 Tab（系统状态 / LLM 信息 / 运行参数）
+- 运行参数（Temperature Slider、RAG top_k、Context 长度）在线修改
+- 删除/清空对话时 fire-and-forget 清除后端 session 记忆
+
+验收：Skill CRUD 可用，切换后对话系统提示正确应用；System 页面三 Tab 可用；运行参数修改后立即生效。
 
 ## 11. 验收标准
 

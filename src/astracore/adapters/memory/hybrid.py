@@ -1,33 +1,31 @@
-"""Hybrid memory adapter using Redis + PostgreSQL."""
+"""Hybrid memory adapter using Redis + SQLAlchemy (SQLite or PostgreSQL)."""
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from astracore.core.domain.message import Message
 from astracore.core.ports.memory import MemoryAdapter, MemoryEntry
+from astracore.runtime.observability.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class HybridMemoryAdapter(MemoryAdapter):
-    """Hybrid memory using Redis (short-term) and PostgreSQL (long-term).
+    """Hybrid memory using Redis (short-term) and a SQL database (long-term).
 
-    When Redis is unavailable, falls back to an in-process dict with TTL eviction
-    and a max-session cap to prevent unbounded memory growth.
-    The in-memory fallback is NOT shared across processes and is lost on restart.
+    Read path: Redis → SQLite (restart persistence).
+    When Redis is unavailable, falls back directly to SQLite.
+    Safe for multi-process deployments — no in-process state.
     """
 
-    _MAX_IN_MEMORY_SESSIONS: int = 1_000
-    _SESSION_TTL: timedelta = timedelta(hours=1)
-
-    def __init__(self, redis_url: str, postgres_url: str):
+    def __init__(self, redis_url: str, db_url: str):
         self.redis_url = redis_url
-        self.postgres_url = postgres_url
+        self.db_url = db_url
         self._redis: Any = None
         self._db_engine: Any = None
         self._redis_disabled = False
-        self._in_memory_sessions: dict[str, list[dict[str, Any]]] = {}
-        self._session_timestamps: dict[str, datetime] = {}
 
     def _get_redis(self) -> Any:
         """Lazy load Redis client."""
@@ -45,7 +43,6 @@ class HybridMemoryAdapter(MemoryAdapter):
         return self._redis
 
     def _disable_redis(self) -> None:
-        """Disable Redis after connection failures to avoid repeated blocking retries."""
         self._redis_disabled = True
         self._redis = None
 
@@ -62,36 +59,56 @@ class HybridMemoryAdapter(MemoryAdapter):
     def _get_db(self) -> Any:
         """Lazy load database engine."""
         if self._db_engine is None:
-            try:
-                from sqlalchemy.ext.asyncio import create_async_engine
+            from astracore.adapters.db.session import get_engine
 
-                self._db_engine = create_async_engine(self.postgres_url)
-            except ImportError as e:
-                raise ImportError(
-                    "sqlalchemy and asyncpg required. Install with: pip install sqlalchemy asyncpg"
-                ) from e
+            self._db_engine = get_engine(self.db_url)
         return self._db_engine
 
-    def _evict_stale(self) -> None:
-        """Remove expired sessions and enforce the max-session cap.
+    async def _save_short_term_to_db(
+        self, session_id: UUID, messages_data: list[dict[str, Any]]
+    ) -> None:
+        """Upsert short-term messages to the DB for restart persistence."""
+        try:
+            from sqlalchemy.ext.asyncio import AsyncSession
 
-        Called on every write to keep memory bounded without a background task.
-        """
-        now = datetime.now(UTC)
-        stale = [
-            k
-            for k, ts in self._session_timestamps.items()
-            if now - ts > self._SESSION_TTL
-        ]
-        for k in stale:
-            self._in_memory_sessions.pop(k, None)
-            self._session_timestamps.pop(k, None)
+            from astracore.adapters.db.models import ChatSessionRow
 
-        # Enforce cap: evict oldest entries first (LRU approximation)
-        while len(self._in_memory_sessions) > self._MAX_IN_MEMORY_SESSIONS:
-            oldest = min(self._session_timestamps, key=lambda k: self._session_timestamps[k])
-            self._in_memory_sessions.pop(oldest, None)
-            self._session_timestamps.pop(oldest, None)
+            engine = self._get_db()
+            async with AsyncSession(engine) as db:
+                existing = await db.get(ChatSessionRow, str(session_id))
+                if existing:
+                    existing.messages = messages_data
+                    existing.updated_at = datetime.now(UTC)
+                else:
+                    db.add(
+                        ChatSessionRow(
+                            session_id=str(session_id),
+                            messages=messages_data,
+                            updated_at=datetime.now(UTC),
+                        )
+                    )
+                await db.commit()
+        except Exception:
+            logger.exception("Failed to save short-term memory to DB for session %s", session_id)
+
+    async def _load_short_term_from_db(
+        self, session_id: UUID
+    ) -> list[dict[str, Any]] | None:
+        """Load short-term messages from DB; return None if not found."""
+        try:
+            from sqlalchemy.ext.asyncio import AsyncSession
+
+            from astracore.adapters.db.models import ChatSessionRow
+
+            engine = self._get_db()
+            async with AsyncSession(engine) as db:
+                row = await db.get(ChatSessionRow, str(session_id))
+                return row.messages if row else None
+        except Exception:
+            logger.warning(
+                "DB unavailable while loading short-term memory for session %s", session_id
+            )
+            return None
 
     async def save_short_term(
         self,
@@ -99,48 +116,45 @@ class HybridMemoryAdapter(MemoryAdapter):
         messages: list[Message],
         ttl_seconds: int = 3600,
     ) -> None:
-        """Save short-term memory to Redis, with in-memory fallback."""
+        """Save short-term memory to Redis + DB."""
         key = self._session_key(session_id)
         messages_data = [msg.model_dump(mode="json") for msg in messages]
 
-        self._evict_stale()
-        self._in_memory_sessions[key] = messages_data
-        self._session_timestamps[key] = datetime.now(UTC)
-
         redis = self._get_redis()
-        if redis is None:
-            return
+        if redis is not None:
+            try:
+                await redis.setex(key, ttl_seconds, json.dumps(messages_data))
+            except Exception:
+                logger.warning(
+                    "Redis write failed for session %s, disabling Redis", session_id, exc_info=True
+                )
+                self._disable_redis()
 
-        try:
-            await redis.setex(key, ttl_seconds, json.dumps(messages_data))
-        except Exception:
-            self._disable_redis()
+        await self._save_short_term_to_db(session_id, messages_data)
 
     async def load_short_term(
         self,
         session_id: UUID,
     ) -> list[Message]:
-        """Load short-term memory from Redis, falling back to in-memory."""
+        """Load short-term memory: Redis → DB."""
         key = self._session_key(session_id)
 
+        # 1. Try Redis
         redis = self._get_redis()
-        if redis is None:
-            return self._deserialize_messages(self._in_memory_sessions.get(key, []))
+        if redis is not None:
+            try:
+                data = await redis.get(key)
+                if data:
+                    return self._deserialize_messages(json.loads(data))
+            except Exception:
+                logger.warning(
+                    "Redis read failed for session %s, disabling Redis", session_id, exc_info=True
+                )
+                self._disable_redis()
 
-        try:
-            data = await redis.get(key)
-        except Exception:
-            self._disable_redis()
-            return self._deserialize_messages(self._in_memory_sessions.get(key, []))
-
-        if not data:
-            return self._deserialize_messages(self._in_memory_sessions.get(key, []))
-
-        messages_data = json.loads(data)
-        # Keep in-memory cache in sync with Redis
-        self._in_memory_sessions[key] = messages_data
-        self._session_timestamps[key] = datetime.now(UTC)
-        return self._deserialize_messages(messages_data)
+        # 2. Fall back to DB (survives restarts)
+        db_data = await self._load_short_term_from_db(session_id)
+        return self._deserialize_messages(db_data) if db_data is not None else []
 
     async def save_long_term(
         self,
@@ -148,7 +162,7 @@ class HybridMemoryAdapter(MemoryAdapter):
         summary: str,
         metadata: dict[str, Any] | None = None,
     ) -> MemoryEntry:
-        """Save long-term memory to PostgreSQL."""
+        """Save long-term memory to the database."""
         entry = MemoryEntry(
             session_id=session_id,
             content=summary,
@@ -159,7 +173,7 @@ class HybridMemoryAdapter(MemoryAdapter):
         try:
             from sqlalchemy.ext.asyncio import AsyncSession
 
-            from astracore.adapters.memory.models import MemoryEntryRow
+            from astracore.adapters.db.models import MemoryEntryRow
 
             engine = self._get_db()
             async with AsyncSession(engine) as db:
@@ -173,7 +187,7 @@ class HybridMemoryAdapter(MemoryAdapter):
                 db.add(row)
                 await db.commit()
         except Exception:
-            pass  # Degrade gracefully if DB unavailable
+            logger.exception("Failed to save long-term memory for session %s", session_id)
 
         return entry
 
@@ -182,12 +196,12 @@ class HybridMemoryAdapter(MemoryAdapter):
         session_id: UUID,
         limit: int = 10,
     ) -> list[MemoryEntry]:
-        """Load long-term memory from PostgreSQL."""
+        """Load long-term memory from the database."""
         try:
             from sqlalchemy import select
             from sqlalchemy.ext.asyncio import AsyncSession
 
-            from astracore.adapters.memory.models import MemoryEntryRow
+            from astracore.adapters.db.models import MemoryEntryRow
 
             engine = self._get_db()
             async with AsyncSession(engine) as db:
@@ -209,6 +223,7 @@ class HybridMemoryAdapter(MemoryAdapter):
                     for row in rows
                 ]
         except Exception:
+            logger.exception("Failed to load long-term memory for session %s", session_id)
             return []
 
     async def search_memory(
@@ -217,12 +232,12 @@ class HybridMemoryAdapter(MemoryAdapter):
         session_id: UUID | None = None,
         limit: int = 5,
     ) -> list[MemoryEntry]:
-        """Full-text search via ILIKE. For production, consider pg_trgm or a vector index."""
+        """Full-text search via ILIKE (PostgreSQL) or LIKE (SQLite)."""
         try:
             from sqlalchemy import select
             from sqlalchemy.ext.asyncio import AsyncSession
 
-            from astracore.adapters.memory.models import MemoryEntryRow
+            from astracore.adapters.db.models import MemoryEntryRow
 
             engine = self._get_db()
             async with AsyncSession(engine) as db:
@@ -245,29 +260,43 @@ class HybridMemoryAdapter(MemoryAdapter):
                     for row in rows
                 ]
         except Exception:
+            logger.exception("Failed to search memory for query %r", query)
             return []
 
     async def delete_session_memory(
         self,
         session_id: UUID,
     ) -> None:
-        """Delete all memory for a session."""
+        """Delete all memory for a session (Redis + DB)."""
         key = self._session_key(session_id)
 
-        self._in_memory_sessions.pop(key, None)
-        self._session_timestamps.pop(key, None)
-
         redis = self._get_redis()
-        if redis is None:
-            return
+        if redis is not None:
+            try:
+                await redis.delete(key)
+            except Exception:
+                logger.warning(
+                    "Redis delete failed for session %s, disabling Redis", session_id, exc_info=True
+                )
+                self._disable_redis()
+
         try:
-            await redis.delete(key)
+            from sqlalchemy.ext.asyncio import AsyncSession
+
+            from astracore.adapters.db.models import ChatSessionRow
+
+            engine = self._get_db()
+            async with AsyncSession(engine) as db:
+                row = await db.get(ChatSessionRow, str(session_id))
+                if row:
+                    await db.delete(row)
+                    await db.commit()
         except Exception:
-            self._disable_redis()
+            logger.exception("Failed to delete session memory from DB for session %s", session_id)
 
     async def ensure_schema(self) -> None:
         """Create database tables if they don't exist. Call at startup."""
-        from astracore.adapters.memory.models import Base
+        from astracore.adapters.db.models import Base
 
         engine = self._get_db()
         async with engine.begin() as conn:
