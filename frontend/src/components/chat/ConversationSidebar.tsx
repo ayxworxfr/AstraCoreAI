@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Input, Flex, Typography, message as antMessage } from 'antd';
+import { Button, Input, Flex, Typography } from 'antd';
 import { EditOutlined, RocketOutlined } from '@ant-design/icons';
 import { Conversations } from '@ant-design/x';
 import type { ConversationsProps } from '@ant-design/x';
@@ -28,7 +28,6 @@ export default function ConversationSidebar(): JSX.Element {
   const {
     conversations,
     activeConversationId,
-    isStreaming,
     createConversation,
     switchConversation,
     renameConversation,
@@ -51,9 +50,7 @@ export default function ConversationSidebar(): JSX.Element {
   }));
 
   const handleActiveChange = (key: string) => {
-    if (!switchConversation(key)) {
-      void antMessage.warning('响应生成中，请先取消');
-    }
+    switchConversation(key);
   };
 
   return (
@@ -73,7 +70,6 @@ export default function ConversationSidebar(): JSX.Element {
           icon={<EditOutlined />}
           block
           size="large"
-          disabled={isStreaming}
           onClick={() => createConversation()}
         >
           新建会话

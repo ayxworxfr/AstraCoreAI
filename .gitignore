@@ -50,6 +50,10 @@ htmlcov/
 chroma_db/
 *.chroma
 
+# Local model cache for Docker builds (populate with scripts/cache_chroma_model.py)
+docker/chroma_model/*
+!docker/chroma_model/.gitkeep
+
 # Logs
 *.log
 

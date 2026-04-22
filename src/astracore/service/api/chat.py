@@ -27,6 +27,29 @@ from astracore.service.builtin_tools import build_tool_adapter
 router = APIRouter()
 
 
+def _strip_dangling_tool_calls(messages: list) -> list:
+    """保存前清理尾部没有对应 tool_result 的 tool_use 消息。
+
+    工具循环出错时，session 可能以 ASSISTANT(tool_calls) 结尾而没有紧跟的
+    TOOL(tool_results)。Anthropic API 不允许这种不完整序列，此函数将其移除，
+    保证保存到记忆的历史始终合法。
+    """
+    msgs = list(messages)
+    while msgs and msgs[-1].role == MessageRole.ASSISTANT and msgs[-1].tool_calls:
+        msgs.pop()
+    return msgs
+
+
+def _prepare_for_save(messages: list) -> list:
+    """保存前清理：去掉 SYSTEM 消息 + 悬空 tool_use。
+
+    SYSTEM 消息不属于对话历史，每次请求都会动态注入最新版本（含当前 skill
+    和用户名称），若保存进记忆会导致旧版本永远排在新版本前面被优先读取。
+    """
+    msgs = [m for m in messages if m.role != MessageRole.SYSTEM]
+    return _strip_dangling_tool_calls(msgs)
+
+
 @lru_cache(maxsize=1)
 def _get_settings() -> AstraCoreConfig:
     return AstraCoreConfig()
@@ -40,11 +63,13 @@ def _get_llm_adapter() -> LLMAdapter:
             api_key=cfg.api_key,
             default_model=cfg.model,
             base_url=cfg.base_url,
+            max_tokens=cfg.max_tokens,
         )
     return OpenAIAdapter(
         api_key=cfg.api_key,
         default_model=cfg.model,
         base_url=cfg.base_url,
+        max_tokens=cfg.max_tokens,
     )
 
 
@@ -70,10 +95,13 @@ def _resolve_tool_adapter(http_request: Request) -> ToolAdapter:
 
 
 def _get_tool_loop_use_case(tool_adapter: ToolAdapter) -> ToolLoopUseCase:
+    cfg = _get_settings().agent
     return ToolLoopUseCase(
         llm_adapter=_get_llm_adapter(),
         tool_adapter=tool_adapter,
         policy_engine=PolicyEngine(),
+        max_iterations=cfg.max_tool_iterations,
+        max_tool_result_chars=cfg.max_tool_result_chars,
     )
 
 
@@ -117,6 +145,13 @@ class ChatResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+def _render_skill_prompt(prompt: str, ai_name: str, owner_name: str) -> str:
+    """将 system_prompt 中的 {{ai_name}} / {{owner_name}} 替换为用户设定的值。"""
+    result = prompt.replace("{{ai_name}}", ai_name or "AI 助手")
+    result = result.replace("{{owner_name}}", owner_name or "用户")
+    return result
+
+
 async def _build_system_prompt(
     skill_id: UUID | None,
     disable_skill: bool,
@@ -132,7 +167,9 @@ async def _build_system_prompt(
         if resolved_id:
             skill = await _load_skill(resolved_id)
             if skill and skill.system_prompt:
-                parts.append(skill.system_prompt)
+                ai_name = await _get_setting_value("ai_name") or "小卡"
+                owner_name = await _get_setting_value("owner_name")
+                parts.append(_render_skill_prompt(skill.system_prompt, ai_name, owner_name))
 
     # Layer 2: Global instruction
     instruction = await _get_setting_value("global_instruction")
@@ -161,8 +198,13 @@ async def _run_with_tools(
         session.restore_messages(messages)
 
     session.add_message(Message(role=MessageRole.USER, content=request.message))
-    session = await tool_loop.execute_with_tools(session, model=request.model)
-    await memory.save_short_term(session_id, session.get_messages())
+    try:
+        session = await tool_loop.execute_with_tools(session, model=request.model)
+    except Exception:
+        # 出错时也保存（至少保留用户消息），同时清理悬空的 tool_use
+        await memory.save_short_term(session_id, _prepare_for_save(session.get_messages()))
+        raise
+    await memory.save_short_term(session_id, _prepare_for_save(session.get_messages()))
 
     last_assistant = next(
         (m for m in reversed(session.get_messages()) if m.role == MessageRole.ASSISTANT),
@@ -268,6 +310,8 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                 tool_loop = _get_tool_loop_use_case(tool_adapter)
 
                 messages = await memory.load_short_term(session_id)
+                # 过滤旧 SYSTEM 消息（兼容历史数据），取最近 context_max 条
+                messages = [m for m in messages if m.role != MessageRole.SYSTEM]
                 if len(messages) > context_max:
                     messages = messages[-context_max:]
                 session = SessionState(session_id=session_id)
@@ -282,23 +326,26 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                     Message(role=MessageRole.USER, content=request.message)
                 )
 
-                async for event in tool_loop.execute_stream_with_tools(
-                    session,
-                    model=request.model,
-                    allowed_tools=allowed_tools,
-                    **llm_kwargs,
-                ):
-                    if event.event_type == StreamEventType.ROUND_START:
-                        yield {"event": "thinking_start", "data": str(event.metadata.get("round", 1))}  # noqa: E501
-                    elif event.event_type == StreamEventType.TEXT_DELTA:
-                        yield {"event": "message", "data": event.content}
-                    elif event.event_type == StreamEventType.THINKING_DELTA:
-                        yield {"event": "thinking", "data": event.content}
-                    elif event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
-                        yield {"event": "tool_use", "data": event.tool_call.name}
-
-                await memory.save_short_term(session_id, session.get_messages())
-                yield {"event": "done", "data": "[DONE]"}
+                try:
+                    async for event in tool_loop.execute_stream_with_tools(
+                        session,
+                        model=request.model,
+                        allowed_tools=allowed_tools,
+                        **llm_kwargs,
+                    ):
+                        if event.event_type == StreamEventType.ROUND_START:
+                            yield {"event": "thinking_start", "data": str(event.metadata.get("round", 1))}  # noqa: E501
+                        elif event.event_type == StreamEventType.TEXT_DELTA:
+                            yield {"event": "message", "data": event.content}
+                        elif event.event_type == StreamEventType.THINKING_DELTA:
+                            yield {"event": "thinking", "data": event.content}
+                        elif event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
+                            yield {"event": "tool_use", "data": event.tool_call.name}
+                    yield {"event": "done", "data": "[DONE]"}
+                finally:
+                    await memory.save_short_term(
+                        session_id, _prepare_for_save(session.get_messages())
+                    )
 
             else:
                 # 普通流式路径（无工具）

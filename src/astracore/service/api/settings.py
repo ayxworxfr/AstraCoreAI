@@ -19,6 +19,8 @@ _SETTINGS_KEYS = {
     "temperature",
     "rag_top_k",
     "context_max_messages",
+    "ai_name",
+    "owner_name",
 }
 
 _SETTINGS_DEFAULTS: dict[str, str] = {
@@ -27,6 +29,8 @@ _SETTINGS_DEFAULTS: dict[str, str] = {
     "temperature": "0.7",
     "rag_top_k": "4",
     "context_max_messages": "20",
+    "ai_name": "小卡",
+    "owner_name": "",
 }
 
 
@@ -41,6 +45,8 @@ class UserSettingsResponse(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     rag_top_k: int = Field(default=4, ge=1, le=20)
     context_max_messages: int = Field(default=20, ge=4, le=200)
+    ai_name: str = "小卡"
+    owner_name: str = ""
 
 
 class UserSettingsUpdate(BaseModel):
@@ -49,6 +55,8 @@ class UserSettingsUpdate(BaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     rag_top_k: int | None = Field(default=None, ge=1, le=20)
     context_max_messages: int | None = Field(default=None, ge=4, le=200)
+    ai_name: str | None = None
+    owner_name: str | None = None
 
 
 async def _load_settings_map(db_url: str) -> dict[str, str]:
@@ -67,6 +75,8 @@ def _build_response(data: dict[str, str]) -> UserSettingsResponse:
         temperature=float(_get("temperature")),
         rag_top_k=int(_get("rag_top_k")),
         context_max_messages=int(_get("context_max_messages")),
+        ai_name=_get("ai_name"),
+        owner_name=_get("owner_name"),
     )
 
 

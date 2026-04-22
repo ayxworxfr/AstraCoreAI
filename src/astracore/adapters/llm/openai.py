@@ -16,10 +16,12 @@ class OpenAIAdapter(LLMAdapter):
         api_key: str,
         default_model: str = "gpt-4o",
         base_url: str | None = None,
+        max_tokens: int = 8192,
     ):
         self.api_key = api_key
         self.default_model = default_model
         self._base_url = base_url
+        self.max_tokens = max_tokens
         self._client: Any = None
 
     def _get_client(self) -> Any:
@@ -113,7 +115,7 @@ class OpenAIAdapter(LLMAdapter):
         """Generate a complete response."""
         client = self._get_client()
         model = model or self.default_model
-        max_tokens = max_tokens or 4096
+        max_tokens = max_tokens or self.max_tokens
 
         converted_messages = self._convert_messages(messages)
 
@@ -165,7 +167,7 @@ class OpenAIAdapter(LLMAdapter):
         """Generate a streaming response."""
         client = self._get_client()
         model = model or self.default_model
-        max_tokens = max_tokens or 4096
+        max_tokens = max_tokens or self.max_tokens
 
         converted_messages = self._convert_messages(messages)
 

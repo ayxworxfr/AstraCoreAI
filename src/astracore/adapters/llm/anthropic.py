@@ -18,10 +18,12 @@ class AnthropicAdapter(LLMAdapter):
         api_key: str,
         default_model: str = "claude-3-5-sonnet-20241022",
         base_url: str | None = None,
+        max_tokens: int = 8192,
     ):
         self.api_key = api_key
         self.default_model = default_model
         self._base_url = base_url
+        self.max_tokens = max_tokens
         self._client: Any = None
 
     def _get_client(self) -> Any:
@@ -122,7 +124,7 @@ class AnthropicAdapter(LLMAdapter):
         """Generate a complete response."""
         client = self._get_client()
         model = model or self.default_model
-        max_tokens = max_tokens or 4096
+        max_tokens = max_tokens or self.max_tokens
 
         system = self._get_system_message(messages)
         converted_messages = self._convert_messages(messages)
@@ -188,7 +190,7 @@ class AnthropicAdapter(LLMAdapter):
 
         client = self._get_client()
         model = model or self.default_model
-        max_tokens = max_tokens or 16000
+        max_tokens = max_tokens or self.max_tokens
 
         system = self._get_system_message(messages)
         converted_messages = self._convert_messages(messages)

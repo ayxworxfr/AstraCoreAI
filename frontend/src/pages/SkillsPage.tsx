@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Flex, Input, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useSkillStore } from '../stores/skillStore';
@@ -54,7 +54,26 @@ export default function SkillsPage(): JSX.Element {
     }
   };
 
-  const filtered = skills.filter(
+  const sortedSkills = useMemo(() => {
+    const copied = [...skills];
+    copied.sort((a, b) => {
+      const aIsAssistant = a.name === '通用助手';
+      const bIsAssistant = b.name === '通用助手';
+      if (aIsAssistant !== bIsAssistant) return aIsAssistant ? -1 : 1;
+      if (a.is_builtin !== b.is_builtin) return a.is_builtin ? -1 : 1;
+      return a.created_at.localeCompare(b.created_at);
+    });
+    return copied;
+  }, [skills]);
+
+  useEffect(() => {
+    if (settings.default_skill_id) return;
+    const assistantSkill = sortedSkills.find((s) => s.name === '通用助手');
+    if (!assistantSkill) return;
+    void saveSettings({ default_skill_id: assistantSkill.id });
+  }, [settings.default_skill_id, sortedSkills, saveSettings]);
+
+  const filtered = sortedSkills.filter(
     (s) => !search || s.name.includes(search) || s.description?.includes(search),
   );
 
@@ -76,7 +95,8 @@ export default function SkillsPage(): JSX.Element {
       <GlobalInstructionEditor
         value={settings.global_instruction}
         defaultSkillId={settings.default_skill_id}
-        skills={skills}
+        skills={sortedSkills}
+        settings={settings}
         onSave={saveSettings}
       />
 

@@ -19,11 +19,24 @@ class ToolLoopUseCase:
         tool_adapter: ToolAdapter,
         policy_engine: PolicyEngine,
         max_iterations: int = 10,
+        max_tool_result_chars: int = 20_000,
     ):
         self.llm = llm_adapter
         self.tools = tool_adapter
         self.policy = policy_engine
         self.max_iterations = max_iterations
+        self.max_tool_result_chars = max_tool_result_chars
+
+    def _truncate_tool_result(self, content: str) -> str:
+        """Truncate oversized tool results, appending a hint for pagination."""
+        limit = self.max_tool_result_chars
+        if len(content) <= limit:
+            return content
+        return (
+            content[:limit]
+            + f"\n\n[内容已截断，原始长度 {len(content)} 字符。"
+            "如需查看更多，请使用 offset/page 参数重新调用工具。]"
+        )
 
     def _build_tool_definitions(self) -> list[dict[str, Any]]:
         """Build tool definitions dict for LLM. Single source of truth."""
@@ -95,7 +108,9 @@ class ToolLoopUseCase:
                     ToolResult(
                         tool_call_id=tool_call.id,
                         name=exec_result.tool_name,
-                        content=exec_result.output or exec_result.error or "Tool execution failed",
+                        content=self._truncate_tool_result(
+                            exec_result.output or exec_result.error or "Tool execution failed"
+                        ),
                         is_error=not exec_result.success,
                         metadata=exec_result.metadata,
                     )
@@ -184,7 +199,9 @@ class ToolLoopUseCase:
                     ToolResult(
                         tool_call_id=tool_call.id,
                         name=exec_result.tool_name,
-                        content=exec_result.output or exec_result.error or "Tool execution failed",
+                        content=self._truncate_tool_result(
+                            exec_result.output or exec_result.error or "Tool execution failed"
+                        ),
                         is_error=not exec_result.success,
                     )
                 )

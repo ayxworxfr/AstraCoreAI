@@ -1,11 +1,14 @@
 """FastAPI application factory."""
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from astracore.runtime.observability.logger import get_logger, setup_logging
 from astracore.service.api import chat, health, rag, settings, skills, system
@@ -35,7 +38,8 @@ async def lifespan(app: FastAPI) -> Any:
 
     try:
         pipeline = rag._get_rag_pipeline()
-        await seed_documents(pipeline)
+        # Run in background so slow model downloads don't block server startup
+        asyncio.create_task(seed_documents(pipeline))
     except Exception:
         logger.exception("种子文档写入失败，不影响服务启动")
 
@@ -51,7 +55,7 @@ async def lifespan(app: FastAPI) -> Any:
 
             mcp_configs = build_server_configs(cfg.mcp.servers)
             mcp_adapter = MCPToolAdapter(mcp_configs)
-            await mcp_adapter.start()
+            await asyncio.wait_for(mcp_adapter.start(), timeout=30)
             app.state.tool_adapter = CompositeToolAdapter([build_tool_adapter(), mcp_adapter])
             logger.info("MCP tool adapter started with %d server(s)", len(mcp_configs))
         except Exception:
@@ -93,5 +97,9 @@ def create_app() -> FastAPI:
     app.include_router(skills.router, prefix="/api/v1/skills", tags=["skills"])
     app.include_router(settings.router, prefix="/api/v1/settings", tags=["settings"])
     app.include_router(system.router, prefix="/api/v1/system", tags=["system"])
+
+    dist_dir = Path(__file__).parent.parent.parent.parent.parent / "frontend" / "dist"
+    if dist_dir.exists():
+        app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="static")
 
     return app

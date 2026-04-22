@@ -42,6 +42,8 @@ class SkillRow(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     is_builtin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # MD 文件名（不含扩展名），作为内置 Skill 的稳定标识符，用于跨重启的 upsert 和孤儿清理
+    source_key: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

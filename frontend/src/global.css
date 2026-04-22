@@ -13,6 +13,11 @@ body,
   overflow: hidden;
 }
 
+/* 隐藏聊天滚动条（Webkit） */
+.chat-scroll-area::-webkit-scrollbar {
+  display: none;
+}
+
 /* RAG 检索结果 Markdown 渲染样式 */
 .rag-md-content {
   line-height: 1.7;

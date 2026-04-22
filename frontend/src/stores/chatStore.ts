@@ -95,7 +95,6 @@ export const useChatStore = create<ChatStore>()(
       },
 
       switchConversation: (id) => {
-        if (get().isStreaming) return false;
         set({ activeConversationId: id });
         return true;
       },
@@ -216,7 +215,10 @@ export const useChatStore = create<ChatStore>()(
       sendMessage: async (prompt) => {
         const { activeConversationId, useStream, enableThinking, enableRag, enableTools, enableWeb, activeSkillId, conversations } = get();
         const trimmed = prompt.trim();
-        if (!trimmed || get().isStreaming) return;
+        const hasStreaming = (get().messagesByConversation[activeConversationId] ?? []).some(
+          (m) => m.status === 'streaming',
+        );
+        if (!trimmed || hasStreaming) return;
 
         const conv = conversations.find((c) => c.id === activeConversationId);
         if (!conv) return;
@@ -382,11 +384,22 @@ export const useChatStore = create<ChatStore>()(
             set({ sessionError: normalizeError(e) });
           }
         } finally {
-          set((s) =>
-            s.isStreaming
-              ? { isStreaming: false, streamingConversationId: null, abortController: null }
-              : s,
-          );
+          set((s) => {
+            if (!s.isStreaming) return s;
+            // 兜底：流意外终止时同步清理消息状态，防止 status:'streaming' 残留
+            const sid = s.streamingConversationId;
+            const msgs = sid
+              ? (s.messagesByConversation[sid] ?? []).map((m) =>
+                  m.status === 'streaming' ? { ...m, status: 'done' as const } : m,
+                )
+              : null;
+            return {
+              isStreaming: false,
+              streamingConversationId: null,
+              abortController: null,
+              ...(sid && msgs ? { messagesByConversation: { ...s.messagesByConversation, [sid]: msgs } } : {}),
+            };
+          });
         }
       },
     }),

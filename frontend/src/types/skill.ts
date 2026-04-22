@@ -26,4 +26,6 @@ export type UserSettings = {
   temperature: number;
   rag_top_k: number;
   context_max_messages: number;
+  ai_name: string;
+  owner_name: string;
 };

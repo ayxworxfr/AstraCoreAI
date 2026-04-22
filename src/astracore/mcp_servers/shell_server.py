@@ -168,7 +168,12 @@ async def run_command(command: str, cwd: str | None = None) -> str:
         if len(output) > MAX_OUTPUT_CHARS:
             result += f"\n... [输出已截断，共 {len(output)} 字符]"
 
-        return f"[退出码: {exit_code}]\n{result}" if result else f"[退出码: {exit_code}] (无输出)"
+        output_line = f"[退出码: {exit_code}]\n{result}" if result else f"[退出码: {exit_code}] (无输出)"
+        # 非零退出码视为命令失败：抛出异常让 fastmcp 将结果标记为 isError=True，
+        # LLM 收到明确的错误信号而非模糊的"成功"响应，能更准确地判断后续操作。
+        if exit_code != 0:
+            raise RuntimeError(output_line)
+        return output_line
 
     except asyncio.TimeoutError:
         if proc.returncode is None:

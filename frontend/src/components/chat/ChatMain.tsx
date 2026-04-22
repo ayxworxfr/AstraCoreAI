@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { Bubble, Sender, Prompts } from '@ant-design/x';
 import type { BubbleProps } from '@ant-design/x';
 import {
@@ -12,6 +12,7 @@ import {
   CheckOutlined,
   DeleteOutlined,
   GlobalOutlined,
+  DownCircleOutlined,
 } from '@ant-design/icons';
 import { Flex, Typography, Alert, Avatar, Button, Collapse, Tooltip, theme } from 'antd';
 import { useChatStore } from '../../stores/chatStore';
@@ -22,7 +23,7 @@ import type { ChatMessage, ThinkingMode, ToolActivity } from '../../types/chat';
 const SUGGESTED_PROMPTS = [
   { key: '1', label: '你能做什么？', icon: <ThunderboltOutlined /> },
   { key: '2', label: 'RAG 检索怎么用？', icon: <ThunderboltOutlined /> },
-  { key: '3', label: '工具调用如何配置？', icon: <ThunderboltOutlined /> },
+  { key: '3', label: '给我讲个故事吧', icon: <ThunderboltOutlined /> },
 ];
 
 function ThinkingBlock({
@@ -241,12 +242,34 @@ type RolesType = Record<string, BubbleProps & { placement?: 'start' | 'end' }>;
 export default function ChatMain(): JSX.Element {
   const [inputValue, setInputValue] = useState('');
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const bottomAnchorRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    bottomAnchorRef.current?.scrollIntoView({ behavior, block: 'end' });
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowScrollBtn(distanceFromBottom > 120);
+  }, []);
+
+  // streaming 时若已在底部则自动跟随；不在底部则仅显示按钮
+  useEffect(() => {
+    if (!isStreaming) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 120) scrollToBottom('instant');
+  });
 
   const {
     activeConversationId,
     messagesByConversation,
-    isStreaming,
     enableThinking,
     enableRag,
     enableTools,
@@ -262,6 +285,7 @@ export default function ChatMain(): JSX.Element {
   } = useChatStore();
 
   const messages = messagesByConversation[activeConversationId] ?? [];
+  const isStreaming = messages.some((m) => m.status === 'streaming');
   // 发送新消息时清除上一次的会话错误
   const handleSendMessage = (value: string) => {
     setSessionError(null);
@@ -334,47 +358,84 @@ export default function ChatMain(): JSX.Element {
   return (
     <Flex vertical style={{ height: '100%', overflow: 'hidden' }}>
       {/* 消息区域 */}
-      <div style={{ flex: '1 1 0', minHeight: 0, overflow: 'hidden' }}>
-        {messages.length === 0 ? (
-          <Flex
-            vertical
-            align="center"
-            justify="center"
-            gap={32}
-            style={{ height: '100%', padding: '0 24px' }}
-          >
-            <Flex vertical align="center" gap={16}>
-              <Avatar
-                size={72}
-                icon={<RobotOutlined />}
-                style={{
-                  background: 'linear-gradient(135deg, #1677ff 0%, #722ed1 100%)',
-                  fontSize: 32,
+      <div style={{ flex: '1 1 0', minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="chat-scroll-area"
+          style={{ height: '100%', overflowY: 'auto', scrollbarWidth: 'none' }}
+        >
+          {messages.length === 0 ? (
+            <Flex
+              vertical
+              align="center"
+              justify="center"
+              gap={32}
+              style={{ height: '100%', padding: '0 24px' }}
+            >
+              <Flex vertical align="center" gap={16}>
+                <Avatar
+                  size={72}
+                  icon={<RobotOutlined />}
+                  style={{
+                    background: 'linear-gradient(135deg, #1677ff 0%, #722ed1 100%)',
+                    fontSize: 32,
+                  }}
+                />
+                <Flex vertical align="center" gap={4}>
+                  <Typography.Title level={4} style={{ margin: 0 }}>
+                    你好，我是 AstraCoreAI
+                  </Typography.Title>
+                  <Typography.Text type="secondary" style={{ fontSize: 14 }}>
+                    专业 AI 基础设施，有什么可以帮你的？
+                  </Typography.Text>
+                </Flex>
+              </Flex>
+              <Prompts
+                items={SUGGESTED_PROMPTS}
+                onItemClick={({ data }) => {
+                  if (typeof data.label === 'string') handleSendMessage(data.label);
                 }}
               />
-              <Flex vertical align="center" gap={4}>
-                <Typography.Title level={4} style={{ margin: 0 }}>
-                  你好，我是 AstraCoreAI
-                </Typography.Title>
-                <Typography.Text type="secondary" style={{ fontSize: 14 }}>
-                  专业 AI 基础设施，有什么可以帮你的？
-                </Typography.Text>
-              </Flex>
             </Flex>
-            <Prompts
-              items={SUGGESTED_PROMPTS}
-              onItemClick={({ data }) => {
-                if (typeof data.label === 'string') handleSendMessage(data.label);
-              }}
+          ) : (
+            <Bubble.List
+              items={bubbleItems}
+              roles={roles}
+              style={{ padding: '16px 24px' }}
             />
-          </Flex>
-        ) : (
-          <Bubble.List
-            items={bubbleItems}
-            roles={roles}
-            autoScroll
-            style={{ height: '100%', padding: '16px 24px' }}
-          />
+          )}
+          <div ref={bottomAnchorRef} style={{ height: 1 }} />
+        </div>
+
+        {/* 回到最新消息按钮 */}
+        {showScrollBtn && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: 16,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 10,
+            }}
+          >
+            <Button
+              type="primary"
+              size="small"
+              icon={<DownCircleOutlined />}
+              onClick={() => scrollToBottom()}
+              style={{
+                borderRadius: 20,
+                padding: '0 14px',
+                height: 30,
+                fontSize: 12,
+                boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+                opacity: 0.92,
+              }}
+            >
+              回到最新
+            </Button>
+          </div>
         )}
       </div>
 

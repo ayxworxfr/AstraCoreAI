@@ -3,7 +3,7 @@
 # Usage: make <command>
 # ============================================================
 
-.PHONY: help setup install deps rag-deps dev api stop sdk-chat fe-install fe-dev fe-build fe-preview test test-cov lint type-check check fmt clean clean-rag clean-old-hatch
+.PHONY: help setup install deps rag-deps dev api stop sdk-chat fe-install fe-dev fe-build fe-preview test test-cov lint type-check check fmt clean clean-rag clean-old-hatch docker-cache-model docker-build docker-up docker-down docker-restart docker-logs docker-clean
 
 .DEFAULT_GOAL := help
 
@@ -87,6 +87,36 @@ fe-build: ## 构建前端产物
 fe-preview: ## 预览前端构建产物
 	@echo "$(GREEN)👀 预览前端构建...$(NC)"
 	@npm --prefix frontend run preview
+
+##@ Docker
+
+docker-cache-model: ## 预下载 ChromaDB 模型到 docker/chroma_model/（构建加速，只需执行一次）
+	@echo "$(GREEN)⬇️  预下载 ChromaDB ONNX 模型...$(NC)"
+	@$(HATCH) run python scripts/predownload_chroma_model.py
+
+docker-build: docker-cache-model ## 构建 Docker 镜像（自动预下载模型缓存）
+	@echo "$(GREEN)🐳 构建 Docker 镜像...$(NC)"
+	@docker compose build
+
+docker-up: ## 启动容器服务（后台运行）
+	@echo "$(GREEN)🚀 启动容器服务...$(NC)"
+	@docker compose up -d
+
+docker-down: ## 停止容器服务
+	@echo "$(YELLOW)⏹  停止容器服务...$(NC)"
+	@docker compose down
+
+docker-restart: ## 重启 app 容器（不重新构建）
+	@echo "$(YELLOW)🔄 重启 app 容器...$(NC)"
+	@docker compose restart app
+
+docker-logs: ## 查看 app 容器日志（实时跟踪）
+	@docker compose logs -f app
+
+docker-clean: ## 停止容器并删除所有数据卷（⚠️ 会清除持久化数据）
+	@echo "$(YELLOW)⚠️  停止容器并删除所有数据卷...$(NC)"
+	@docker compose down -v
+	@echo "$(GREEN)✅ 清理完成$(NC)"
 
 ##@ 质量检查
 

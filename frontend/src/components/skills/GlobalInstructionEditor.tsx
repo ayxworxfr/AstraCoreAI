@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Button, Card, Flex, Form, Select, Typography } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
+import { Button, Card, Flex, Form, Input, Select, Typography } from 'antd';
 import RagMarkdownEditor from '../rag/RagMarkdownEditor';
 import type { Skill, UserSettings } from '../../types/skill';
 
@@ -7,18 +7,47 @@ type Props = {
   value: string;
   defaultSkillId: string;
   skills: Skill[];
+  settings: UserSettings;
   onSave: (patch: Partial<UserSettings>) => Promise<void>;
 };
 
-export default function GlobalInstructionEditor({ value, defaultSkillId, skills, onSave }: Props): JSX.Element {
+export default function GlobalInstructionEditor({ value, defaultSkillId, skills, settings, onSave }: Props): JSX.Element {
   const [instruction, setInstruction] = useState(value);
   const [skillId, setSkillId] = useState(defaultSkillId);
+  const [aiName, setAiName] = useState(settings.ai_name);
+  const [ownerName, setOwnerName] = useState(settings.owner_name);
   const [saving, setSaving] = useState(false);
+
+  const assistantSkillId = useMemo(
+    () => skills.find((skill) => skill.name === '通用助手')?.id ?? '',
+    [skills],
+  );
+
+  useEffect(() => {
+    setInstruction(value);
+  }, [value]);
+
+  useEffect(() => {
+    setAiName(settings.ai_name);
+  }, [settings.ai_name]);
+
+  useEffect(() => {
+    setOwnerName(settings.owner_name);
+  }, [settings.owner_name]);
+
+  useEffect(() => {
+    setSkillId(defaultSkillId || assistantSkillId);
+  }, [defaultSkillId, assistantSkillId]);
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await onSave({ global_instruction: instruction, default_skill_id: skillId });
+      await onSave({
+        global_instruction: instruction,
+        default_skill_id: skillId,
+        ai_name: aiName,
+        owner_name: ownerName,
+      });
     } finally {
       setSaving(false);
     }
@@ -49,6 +78,24 @@ export default function GlobalInstructionEditor({ value, defaultSkillId, skills,
             placeholder="不设置默认 Skill"
           />
         </Form.Item>
+        <Flex gap={12} style={{ marginBottom: 12 }}>
+          <Form.Item label="AI 名称" style={{ flex: 1, marginBottom: 0 }}>
+            <Input
+              value={aiName}
+              onChange={(e) => setAiName(e.target.value)}
+              placeholder="小卡"
+              maxLength={20}
+            />
+          </Form.Item>
+          <Form.Item label="主人名称" style={{ flex: 1, marginBottom: 0 }}>
+            <Input
+              value={ownerName}
+              onChange={(e) => setOwnerName(e.target.value)}
+              placeholder="留空则显示「用户」"
+              maxLength={20}
+            />
+          </Form.Item>
+        </Flex>
         <Form.Item label="全局附加指令" style={{ marginBottom: 0 }}>
           <Flex vertical gap={4}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>

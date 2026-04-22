@@ -1,0 +1,34 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override localhost values from .env with container-network addresses
+      ASTRACORE__MEMORY__REDIS_URL: "redis://redis:6379/0"
+      ASTRACORE__MEMORY__DB_URL: "sqlite+aiosqlite:////app/data/astracore.db"
+      ASTRACORE__RETRIEVAL__PERSIST_DIRECTORY: "/app/data/chroma_db"
+      # Local-path MCP configs from .env are invalid inside the container
+      ASTRACORE__MCP__SERVERS: "[]"
+    volumes:
+      - astracore_data:/app/data
+      - chroma_models:/home/appuser/.cache/chroma
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  astracore_data:
+  chroma_models:   # ChromaDB ONNX model cache — persists across restarts, downloaded once

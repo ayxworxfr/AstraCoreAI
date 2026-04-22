@@ -17,13 +17,11 @@ export default function SkillCard({ skill, isActive, onEdit, onDelete, onView }:
     <Card
       hoverable
       style={{
-        height: '100%',
         borderColor: isActive ? token.colorPrimary : undefined,
         boxShadow: isActive ? `0 0 0 2px ${token.colorPrimaryBg}` : undefined,
       }}
       styles={{
         body: {
-          height: '100%',
           display: 'flex',
           flexDirection: 'column',
           padding: '16px',
@@ -53,7 +51,8 @@ export default function SkillCard({ skill, isActive, onEdit, onDelete, onView }:
       {/* 描述 */}
       <Typography.Text
         type="secondary"
-        style={{ fontSize: 12, lineHeight: 1.65, flex: 1, display: 'block' }}
+        ellipsis={{ tooltip: skill.description || '暂无描述' }}
+        style={{ fontSize: 12, lineHeight: 1.65, marginBottom: 0, display: 'block' }}
       >
         {skill.description || '暂无描述'}
       </Typography.Text>
@@ -61,8 +60,8 @@ export default function SkillCard({ skill, isActive, onEdit, onDelete, onView }:
       {/* 底部操作栏 */}
       <Flex
         align="center"
-        justify={skill.is_builtin ? 'center' : 'flex-end'}
-        gap={4}
+        justify="center"
+        gap={8}
         style={{
           marginTop: 12,
           paddingTop: 10,

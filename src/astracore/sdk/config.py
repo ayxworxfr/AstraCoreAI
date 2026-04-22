@@ -22,6 +22,7 @@ class LLMConfig(BaseModel):
     base_url: str | None = None
     model: str = ""
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=8192, ge=1)
 
     @model_validator(mode="after")
     def _apply_provider_defaults(self) -> "LLMConfig":
@@ -79,6 +80,13 @@ MCPServerEntry = Annotated[
 ]
 
 
+class AgentConfig(BaseModel):
+    """Agent / tool-loop behavior configuration."""
+
+    max_tool_result_chars: int = Field(default=20_000, ge=100)
+    max_tool_iterations: int = Field(default=10, ge=1, le=50)
+
+
 class MCPConfig(BaseModel):
     """MCP server connection configuration.
 
@@ -119,6 +127,7 @@ class AstraCoreConfig(BaseSettings):
     llm: LLMConfig
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
 
 
