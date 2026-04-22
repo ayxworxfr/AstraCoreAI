@@ -175,11 +175,26 @@ function MessageActions({
 
 function ToolActivityRow({ tools }: { tools: ToolActivity[] }) {
   const { token } = theme.useToken();
+  const grouped = tools.reduce<Array<{ name: string; count: number; running: boolean }>>(
+    (acc, item) => {
+      const existed = acc.find((entry) => entry.name === item.name);
+      if (existed) {
+        existed.count += 1;
+        // 只要某一次还在执行中，就整体视为执行中
+        existed.running = existed.running || !item.done;
+      } else {
+        acc.push({ name: item.name, count: 1, running: !item.done });
+      }
+      return acc;
+    },
+    [],
+  );
+
   return (
     <Flex wrap gap={6} style={{ marginBottom: 8 }}>
-      {tools.map((t, i) => (
+      {grouped.map((t) => (
         <span
-          key={i}
+          key={t.name}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -187,15 +202,16 @@ function ToolActivityRow({ tools }: { tools: ToolActivity[] }) {
             padding: '2px 10px',
             borderRadius: 12,
             fontSize: 12,
-            background: t.done ? token.colorSuccessBg : token.colorWarningBg,
-            border: `1px solid ${t.done ? token.colorSuccessBorder : token.colorWarningBorder}`,
-            color: t.done ? token.colorSuccessText : token.colorWarningText,
+            background: t.running ? token.colorWarningBg : token.colorSuccessBg,
+            border: `1px solid ${t.running ? token.colorWarningBorder : token.colorSuccessBorder}`,
+            color: t.running ? token.colorWarningText : token.colorSuccessText,
           }}
         >
-          {t.done
-            ? <CheckOutlined style={{ fontSize: 10 }} />
-            : <LoadingOutlined style={{ fontSize: 10 }} spin />}
+          {t.running
+            ? <LoadingOutlined style={{ fontSize: 10 }} spin />
+            : <CheckOutlined style={{ fontSize: 10 }} />}
           {t.name}
+          {t.count > 1 ? ` ×${t.count}` : ''}
         </span>
       ))}
     </Flex>
