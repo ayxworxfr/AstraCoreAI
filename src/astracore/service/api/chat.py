@@ -163,6 +163,31 @@ def _get_tool_loop_use_case(tool_adapter: ToolAdapter) -> ToolLoopUseCase:
     )
 
 
+def _get_stream_idle_timeout_seconds() -> float:
+    """流式模式下单次等待下一个事件的最大空闲时间。"""
+    timeout_ms = PolicyEngine().config.timeout.llm_timeout_ms
+    return max(timeout_ms / 1000.0, 1.0)
+
+
+async def _iterate_with_idle_timeout(
+    stream: Any,
+    *,
+    timeout_seconds: float,
+    stage: str,
+) -> Any:
+    """为流式事件迭代增加空闲超时保护，避免前端无限等待。"""
+    iterator = stream.__aiter__()
+    while True:
+        try:
+            event = await asyncio.wait_for(anext(iterator), timeout=timeout_seconds)
+        except StopAsyncIteration:
+            return
+        except asyncio.TimeoutError as exc:
+            logger.warning("%s 超时，%.1f 秒内未收到新事件", stage, timeout_seconds)
+            raise TimeoutError(f"{stage} 流式响应超时，请重试") from exc
+        yield event
+
+
 async def _save_short_term_safe(session_id: UUID, messages: list[Message]) -> None:
     """在请求取消场景下，安全保存会话，避免取消传播到连接回收。"""
     try:
@@ -366,6 +391,7 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
     """
     session_id = request.session_id or uuid4()
     tool_adapter = _resolve_tool_adapter(http_request)
+    idle_timeout_seconds = _get_stream_idle_timeout_seconds()
 
     async def event_generator() -> Any:
         try:
@@ -415,11 +441,15 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
 
                 try:
                     round_count = 0
-                    async for event in tool_loop.execute_stream_with_tools(
-                        session,
-                        model=request.model,
-                        allowed_tools=allowed_tools,
-                        **llm_kwargs,
+                    async for event in _iterate_with_idle_timeout(
+                        tool_loop.execute_stream_with_tools(
+                            session,
+                            model=request.model,
+                            allowed_tools=allowed_tools,
+                            **llm_kwargs,
+                        ),
+                        timeout_seconds=idle_timeout_seconds,
+                        stage="工具模式",
                     ):
                         if event.event_type == StreamEventType.ROUND_START:
                             round_count = int(event.metadata.get("round", round_count + 1))
@@ -438,13 +468,17 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                             and session.get_messages()
                             and session.get_messages()[-1].role == MessageRole.TOOL
                         )
-                        async for event in _get_llm_adapter().generate_stream(
-                            messages=_build_summary_fallback_messages(
-                                session.get_messages(),
-                                hit_iteration_limit=hit_iteration_limit,
+                        async for event in _iterate_with_idle_timeout(
+                            _get_llm_adapter().generate_stream(
+                                messages=_build_summary_fallback_messages(
+                                    session.get_messages(),
+                                    hit_iteration_limit=hit_iteration_limit,
+                                ),
+                                model=request.model,
+                                temperature=temperature,
                             ),
-                            model=request.model,
-                            temperature=temperature,
+                            timeout_seconds=idle_timeout_seconds,
+                            stage="工具总结",
                         ):
                             if (
                                 event.event_type == StreamEventType.TEXT_DELTA
@@ -463,14 +497,18 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
             else:
                 # 普通流式路径（无工具）
                 use_case = _get_chat_use_case()
-                async for event in use_case.execute_stream(
-                    session_id=session_id,
-                    user_message=request.message,
-                    model=request.model,
-                    temperature=temperature,
-                    inject_system=inject_system,
-                    context_max_messages=context_max,
-                    **llm_kwargs,
+                async for event in _iterate_with_idle_timeout(
+                    use_case.execute_stream(
+                        session_id=session_id,
+                        user_message=request.message,
+                        model=request.model,
+                        temperature=temperature,
+                        inject_system=inject_system,
+                        context_max_messages=context_max,
+                        **llm_kwargs,
+                    ),
+                    timeout_seconds=idle_timeout_seconds,
+                    stage="普通模式",
                 ):
                     if event.event_type == StreamEventType.TEXT_DELTA:
                         yield {"event": "message", "data": event.content}

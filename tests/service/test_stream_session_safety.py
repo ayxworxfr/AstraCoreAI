@@ -158,3 +158,43 @@ async def test_chat_stream_auto_summarizes_when_tool_loop_stops_at_tool_results(
         for message in fake_llm.calls[0]
         if message.role == MessageRole.SYSTEM
     )
+
+
+async def test_chat_stream_emits_error_when_tool_loop_stream_stalls(monkeypatch) -> None:
+    """工具流式长时间无新事件时，应返回 error 事件而不是一直挂起。"""
+
+    fake_memory = AsyncMock()
+    fake_memory.load_short_term.return_value = []
+
+    class HangingToolLoop:
+        max_iterations = 1
+
+        async def execute_stream_with_tools(self, session, **kwargs):
+            _ = session, kwargs
+            yield StreamEvent(
+                event_type=StreamEventType.ROUND_START,
+                metadata={"round": 1},
+            )
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("astracore.service.api.chat._get_memory_adapter", lambda: fake_memory)
+    monkeypatch.setattr(
+        "astracore.service.api.chat._get_tool_loop_use_case",
+        lambda _: HangingToolLoop(),
+    )
+    monkeypatch.setattr(
+        "astracore.service.api.chat._get_stream_idle_timeout_seconds",
+        lambda: 0.01,
+    )
+    monkeypatch.setattr("astracore.service.api.chat._get_setting_value", AsyncMock(return_value=""))
+
+    app = FastAPI()
+    request = Request({"type": "http", "app": app, "headers": []})
+    response = await chat_stream(ChatRequest(message="帮我分析一下", use_tools=True), request)
+    events = [event async for event in response.body_iterator]
+
+    assert {"event": "thinking_start", "data": "1"} in events
+    assert any(
+        event["event"] == "error" and "流式响应超时" in event["data"]
+        for event in events
+    )

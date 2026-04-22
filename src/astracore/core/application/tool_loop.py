@@ -84,6 +84,8 @@ class ToolLoopUseCase:
 
             if not response.tool_calls:
                 break
+            if iterations >= self.max_iterations:
+                break
 
             tool_results = []
             for tool_call in response.tool_calls:
@@ -174,6 +176,8 @@ class ToolLoopUseCase:
             )
 
             if not accumulated_tool_calls:
+                break
+            if iterations >= self.max_iterations:
                 break
 
             tool_results = []
