@@ -6,17 +6,21 @@ import { useChatStore } from '../../stores/chatStore';
 import { useSkillStore } from '../../stores/skillStore';
 
 export default function SkillSelector({ disabled }: { disabled: boolean }): JSX.Element {
-  const { skills, fetchSkills } = useSkillStore();
+  const { skills, settings, fetchSkills, fetchSettings } = useSkillStore();
   const { activeSkillId, setActiveSkillId } = useChatStore();
 
   useEffect(() => {
-    fetchSkills();
-  }, [fetchSkills]);
+    void fetchSkills();
+    void fetchSettings();
+  }, [fetchSkills, fetchSettings]);
+
+  const defaultSkill = skills.find((s) => s.id === settings.default_skill_id);
+  const defaultLabel = defaultSkill ? `使用默认（${defaultSkill.name}）` : '使用默认（未设置）';
 
   const items: MenuProps['items'] = [
     {
       key: 'null',
-      label: '使用默认',
+      label: defaultLabel,
     },
     { type: 'divider' },
     ...skills.map((s) => ({
@@ -34,7 +38,7 @@ export default function SkillSelector({ disabled }: { disabled: boolean }): JSX.
   const activeSkill = skills.find((s) => s.id === activeSkillId);
   const label =
     activeSkillId === null
-      ? '默认 Skill'
+      ? (defaultSkill?.name ?? '未设置 Skill')
       : activeSkillId === 'none'
         ? '无 Skill'
         : (activeSkill?.name ?? '选择 Skill');

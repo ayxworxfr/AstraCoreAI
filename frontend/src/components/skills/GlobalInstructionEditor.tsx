@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Card, Flex, Form, Input, Select, Typography } from 'antd';
 import RagMarkdownEditor from '../rag/RagMarkdownEditor';
 import type { Skill, UserSettings } from '../../types/skill';
@@ -18,11 +18,6 @@ export default function GlobalInstructionEditor({ value, defaultSkillId, skills,
   const [ownerName, setOwnerName] = useState(settings.owner_name);
   const [saving, setSaving] = useState(false);
 
-  const assistantSkillId = useMemo(
-    () => skills.find((skill) => skill.name === '通用助手')?.id ?? '',
-    [skills],
-  );
-
   useEffect(() => {
     setInstruction(value);
   }, [value]);
@@ -36,8 +31,8 @@ export default function GlobalInstructionEditor({ value, defaultSkillId, skills,
   }, [settings.owner_name]);
 
   useEffect(() => {
-    setSkillId(defaultSkillId || assistantSkillId);
-  }, [defaultSkillId, assistantSkillId]);
+    setSkillId(defaultSkillId);
+  }, [defaultSkillId]);
 
   const handleSave = async () => {
     setSaving(true);

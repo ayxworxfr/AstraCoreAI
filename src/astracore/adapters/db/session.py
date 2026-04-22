@@ -3,11 +3,15 @@
 from functools import lru_cache
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.pool import NullPool
 
 
 @lru_cache(maxsize=1)
 def get_engine(db_url: str) -> AsyncEngine:
     """Return a cached async engine for the given URL."""
+    # SQLite 在 SSE 取消时更容易出现连接回收竞态，使用 NullPool 减少复用带来的终止冲突。
+    if db_url.startswith("sqlite+"):
+        return create_async_engine(db_url, echo=False, poolclass=NullPool)
     return create_async_engine(db_url, echo=False)
 
 

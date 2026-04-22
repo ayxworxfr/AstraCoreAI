@@ -66,13 +66,6 @@ export default function SkillsPage(): JSX.Element {
     return copied;
   }, [skills]);
 
-  useEffect(() => {
-    if (settings.default_skill_id) return;
-    const assistantSkill = sortedSkills.find((s) => s.name === '通用助手');
-    if (!assistantSkill) return;
-    void saveSettings({ default_skill_id: assistantSkill.id });
-  }, [settings.default_skill_id, sortedSkills, saveSettings]);
-
   const filtered = sortedSkills.filter(
     (s) => !search || s.name.includes(search) || s.description?.includes(search),
   );

@@ -1,5 +1,6 @@
 """Chat API endpoints."""
 
+import asyncio
 from functools import lru_cache
 from typing import Any
 from uuid import UUID, uuid4
@@ -19,12 +20,14 @@ from astracore.core.domain.message import Message, MessageRole
 from astracore.core.domain.session import SessionState
 from astracore.core.ports.llm import LLMAdapter, StreamEventType
 from astracore.core.ports.tool import ToolAdapter
+from astracore.runtime.observability.logger import get_logger
 from astracore.runtime.policy.engine import PolicyEngine
 from astracore.sdk.config import AstraCoreConfig
 from astracore.service.api import rag as rag_api
 from astracore.service.builtin_tools import build_tool_adapter
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 def _strip_dangling_tool_calls(messages: list) -> list:
@@ -103,6 +106,21 @@ def _get_tool_loop_use_case(tool_adapter: ToolAdapter) -> ToolLoopUseCase:
         max_iterations=cfg.max_tool_iterations,
         max_tool_result_chars=cfg.max_tool_result_chars,
     )
+
+
+async def _save_short_term_safe(session_id: UUID, messages: list[Message]) -> None:
+    """在请求取消场景下，安全保存会话，避免取消传播到连接回收。"""
+    try:
+        await asyncio.shield(
+            _get_memory_adapter().save_short_term(
+                session_id=session_id,
+                messages=_prepare_for_save(messages),
+            )
+        )
+    except asyncio.CancelledError:
+        logger.warning("会话保存在取消阶段被中断，session_id=%s", session_id)
+    except Exception:
+        logger.exception("会话保存失败，session_id=%s", session_id)
 
 
 async def _load_skill(skill_id: str) -> SkillRow | None:
@@ -202,9 +220,9 @@ async def _run_with_tools(
         session = await tool_loop.execute_with_tools(session, model=request.model)
     except Exception:
         # 出错时也保存（至少保留用户消息），同时清理悬空的 tool_use
-        await memory.save_short_term(session_id, _prepare_for_save(session.get_messages()))
+        await _save_short_term_safe(session_id, session.get_messages())
         raise
-    await memory.save_short_term(session_id, _prepare_for_save(session.get_messages()))
+    await _save_short_term_safe(session_id, session.get_messages())
 
     last_assistant = next(
         (m for m in reversed(session.get_messages()) if m.role == MessageRole.ASSISTANT),
@@ -343,9 +361,7 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                             yield {"event": "tool_use", "data": event.tool_call.name}
                     yield {"event": "done", "data": "[DONE]"}
                 finally:
-                    await memory.save_short_term(
-                        session_id, _prepare_for_save(session.get_messages())
-                    )
+                    await _save_short_term_safe(session_id, session.get_messages())
 
             else:
                 # 普通流式路径（无工具）

@@ -46,6 +46,15 @@ class HybridMemoryAdapter(MemoryAdapter):
         self._redis_disabled = True
         self._redis = None
 
+    def _log_redis_disabled(self, action: str, session_id: UUID, error: Exception) -> None:
+        """输出简洁单行告警，避免打印整段 traceback。"""
+        logger.warning(
+            "Redis %s failed for session %s, disabling Redis: %s",
+            action,
+            session_id,
+            f"{error.__class__.__name__}: {error}",
+        )
+
     @staticmethod
     def _session_key(session_id: UUID) -> str:
         """Build stable short-term memory key."""
@@ -124,10 +133,8 @@ class HybridMemoryAdapter(MemoryAdapter):
         if redis is not None:
             try:
                 await redis.setex(key, ttl_seconds, json.dumps(messages_data))
-            except Exception:
-                logger.warning(
-                    "Redis write failed for session %s, disabling Redis", session_id, exc_info=True
-                )
+            except Exception as e:
+                self._log_redis_disabled("write", session_id, e)
                 self._disable_redis()
 
         await self._save_short_term_to_db(session_id, messages_data)
@@ -146,10 +153,8 @@ class HybridMemoryAdapter(MemoryAdapter):
                 data = await redis.get(key)
                 if data:
                     return self._deserialize_messages(json.loads(data))
-            except Exception:
-                logger.warning(
-                    "Redis read failed for session %s, disabling Redis", session_id, exc_info=True
-                )
+            except Exception as e:
+                self._log_redis_disabled("read", session_id, e)
                 self._disable_redis()
 
         # 2. Fall back to DB (survives restarts)
@@ -274,10 +279,8 @@ class HybridMemoryAdapter(MemoryAdapter):
         if redis is not None:
             try:
                 await redis.delete(key)
-            except Exception:
-                logger.warning(
-                    "Redis delete failed for session %s, disabling Redis", session_id, exc_info=True
-                )
+            except Exception as e:
+                self._log_redis_disabled("delete", session_id, e)
                 self._disable_redis()
 
         try:
