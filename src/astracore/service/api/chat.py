@@ -53,6 +53,61 @@ def _prepare_for_save(messages: list) -> list:
     return _strip_dangling_tool_calls(msgs)
 
 
+def _needs_summary_fallback(messages: list[Message]) -> bool:
+    """工具循环结束但没有最终正文时，触发一次禁用工具的总结收尾。"""
+    visible_messages = [m for m in messages if m.role != MessageRole.SYSTEM]
+    if not visible_messages:
+        return False
+
+    last_message = visible_messages[-1]
+    if last_message.role == MessageRole.TOOL and last_message.has_tool_results():
+        return True
+    return last_message.role == MessageRole.ASSISTANT and not last_message.content.strip()
+
+
+def _build_summary_fallback_messages(
+    messages: list[Message], *, hit_iteration_limit: bool
+) -> list[Message]:
+    """构造“只总结、不再调工具”的收尾提示。"""
+    prompt = (
+        "你现在处于工具调用收尾阶段。请只基于已有对话和工具结果给出最终回答，"
+        "不要继续调用工具，也不要继续规划下一步。"
+        "如果信息不足，请明确说明已确认内容和仍然缺失的信息。"
+    )
+    if hit_iteration_limit:
+        prompt = (
+            "你已达到工具循环最大轮次，请停止继续探索，直接基于当前工具结果完成总结。"
+            + prompt
+        )
+
+    copied = [message.model_copy(deep=True) for message in messages]
+    if copied and copied[0].role == MessageRole.SYSTEM:
+        copied[0] = copied[0].model_copy(
+            update={"content": f"{copied[0].content}\n\n---\n\n{prompt}"}
+        )
+    else:
+        copied.insert(0, Message(role=MessageRole.SYSTEM, content=prompt))
+    return copied
+
+
+async def _generate_summary_fallback(
+    *,
+    messages: list[Message],
+    model: str | None,
+    temperature: float,
+    hit_iteration_limit: bool,
+) -> str:
+    """非流式收尾总结。"""
+    response = await _get_llm_adapter().generate(
+        messages=_build_summary_fallback_messages(
+            messages, hit_iteration_limit=hit_iteration_limit
+        ),
+        model=model,
+        temperature=temperature,
+    )
+    return response.content
+
+
 @lru_cache(maxsize=1)
 def _get_settings() -> AstraCoreConfig:
     return AstraCoreConfig()
@@ -222,6 +277,20 @@ async def _run_with_tools(
         # 出错时也保存（至少保留用户消息），同时清理悬空的 tool_use
         await _save_short_term_safe(session_id, session.get_messages())
         raise
+
+    if _needs_summary_fallback(session.get_messages()):
+        temperature = request.temperature
+        if temperature is None:
+            temperature = float(await _get_setting_value("temperature") or "0.7")
+        summary = await _generate_summary_fallback(
+            messages=session.get_messages(),
+            model=request.model,
+            temperature=temperature,
+            hit_iteration_limit=False,
+        )
+        if summary.strip():
+            session.add_message(Message(role=MessageRole.ASSISTANT, content=summary))
+
     await _save_short_term_safe(session_id, session.get_messages())
 
     last_assistant = next(
@@ -345,6 +414,7 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                 )
 
                 try:
+                    round_count = 0
                     async for event in tool_loop.execute_stream_with_tools(
                         session,
                         model=request.model,
@@ -352,6 +422,7 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                         **llm_kwargs,
                     ):
                         if event.event_type == StreamEventType.ROUND_START:
+                            round_count = int(event.metadata.get("round", round_count + 1))
                             yield {"event": "thinking_start", "data": str(event.metadata.get("round", 1))}  # noqa: E501
                         elif event.event_type == StreamEventType.TEXT_DELTA:
                             yield {"event": "message", "data": event.content}
@@ -359,6 +430,32 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                             yield {"event": "thinking", "data": event.content}
                         elif event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
                             yield {"event": "tool_use", "data": event.tool_call.name}
+
+                    if _needs_summary_fallback(session.get_messages()):
+                        summary_text = ""
+                        hit_iteration_limit = (
+                            round_count >= tool_loop.max_iterations
+                            and session.get_messages()
+                            and session.get_messages()[-1].role == MessageRole.TOOL
+                        )
+                        async for event in _get_llm_adapter().generate_stream(
+                            messages=_build_summary_fallback_messages(
+                                session.get_messages(),
+                                hit_iteration_limit=hit_iteration_limit,
+                            ),
+                            model=request.model,
+                            temperature=temperature,
+                        ):
+                            if (
+                                event.event_type == StreamEventType.TEXT_DELTA
+                                and event.content
+                            ):
+                                summary_text += event.content
+                                yield {"event": "message", "data": event.content}
+                        if summary_text.strip():
+                            session.add_message(
+                                Message(role=MessageRole.ASSISTANT, content=summary_text)
+                            )
                     yield {"event": "done", "data": "[DONE]"}
                 finally:
                     await _save_short_term_safe(session_id, session.get_messages())

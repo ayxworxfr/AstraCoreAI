@@ -30,6 +30,11 @@ function sortConversations(list: ConversationMeta[]): ConversationMeta[] {
   });
 }
 
+const ASSISTANT_FALLBACK_TEXT = {
+  empty: '（空响应）',
+  interrupted: '（请求中断）',
+} as const;
+
 type ChatStore = {
   // State
   conversations: ConversationMeta[];
@@ -292,6 +297,11 @@ export const useChatStore = create<ChatStore>()(
           });
         };
 
+        const finishStreaming = (patch: Partial<Pick<ChatMessage, 'content' | 'status' | 'toolActivity'>>) => {
+          updateAssistant({ status: 'done', ...patch });
+          set({ isStreaming: false, streamingConversationId: null, abortController: null });
+        };
+
         try {
           if (useStream) {
             const controller = new AbortController();
@@ -352,17 +362,15 @@ export const useChatStore = create<ChatStore>()(
                 onDone: () => {
                   const currentMsg = (get().messagesByConversation[activeConversationId] ?? [])
                     .find((m) => m.id === assistantId);
-                  updateAssistant({
-                    content: textBuffer || '（空响应）',
-                    status: 'done',
+                  finishStreaming({
+                    content: textBuffer || ASSISTANT_FALLBACK_TEXT.empty,
                     toolActivity: currentMsg?.toolActivity?.map((t) => ({ ...t, done: true })),
                   });
-                  set({ isStreaming: false, streamingConversationId: null, abortController: null });
                 },
                 onError: (msg) => {
                   // 保留已接收的部分内容，不用错误文本覆盖；用 sessionError 通知用户
-                  updateAssistant({ content: textBuffer || '（请求中断）', status: 'done' });
-                  set({ isStreaming: false, streamingConversationId: null, abortController: null, sessionError: msg });
+                  finishStreaming({ content: textBuffer || ASSISTANT_FALLBACK_TEXT.interrupted });
+                  set({ sessionError: msg });
                 },
               },
               controller.signal,
@@ -373,7 +381,7 @@ export const useChatStore = create<ChatStore>()(
               session_id: activeConversationId,
               enable_rag: enableRag,
             });
-            updateAssistant({ content: res.message || '（空响应）', status: 'done' });
+            updateAssistant({ content: res.message || ASSISTANT_FALLBACK_TEXT.empty, status: 'done' });
           }
         } catch (e) {
           const err = e as Error;
