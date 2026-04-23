@@ -1,8 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { normalizeError } from '../services/apiClient';
-import { deleteSession, sendChatMessage, sendChatStream } from '../services/chatService';
+import { deleteSession, fetchSessionMessages, sendChatMessage, sendChatStream } from '../services/chatService';
 import type { ChatMessage, ConversationMeta } from '../types/chat';
+import { useSkillStore } from './skillStore';
+
+const PAGE_SIZE = 30;
 
 function uuid(): string {
   return crypto.randomUUID();
@@ -40,6 +43,10 @@ type ChatStore = {
   conversations: ConversationMeta[];
   activeConversationId: string;
   messagesByConversation: Record<string, ChatMessage[]>;
+  /** 已从后端加载的消息数（用于 loadMore 的 offset 计算） */
+  messagesOffset: Record<string, number>;
+  hasMoreMessages: Record<string, boolean>;
+  isLoadingMessages: boolean;
   isStreaming: boolean;
   streamingConversationId: string | null;
   useStream: boolean;
@@ -68,6 +75,10 @@ type ChatStore = {
   deleteMessage: (conversationId: string, messageId: string) => void;
   sendMessage: (prompt: string) => Promise<void>;
   cancelStream: () => void;
+  /** 首次打开会话时加载最新 PAGE_SIZE 条消息 */
+  loadMessages: (convId: string) => Promise<void>;
+  /** 向上滚动时加载更早的消息，返回是否加载了新消息 */
+  loadMoreMessages: (convId: string) => Promise<boolean>;
 };
 
 const initialConversation = buildConversation();
@@ -77,7 +88,10 @@ export const useChatStore = create<ChatStore>()(
     (set, get) => ({
       conversations: [initialConversation],
       activeConversationId: initialConversation.id,
-      messagesByConversation: { [initialConversation.id]: [] },
+      messagesByConversation: {},
+      messagesOffset: {},
+      hasMoreMessages: {},
+      isLoadingMessages: false,
       isStreaming: false,
       streamingConversationId: null,
       useStream: true,
@@ -90,17 +104,24 @@ export const useChatStore = create<ChatStore>()(
       sessionError: null,
 
       createConversation: () => {
-        const c = buildConversation();
+        // 新会话继承当前全局默认 skill（快照），后续更改不影响此会话
+        const defaultSkillId = useSkillStore.getState().settings.default_skill_id || null;
+        const c: ConversationMeta = { ...buildConversation(), skillId: defaultSkillId };
         set((s) => ({
           conversations: sortConversations([c, ...s.conversations]),
-          messagesByConversation: { ...s.messagesByConversation, [c.id]: [] },
           activeConversationId: c.id,
+          activeSkillId: defaultSkillId,
         }));
         return c.id;
       },
 
       switchConversation: (id) => {
-        set({ activeConversationId: id });
+        const conv = get().conversations.find((c) => c.id === id);
+        set({ activeConversationId: id, activeSkillId: conv?.skillId ?? null });
+        // 若该会话消息未加载，异步从后端拉取
+        if (!get().messagesByConversation[id]) {
+          void get().loadMessages(id);
+        }
         return true;
       },
 
@@ -147,16 +168,26 @@ export const useChatStore = create<ChatStore>()(
       },
 
       clearConversation: (id) => {
-        set((s) => ({
-          messagesByConversation: { ...s.messagesByConversation, [id]: [] },
-          conversations: sortConversations(
-            s.conversations.map((c) =>
-              c.id === id
-                ? { ...c, lastMessagePreview: '', messageCount: 0, updatedAt: nowIso() }
-                : c,
+        set((s) => {
+          const msgs = { ...s.messagesByConversation };
+          delete msgs[id];
+          const offsets = { ...s.messagesOffset };
+          delete offsets[id];
+          const hasMore = { ...s.hasMoreMessages };
+          delete hasMore[id];
+          return {
+            messagesByConversation: msgs,
+            messagesOffset: offsets,
+            hasMoreMessages: hasMore,
+            conversations: sortConversations(
+              s.conversations.map((c) =>
+                c.id === id
+                  ? { ...c, lastMessagePreview: '', messageCount: 0, updatedAt: nowIso() }
+                  : c,
+              ),
             ),
-          ),
-        }));
+          };
+        });
         void deleteSession(id).catch(() => undefined);
       },
 
@@ -173,7 +204,16 @@ export const useChatStore = create<ChatStore>()(
       setEnableRag: (value) => set({ enableRag: value }),
       setEnableTools: (value) => set({ enableTools: value }),
       setEnableWeb: (value) => set({ enableWeb: value }),
-      setActiveSkillId: (id) => set({ activeSkillId: id }),
+      setActiveSkillId: (id) => {
+        const { activeConversationId } = get();
+        set((s) => ({
+          activeSkillId: id,
+          // 同步写入当前会话的独立 skill，使切换会话后仍能恢复
+          conversations: s.conversations.map((c) =>
+            c.id === activeConversationId ? { ...c, skillId: id } : c,
+          ),
+        }));
+      },
       setSessionError: (msg) => set({ sessionError: msg }),
 
       deleteMessage: (conversationId, messageId) => {
@@ -199,12 +239,79 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      loadMessages: async (convId) => {
+        set({ isLoadingMessages: true });
+        try {
+          const result = await fetchSessionMessages(convId, PAGE_SIZE, 0);
+          const messages: ChatMessage[] = result.messages.map((m, i) => ({
+            id: `hist-${convId}-${i}`,
+            role: m.role,
+            content: m.content,
+            status: 'done' as const,
+            createdAt: new Date().toISOString(),
+          }));
+          set((s) => ({
+            messagesByConversation: { ...s.messagesByConversation, [convId]: messages },
+            messagesOffset: { ...s.messagesOffset, [convId]: result.messages.length },
+            hasMoreMessages: { ...s.hasMoreMessages, [convId]: result.has_more },
+            isLoadingMessages: false,
+          }));
+        } catch {
+          // 加载失败时初始化为空数组，避免反复重试
+          set((s) => ({
+            messagesByConversation: { ...s.messagesByConversation, [convId]: [] },
+            isLoadingMessages: false,
+          }));
+        }
+      },
+
+      loadMoreMessages: async (convId) => {
+        const { messagesOffset, hasMoreMessages, isLoadingMessages } = get();
+        if (isLoadingMessages || !hasMoreMessages[convId]) return false;
+        set({ isLoadingMessages: true });
+        try {
+          const currentOffset = messagesOffset[convId] ?? 0;
+          const result = await fetchSessionMessages(convId, PAGE_SIZE, currentOffset);
+          if (result.messages.length === 0) {
+            set({ isLoadingMessages: false });
+            return false;
+          }
+          const older: ChatMessage[] = result.messages.map((m, i) => ({
+            id: `hist-${convId}-${currentOffset + i}`,
+            role: m.role,
+            content: m.content,
+            status: 'done' as const,
+            createdAt: new Date().toISOString(),
+          }));
+          set((s) => ({
+            messagesByConversation: {
+              ...s.messagesByConversation,
+              [convId]: [...older, ...(s.messagesByConversation[convId] ?? [])],
+            },
+            messagesOffset: { ...s.messagesOffset, [convId]: currentOffset + result.messages.length },
+            hasMoreMessages: { ...s.hasMoreMessages, [convId]: result.has_more },
+            isLoadingMessages: false,
+          }));
+          return true;
+        } catch {
+          set({ isLoadingMessages: false });
+          return false;
+        }
+      },
+
       cancelStream: () => {
         const { streamingConversationId, messagesByConversation, abortController } = get();
         abortController?.abort();
         if (streamingConversationId) {
           const msgs = (messagesByConversation[streamingConversationId] ?? []).map((m) =>
-            m.status === 'streaming' ? { ...m, status: 'done' as const } : m,
+            m.status === 'streaming'
+              ? {
+                  ...m,
+                  status: 'done' as const,
+                  // 未完成的工具调用一并标为已完成，防止 badge spinner 残留
+                  toolActivity: m.toolActivity?.map((t) => ({ ...t, done: true })),
+                }
+              : m,
           );
           set((s) => ({
             messagesByConversation: { ...s.messagesByConversation, [streamingConversationId]: msgs },
@@ -416,24 +523,14 @@ export const useChatStore = create<ChatStore>()(
       partialize: (s) => ({
         conversations: s.conversations,
         activeConversationId: s.activeConversationId,
-        // 持久化时将所有 streaming/error 状态净化为 done，防止刷新后出现残留错误提示
-        messagesByConversation: Object.fromEntries(
-          Object.entries(s.messagesByConversation).map(([convId, msgs]) => [
-            convId,
-            msgs.map((m) =>
-              m.status === 'error' || m.status === 'streaming'
-                ? { ...m, status: 'done' as const }
-                : m,
-            ),
-          ]),
-        ),
+        // 消息历史不持久化到 localStorage（按需从后端加载），只保留会话元数据
         useStream: s.useStream,
         enableThinking: s.enableThinking,
         enableRag: s.enableRag,
         enableTools: s.enableTools,
         enableWeb: s.enableWeb,
         activeSkillId: s.activeSkillId,
-        // sessionError 故意不持久化，刷新自动清除
+        // sessionError / messagesByConversation / 分页状态故意不持久化
       }),
     },
   ),

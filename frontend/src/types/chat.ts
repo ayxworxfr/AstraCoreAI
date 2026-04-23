@@ -5,6 +5,8 @@ export type ConversationMeta = {
   lastMessagePreview: string;
   messageCount: number;
   pinned: boolean;
+  /** 会话独立 skill：undefined = 使用全局默认，'none' = 禁用，uuid = 指定 skill */
+  skillId?: string | null;
 };
 
 export type MessageStatus = 'pending' | 'streaming' | 'done' | 'error';

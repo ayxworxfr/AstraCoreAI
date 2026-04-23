@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { Bubble, Sender, Prompts } from '@ant-design/x';
 import type { BubbleProps } from '@ant-design/x';
 import {
@@ -256,12 +256,19 @@ function AssistantContent({ message }: { message: ChatMessage }) {
 type RolesType = Record<string, BubbleProps & { placement?: 'start' | 'end' }>;
 
 export default function ChatMain(): JSX.Element {
+  const { token } = theme.useToken();
   const [inputValue, setInputValue] = useState('');
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [hasScrollableContent, setHasScrollableContent] = useState(false);
+  const [scrollProgress, setScrollProgress] = useState(0);
+  const [isDraggingScroll, setIsDraggingScroll] = useState(false);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomAnchorRef = useRef<HTMLDivElement>(null);
+  const scrollTrackRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  const dragOffsetRef = useRef(0);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     bottomAnchorRef.current?.scrollIntoView({ behavior, block: 'end' });
@@ -270,9 +277,79 @@ export default function ChatMain(): JSX.Element {
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+    const distanceFromBottom = maxScroll - el.scrollTop;
+    const progress = maxScroll > 0 ? el.scrollTop / maxScroll : 0;
+    setHasScrollableContent(maxScroll > 12);
+    setScrollProgress(Math.min(1, Math.max(0, progress)));
     setShowScrollBtn(distanceFromBottom > 120);
   }, []);
+
+
+  const getThumbMetrics = useCallback(() => {
+    const track = scrollTrackRef.current;
+    const el = scrollContainerRef.current;
+    const trackHeight = track?.clientHeight ?? 0;
+    if (!el || trackHeight <= 0) return { trackHeight: 0, thumbHeight: 0, thumbTop: 0 };
+    const ratio = el.clientHeight / Math.max(el.scrollHeight, 1);
+    const thumbHeight = Math.max(28, Math.min(trackHeight, Math.round(trackHeight * ratio)));
+    const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
+    const thumbTop = maxThumbTop * scrollProgress;
+    return { trackHeight, thumbHeight, thumbTop };
+  }, [scrollProgress]);
+
+  const updateScrollByClientY = useCallback((clientY: number, behavior: ScrollBehavior = 'auto') => {
+    const track = scrollTrackRef.current;
+    const el = scrollContainerRef.current;
+    if (!track || !el) return;
+    const rect = track.getBoundingClientRect();
+    const { trackHeight, thumbHeight } = getThumbMetrics();
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (trackHeight <= 0 || thumbHeight <= 0 || maxScroll <= 0) return;
+    const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
+    const rawTop = clientY - rect.top - dragOffsetRef.current;
+    const thumbTop = Math.min(Math.max(0, rawTop), maxThumbTop);
+    const progress = maxThumbTop > 0 ? thumbTop / maxThumbTop : 0;
+    el.scrollTo({ top: progress * maxScroll, behavior });
+  }, [getThumbMetrics]);
+
+  const handleThumbMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const track = scrollTrackRef.current;
+    if (!track) return;
+    const rect = track.getBoundingClientRect();
+    const { thumbTop } = getThumbMetrics();
+    dragOffsetRef.current = e.clientY - (rect.top + thumbTop);
+    draggingRef.current = true;
+    setIsDraggingScroll(true);
+  };
+
+  const handleTrackMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const { thumbHeight } = getThumbMetrics();
+    // 点击轨道时，将点击点作为滑块中心位置，并平滑滚动到目标位置
+    dragOffsetRef.current = thumbHeight / 2;
+    updateScrollByClientY(e.clientY, 'smooth');
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!draggingRef.current) return;
+      updateScrollByClientY(e.clientY);
+    };
+    const handleMouseUp = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      setIsDraggingScroll(false);
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [updateScrollByClientY]);
 
   // streaming 时若已在底部则自动跟随；不在底部则仅显示按钮
   useEffect(() => {
@@ -286,6 +363,8 @@ export default function ChatMain(): JSX.Element {
   const {
     activeConversationId,
     messagesByConversation,
+    hasMoreMessages,
+    isLoadingMessages,
     enableThinking,
     enableRag,
     enableTools,
@@ -298,10 +377,81 @@ export default function ChatMain(): JSX.Element {
     setSessionError,
     sendMessage,
     cancelStream,
+    loadMessages,
+    loadMoreMessages,
   } = useChatStore();
 
   const messages = messagesByConversation[activeConversationId] ?? [];
   const isStreaming = messages.some((m) => m.status === 'streaming');
+  const hasMore = hasMoreMessages[activeConversationId] ?? false;
+
+  // 保存 prepend 前的 scrollHeight，以便 prepend 后还原位置
+  const prevScrollHeightRef = useRef<number | null>(null);
+  const loadMoreRef = useRef(false);
+  // 标记初次加载完成后需要滚到底部（让用户看到最新消息，之后才能上拉加载更早的）
+  const shouldScrollToBottomRef = useRef(false);
+  // 顶部哨兵：IntersectionObserver 的观察目标
+  const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
+
+  // 加载更早的消息（由 IntersectionObserver 驱动，不依赖 scroll 事件）
+  const handleScrollLoadMore = useCallback(async () => {
+    if (loadMoreRef.current) return;
+    loadMoreRef.current = true;
+    const el = scrollContainerRef.current;
+    if (el) prevScrollHeightRef.current = el.scrollHeight;
+    const loaded = await loadMoreMessages(activeConversationId);
+    if (!loaded) {
+      // 无新消息时清除占位，避免下次消息变化时错误补偿 scrollTop
+      prevScrollHeightRef.current = null;
+    }
+    loadMoreRef.current = false;
+  }, [activeConversationId, loadMoreMessages]);
+
+  // IntersectionObserver：顶部哨兵进入可视区域时触发加载
+  // 优于 scrollTop 检查：即使 scrollTop 已为 0 也能可靠触发
+  useEffect(() => {
+    const sentinel = loadMoreSentinelRef.current;
+    const container = scrollContainerRef.current;
+    if (!sentinel || !container) return;
+    const io = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) void handleScrollLoadMore(); },
+      { root: container, threshold: 0 },
+    );
+    io.observe(sentinel);
+    return () => io.disconnect();
+  }, [handleScrollLoadMore]);
+
+  // 切换/首次进入会话时加载消息，并在加载完成后滚动到底部
+  useEffect(() => {
+    if (messagesByConversation[activeConversationId] === undefined) {
+      shouldScrollToBottomRef.current = true;
+      void loadMessages(activeConversationId);
+    } else {
+      // 已缓存的会话（本次会话内切换回来），直接滚到底部
+      scrollToBottom('instant');
+    }
+  }, [activeConversationId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // prepend 旧消息后补偿 scrollTop；初次加载完成后滚到底部
+  useLayoutEffect(() => {
+    if (prevScrollHeightRef.current !== null) {
+      // load-more：维持可视区域不跳动
+      const el = scrollContainerRef.current;
+      if (el) {
+        el.scrollTop += el.scrollHeight - prevScrollHeightRef.current;
+      }
+      prevScrollHeightRef.current = null;
+    } else if (shouldScrollToBottomRef.current && messages.length > 0) {
+      // 初次加载：滚到底部让用户看到最新消息
+      shouldScrollToBottomRef.current = false;
+      scrollToBottom('instant');
+    }
+  }, [messages, scrollToBottom]);
+
+  useEffect(() => {
+    handleScroll();
+  }, [messages, handleScroll]);
+
   // 发送新消息时清除上一次的会话错误
   const handleSendMessage = (value: string) => {
     setSessionError(null);
@@ -371,6 +521,8 @@ export default function ChatMain(): JSX.Element {
     };
   });
 
+  const { thumbHeight, thumbTop } = getThumbMetrics();
+
   return (
     <Flex vertical style={{ height: '100%', overflow: 'hidden' }}>
       {/* 消息区域 */}
@@ -381,7 +533,14 @@ export default function ChatMain(): JSX.Element {
           className="chat-scroll-area"
           style={{ height: '100%', overflowY: 'auto', scrollbarWidth: 'none' }}
         >
-          {messages.length === 0 ? (
+          {/* 顶部哨兵：IntersectionObserver 的观察目标，进入可视区域时触发加载更多 */}
+          <div ref={loadMoreSentinelRef} />
+          {hasMore && (
+            <div style={{ textAlign: 'center', padding: '8px 0', opacity: 0.5, fontSize: 12 }}>
+              {isLoadingMessages ? '加载中...' : '上滑加载更早的消息'}
+            </div>
+          )}
+          {messages.length === 0 && !isLoadingMessages ? (
             <Flex
               vertical
               align="center"
@@ -423,6 +582,44 @@ export default function ChatMain(): JSX.Element {
           )}
           <div ref={bottomAnchorRef} style={{ height: 1 }} />
         </div>
+
+        {/* 右侧滚动进度条 */}
+        {hasScrollableContent && (
+          <div
+            ref={scrollTrackRef}
+            onMouseDown={handleTrackMouseDown}
+            style={{
+              position: 'absolute',
+              right: 12,
+              top: 20,
+              bottom: 20,
+              width: 6,
+              borderRadius: 999,
+              background: token.colorFillTertiary,
+              opacity: 0.9,
+              pointerEvents: 'auto',
+              cursor: isDraggingScroll ? 'grabbing' : 'default',
+              userSelect: 'none',
+            }}
+            aria-hidden
+          >
+            <div
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                height: thumbHeight || 28,
+                borderRadius: 999,
+                top: thumbTop,
+                background: token.colorPrimary,
+                opacity: isDraggingScroll ? 1 : 0.78,
+                transition: isDraggingScroll ? 'none' : 'opacity 0.15s ease',
+                cursor: isDraggingScroll ? 'grabbing' : 'grab',
+              }}
+              onMouseDown={handleThumbMouseDown}
+            />
+          </div>
+        )}
 
         {/* 回到最新消息按钮 */}
         {showScrollBtn && (

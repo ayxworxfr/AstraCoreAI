@@ -160,32 +160,8 @@ def _get_tool_loop_use_case(tool_adapter: ToolAdapter) -> ToolLoopUseCase:
         policy_engine=PolicyEngine(),
         max_iterations=cfg.max_tool_iterations,
         max_tool_result_chars=cfg.max_tool_result_chars,
+        tool_timeout_s=cfg.tool_timeout_s,
     )
-
-
-def _get_stream_idle_timeout_seconds() -> float:
-    """流式模式下单次等待下一个事件的最大空闲时间。"""
-    timeout_ms = PolicyEngine().config.timeout.llm_timeout_ms
-    return max(timeout_ms / 1000.0, 1.0)
-
-
-async def _iterate_with_idle_timeout(
-    stream: Any,
-    *,
-    timeout_seconds: float,
-    stage: str,
-) -> Any:
-    """为流式事件迭代增加空闲超时保护，避免前端无限等待。"""
-    iterator = stream.__aiter__()
-    while True:
-        try:
-            event = await asyncio.wait_for(anext(iterator), timeout=timeout_seconds)
-        except StopAsyncIteration:
-            return
-        except asyncio.TimeoutError as exc:
-            logger.warning("%s 超时，%.1f 秒内未收到新事件", stage, timeout_seconds)
-            raise TimeoutError(f"{stage} 流式响应超时，请重试") from exc
-        yield event
 
 
 async def _save_short_term_safe(session_id: UUID, messages: list[Message]) -> None:
@@ -216,6 +192,17 @@ async def _get_setting_value(key: str) -> str:
     async with get_session(db_url) as db:
         row = await db.get(UserSettingsRow, key)
         return row.value if row else ""
+
+
+class MessageItem(BaseModel):
+    role: str
+    content: str
+
+
+class SessionMessagesResponse(BaseModel):
+    messages: list[MessageItem]
+    total: int
+    has_more: bool
 
 
 class ChatRequest(BaseModel):
@@ -295,26 +282,37 @@ async def _run_with_tools(
     if messages:
         session.restore_messages(messages)
 
+    all_tools = {d.name for d in tool_adapter.get_definitions()}
+    allowed_tools = all_tools
+    if not request.enable_rag:
+        allowed_tools = allowed_tools - {"search_knowledge_base"}
+    if not request.enable_web:
+        allowed_tools = allowed_tools - {"web_search"}
+
     session.add_message(Message(role=MessageRole.USER, content=request.message))
     try:
-        session = await tool_loop.execute_with_tools(session, model=request.model)
+        session = await tool_loop.execute_with_tools(session, model=request.model, allowed_tools=allowed_tools)
     except Exception:
         # 出错时也保存（至少保留用户消息），同时清理悬空的 tool_use
         await _save_short_term_safe(session_id, session.get_messages())
         raise
 
-    if _needs_summary_fallback(session.get_messages()):
+    safe_messages = _strip_dangling_tool_calls(session.get_messages())
+    if _needs_summary_fallback(safe_messages):
         temperature = request.temperature
         if temperature is None:
             temperature = float(await _get_setting_value("temperature") or "0.7")
         summary = await _generate_summary_fallback(
-            messages=session.get_messages(),
+            messages=safe_messages,
             model=request.model,
             temperature=temperature,
             hit_iteration_limit=False,
         )
         if summary.strip():
             session.add_message(Message(role=MessageRole.ASSISTANT, content=summary))
+        else:
+            hint = "信息量较大，本轮分析已暂停。会话已保存，请发送「继续」让 AI 继续完成分析。"
+            session.add_message(Message(role=MessageRole.ASSISTANT, content=hint))
 
     await _save_short_term_safe(session_id, session.get_messages())
 
@@ -328,7 +326,34 @@ async def _run_with_tools(
 @router.delete("/sessions/{session_id}", status_code=204)
 async def delete_session(session_id: UUID) -> None:
     """删除指定会话的后端记忆（短期消息历史）。"""
+    logger.info("删除会话: session_id=%s", session_id)
     await _get_memory_adapter().delete_session_memory(session_id)
+
+
+@router.get("/sessions/{session_id}/messages", response_model=SessionMessagesResponse)
+async def get_session_messages(
+    session_id: UUID,
+    limit: int = 30,
+    offset: int = 0,
+) -> SessionMessagesResponse:
+    """分页加载会话消息（仅返回 user/assistant，从末尾往前翻页）。
+
+    offset=0, limit=30 → 最新 30 条；offset=30, limit=30 → 再往前 30 条。
+    """
+    all_msgs = await _get_memory_adapter().load_short_term(session_id)
+    visible = [
+        m for m in all_msgs
+        if m.role in (MessageRole.USER, MessageRole.ASSISTANT)
+    ]
+    total = len(visible)
+    end = total - offset
+    start = max(0, end - limit)
+    page = visible[start:end]
+    return SessionMessagesResponse(
+        messages=[MessageItem(role=m.role.value, content=m.content) for m in page],
+        total=total,
+        has_more=start > 0,
+    )
 
 
 @router.post("/", response_model=ChatResponse)
@@ -391,9 +416,15 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
     """
     session_id = request.session_id or uuid4()
     tool_adapter = _resolve_tool_adapter(http_request)
-    idle_timeout_seconds = _get_stream_idle_timeout_seconds()
 
     async def event_generator() -> Any:
+        logger.info(
+            "stream 开始: session=%s, use_tools=%s, enable_web=%s, model=%s",
+            session_id,
+            request.use_tools,
+            request.enable_web,
+            request.model,
+        )
         try:
             inject_system = await _build_system_prompt(
                 skill_id=request.skill_id,
@@ -416,8 +447,11 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
             if request.use_tools or request.enable_web:
                 # 工具循环流式路径：动态获取所有已注册工具（含 MCP 工具）
                 all_tools = {d.name for d in tool_adapter.get_definitions()}
-                # web_search 仅在 enable_web=True 时开放
-                allowed_tools = all_tools if request.enable_web else all_tools - {"web_search"}
+                allowed_tools = all_tools
+                if not request.enable_rag:
+                    allowed_tools = allowed_tools - {"search_knowledge_base"}
+                if not request.enable_web:
+                    allowed_tools = allowed_tools - {"web_search"}
 
                 memory = _get_memory_adapter()
                 tool_loop = _get_tool_loop_use_case(tool_adapter)
@@ -428,57 +462,76 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                 if len(messages) > context_max:
                     messages = messages[-context_max:]
                 session = SessionState(session_id=session_id)
-                if messages:
-                    session.restore_messages(messages)
-
+                # SYSTEM 消息必须在 index 0，_inject_guidance 才能正确识别并合并
+                initial_messages: list[Message] = []
                 if inject_system:
-                    session.add_message(
-                        Message(role=MessageRole.SYSTEM, content=inject_system)
-                    )
+                    initial_messages.append(Message(role=MessageRole.SYSTEM, content=inject_system))
+                initial_messages.extend(messages)
+                session.restore_messages(initial_messages)
                 session.add_message(
                     Message(role=MessageRole.USER, content=request.message)
                 )
 
                 try:
                     round_count = 0
-                    async for event in _iterate_with_idle_timeout(
-                        tool_loop.execute_stream_with_tools(
-                            session,
-                            model=request.model,
-                            allowed_tools=allowed_tools,
-                            **llm_kwargs,
-                        ),
-                        timeout_seconds=idle_timeout_seconds,
-                        stage="工具模式",
+                    # 中间工具轮的文本缓存：遇到 TOOL_CALL 才确认该轮是工具轮，
+                    # 将缓存文本作为 thinking 发出；循环结束后残留内容是最终回答。
+                    round_text_buffer: list[str] = []
+                    in_tool_round = False
+                    async for event in tool_loop.execute_stream_with_tools(
+                        session,
+                        model=request.model,
+                        allowed_tools=allowed_tools,
+                        **llm_kwargs,
                     ):
                         if event.event_type == StreamEventType.ROUND_START:
+                            # 新一轮开始：上一轮缓存的文本必然属于工具轮，发为 thinking
+                            for text in round_text_buffer:
+                                yield {"event": "thinking", "data": text}
+                            round_text_buffer = []
+                            in_tool_round = False
                             round_count = int(event.metadata.get("round", round_count + 1))
                             yield {"event": "thinking_start", "data": str(event.metadata.get("round", 1))}  # noqa: E501
-                        elif event.event_type == StreamEventType.TEXT_DELTA:
-                            yield {"event": "message", "data": event.content}
+                        elif event.event_type == StreamEventType.TEXT_DELTA and event.content:
+                            if in_tool_round:
+                                # 本轮已确认调用工具，文本为旁白，直接发为 thinking
+                                yield {"event": "thinking", "data": event.content}
+                            else:
+                                # 尚不确定本轮是否调用工具，先缓存
+                                round_text_buffer.append(event.content)
                         elif event.event_type == StreamEventType.THINKING_DELTA:
                             yield {"event": "thinking", "data": event.content}
                         elif event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
+                            # 本轮确认有工具调用，将缓存文本标记为 thinking
+                            if not in_tool_round:
+                                for text in round_text_buffer:
+                                    yield {"event": "thinking", "data": text}
+                                round_text_buffer = []
+                                in_tool_round = True
                             yield {"event": "tool_use", "data": event.tool_call.name}
+                    # 循环结束：缓存残留的文本来自最终无工具轮，即 AI 的最终回答
+                    for text in round_text_buffer:
+                        yield {"event": "message", "data": text}
 
-                    if _needs_summary_fallback(session.get_messages()):
-                        summary_text = ""
+                    safe_messages = _strip_dangling_tool_calls(session.get_messages())
+                    if _needs_summary_fallback(safe_messages):
                         hit_iteration_limit = (
                             round_count >= tool_loop.max_iterations
-                            and session.get_messages()
-                            and session.get_messages()[-1].role == MessageRole.TOOL
+                            and safe_messages
+                            and safe_messages[-1].role == MessageRole.TOOL
                         )
-                        async for event in _iterate_with_idle_timeout(
-                            _get_llm_adapter().generate_stream(
-                                messages=_build_summary_fallback_messages(
-                                    session.get_messages(),
-                                    hit_iteration_limit=hit_iteration_limit,
-                                ),
-                                model=request.model,
-                                temperature=temperature,
+                        logger.info(
+                            "触发总结收尾: session=%s, rounds=%d, hit_limit=%s",
+                            session_id, round_count, hit_iteration_limit,
+                        )
+                        summary_text = ""
+                        async for event in _get_llm_adapter().generate_stream(
+                            messages=_build_summary_fallback_messages(
+                                safe_messages,
+                                hit_iteration_limit=hit_iteration_limit,
                             ),
-                            timeout_seconds=idle_timeout_seconds,
-                            stage="工具总结",
+                            model=request.model,
+                            temperature=temperature,
                         ):
                             if (
                                 event.event_type == StreamEventType.TEXT_DELTA
@@ -490,6 +543,12 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                             session.add_message(
                                 Message(role=MessageRole.ASSISTANT, content=summary_text)
                             )
+                        else:
+                            # 总结收尾也未产生有效内容（通常因上下文过长），提示用户继续
+                            hint = "信息量较大，本轮分析已暂停。会话已保存，请发送「继续」让 AI 继续完成分析。"
+                            session.add_message(Message(role=MessageRole.ASSISTANT, content=hint))
+                            yield {"event": "message", "data": hint}
+                    logger.info("stream 完成(工具路径): session=%s, rounds=%d", session_id, round_count)
                     yield {"event": "done", "data": "[DONE]"}
                 finally:
                     await _save_short_term_safe(session_id, session.get_messages())
@@ -497,27 +556,25 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
             else:
                 # 普通流式路径（无工具）
                 use_case = _get_chat_use_case()
-                async for event in _iterate_with_idle_timeout(
-                    use_case.execute_stream(
-                        session_id=session_id,
-                        user_message=request.message,
-                        model=request.model,
-                        temperature=temperature,
-                        inject_system=inject_system,
-                        context_max_messages=context_max,
-                        **llm_kwargs,
-                    ),
-                    timeout_seconds=idle_timeout_seconds,
-                    stage="普通模式",
+                async for event in use_case.execute_stream(
+                    session_id=session_id,
+                    user_message=request.message,
+                    model=request.model,
+                    temperature=temperature,
+                    inject_system=inject_system,
+                    context_max_messages=context_max,
+                    **llm_kwargs,
                 ):
                     if event.event_type == StreamEventType.TEXT_DELTA:
                         yield {"event": "message", "data": event.content}
                     elif event.event_type == StreamEventType.THINKING_DELTA:
                         yield {"event": "thinking", "data": event.content}
                     elif event.event_type == StreamEventType.DONE:
+                        logger.info("stream 完成(普通路径): session=%s", session_id)
                         yield {"event": "done", "data": "[DONE]"}
 
         except Exception as e:
+            logger.exception("stream 异常: session=%s", session_id)
             detail = str(e)
             if e.__cause__ is not None:
                 detail = f"{detail} — {e.__cause__!s}"

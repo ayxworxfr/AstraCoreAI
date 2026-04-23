@@ -10,6 +10,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 - **多 Provider LLM 支持**：Anthropic Claude（流式 tool args 正确累积）、OpenAI GPT，易于扩展
 - **工具执行**：原生工具并行/串行调用，带安全白名单与 XSS 检测
 - **MCP 工具集成**：通过 fastmcp 接入任意 MCP 服务器（内置 filesystem、shell，支持自定义）
+- **健壮工具循环**：悬空 tool_use 清理、总结收尾兜底、空响应引导续接、单次工具超时隔离、中间轮旁白与最终答案自动分流
 - **记忆系统**：Redis 短期（TTL 淘汰）+ SQLite 短期持久化（重启恢复）+ PostgreSQL 长期存储，Redis 不可用时自动降级到 SQLite
 - **RAG 管道**：ChromaDB 向量搜索（幂等 upsert）、文档分块、引用支持
 - **Skill 系统**：Skill 提示词管理（CRUD + 内置/自定义）、全局指令编辑、对话时动态切换激活 Skill
@@ -174,6 +175,11 @@ ASTRACORE__LLM__PROVIDER=anthropic
 ASTRACORE__LLM__API_KEY=sk-ant-xxx
 ASTRACORE__LLM__MODEL=claude-sonnet-4-6
 
+# Agent / 工具循环配置
+ASTRACORE__AGENT__MAX_TOOL_RESULT_CHARS=6000   # 单条工具结果截断上限，防止上下文爆炸
+ASTRACORE__AGENT__MAX_TOOL_ITERATIONS=7         # 工具循环最大轮次
+ASTRACORE__AGENT__TOOL_TIMEOUT_S=60             # 单次工具调用超时（秒）
+
 # 记忆配置
 ASTRACORE__MEMORY__REDIS_URL=redis://localhost:6379/0
 ASTRACORE__MEMORY__DB_URL=sqlite+aiosqlite:///./astracore.db
@@ -255,7 +261,7 @@ make clean-rag    # 清空 ChromaDB 数据
 - [x] M2：记忆、预算、策略、可观测性
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
-- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 99 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅
+- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 99 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅
 - [ ] M6：可靠性与安全 — 熔断器、API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档
@@ -279,3 +285,4 @@ MIT
 
 - [AstraCore AI 设计文档](./docs/AstraCoreAI设计文档.md)
 - [开发进度规划](./docs/开发进度规划.md)
+- [工具循环踩坑记录](./docs/工具循环踩坑记录.md)

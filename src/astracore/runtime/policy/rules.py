@@ -26,8 +26,8 @@ class RetryRule(BaseModel):
 class TimeoutRule(BaseModel):
     """Timeout policy rules."""
 
-    llm_timeout_ms: int = 60_000
-    tool_timeout_ms: int = 30_000
+    llm_timeout_ms: int = 180_000
+    tool_timeout_ms: int = 60_000
     retrieval_timeout_ms: int = 10_000
 
 

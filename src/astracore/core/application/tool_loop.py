@@ -1,5 +1,6 @@
 """Tool loop use case implementation."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -20,12 +21,41 @@ class ToolLoopUseCase:
         policy_engine: PolicyEngine,
         max_iterations: int = 10,
         max_tool_result_chars: int = 20_000,
+        tool_timeout_s: float = 120.0,
     ):
         self.llm = llm_adapter
         self.tools = tool_adapter
         self.policy = policy_engine
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
+        self.tool_timeout_s = tool_timeout_s
+
+    def _build_tool_guidance(self, iteration: int) -> str:
+        """每轮注入给 LLM 的工具使用进度提示（不存入 session）。"""
+        remaining = self.max_iterations - iteration + 1
+        lines = [
+            f"[工具调用进度] 第 {iteration}/{self.max_iterations} 轮，剩余 {remaining} 次机会。",
+            "工具使用规范：",
+            "- 搜索文件时避免 **/* 等宽泛模式，优先指定具体目录和文件扩展名",
+            "- 先用少量调用探索目录结构，再针对性深入",
+            "- 单次工具结果过长时，使用 offset/page 参数分页读取",
+        ]
+        if remaining == 1:
+            lines.append(
+                "⚠️ 本轮不提供工具调用，请基于以上已获取的工具结果直接给出最终回答。"
+            )
+        return "\n".join(lines)
+
+    def _inject_guidance(self, messages: list[Message], iteration: int) -> list[Message]:
+        """将工具进度提示注入消息列表，供本次 LLM 调用使用，不修改 session。"""
+        guidance = self._build_tool_guidance(iteration)
+        msgs = list(messages)
+        if msgs and msgs[0].role == MessageRole.SYSTEM:
+            merged = msgs[0].model_copy(
+                update={"content": f"{msgs[0].content}\n\n---\n\n{guidance}"}
+            )
+            return [merged] + msgs[1:]
+        return [Message(role=MessageRole.SYSTEM, content=guidance)] + msgs
 
     def _truncate_tool_result(self, content: str) -> str:
         """Truncate oversized tool results, appending a hint for pagination."""
@@ -60,19 +90,25 @@ class ToolLoopUseCase:
         self,
         session: SessionState,
         model: str | None = None,
+        allowed_tools: set[str] | None = None,
     ) -> SessionState:
         """Execute tool loop until completion."""
         tool_definitions = self._build_tool_definitions()
+        if allowed_tools is not None:
+            tool_definitions = [t for t in tool_definitions if t["name"] in allowed_tools]
         iterations = 0
 
         while iterations < self.max_iterations:
             iterations += 1
+            is_last = (iterations == self.max_iterations)
+            # 最后一轮不传工具，强制 LLM 给文本答案，避免产生无对应 tool_result 的 tool_use
+            tools_for_llm = None if is_last else (tool_definitions if tool_definitions else None)
 
             response = await self.policy.apply_retry_policy(
                 self.llm.generate,
-                messages=session.get_messages(),
+                messages=self._inject_guidance(session.get_messages(), iterations),
                 model=model,
-                tools=tool_definitions if tool_definitions else None,
+                tools=tools_for_llm,
             )
 
             assistant_msg = Message(
@@ -100,12 +136,24 @@ class ToolLoopUseCase:
                     )
                     continue
 
-                exec_result = await self.policy.apply_timeout_policy(
-                    self.tools.execute,
-                    "tool",
-                    tool_name=tool_call.name,
-                    arguments=tool_call.arguments,
-                )
+                try:
+                    exec_result = await asyncio.wait_for(
+                        self.tools.execute(
+                            tool_name=tool_call.name,
+                            arguments=tool_call.arguments,
+                        ),
+                        timeout=self.tool_timeout_s,
+                    )
+                except asyncio.TimeoutError:
+                    tool_results.append(
+                        ToolResult(
+                            tool_call_id=tool_call.id,
+                            name=tool_call.name,
+                            content=f"[超时] 工具 '{tool_call.name}' 执行超过 {self.tool_timeout_s:.0f}s，已中止。请换用更精确的参数重试。",
+                            is_error=True,
+                        )
+                    )
+                    continue
                 tool_results.append(
                     ToolResult(
                         tool_call_id=tool_call.id,
@@ -144,6 +192,9 @@ class ToolLoopUseCase:
 
         while iterations < self.max_iterations:
             iterations += 1
+            is_last = (iterations == self.max_iterations)
+            # 最后一轮不传工具，强制 LLM 给文本答案，避免产生无对应 tool_result 的 tool_use
+            tools_for_llm = None if is_last else (tool_definitions if tool_definitions else None)
 
             # 通知前端新一轮开始，携带轮次编号
             yield StreamEvent(
@@ -155,9 +206,9 @@ class ToolLoopUseCase:
             accumulated_tool_calls = []
 
             async for event in self.llm.generate_stream(
-                messages=session.get_messages(),
+                messages=self._inject_guidance(session.get_messages(), iterations),
                 model=model,
-                tools=tool_definitions if tool_definitions else None,
+                tools=tools_for_llm,
                 **llm_kwargs,
             ):
                 # 只累积文本，不要把 thinking 内容混入
@@ -193,12 +244,24 @@ class ToolLoopUseCase:
                     )
                     continue
 
-                exec_result = await self.policy.apply_timeout_policy(
-                    self.tools.execute,
-                    "tool",
-                    tool_name=tool_call.name,
-                    arguments=tool_call.arguments,
-                )
+                try:
+                    exec_result = await asyncio.wait_for(
+                        self.tools.execute(
+                            tool_name=tool_call.name,
+                            arguments=tool_call.arguments,
+                        ),
+                        timeout=self.tool_timeout_s,
+                    )
+                except asyncio.TimeoutError:
+                    tool_results.append(
+                        ToolResult(
+                            tool_call_id=tool_call.id,
+                            name=tool_call.name,
+                            content=f"[超时] 工具 '{tool_call.name}' 执行超过 {self.tool_timeout_s:.0f}s，已中止。请换用更精确的参数重试。",
+                            is_error=True,
+                        )
+                    )
+                    continue
                 tool_results.append(
                     ToolResult(
                         tool_call_id=tool_call.id,

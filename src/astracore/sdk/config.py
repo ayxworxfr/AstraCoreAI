@@ -85,6 +85,7 @@ class AgentConfig(BaseModel):
 
     max_tool_result_chars: int = Field(default=20_000, ge=100)
     max_tool_iterations: int = Field(default=10, ge=1, le=50)
+    tool_timeout_s: float = Field(default=120.0, ge=1.0)
 
 
 class MCPConfig(BaseModel):

@@ -1,6 +1,12 @@
 import type { ChatRequest, ChatResponse } from '../types/api';
 import { apiClient, normalizeError } from './apiClient';
 
+export type SessionMessagesResponse = {
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  total: number;
+  has_more: boolean;
+};
+
 type StreamHandlers = {
   onMessage: (delta: string) => void;
   onThinkingStart?: () => void;   // 新一轮思考开始（工具循环每轮触发）
@@ -12,6 +18,18 @@ type StreamHandlers = {
 
 export async function deleteSession(sessionId: string): Promise<void> {
   await apiClient.delete(`/api/v1/chat/sessions/${sessionId}`);
+}
+
+export async function fetchSessionMessages(
+  sessionId: string,
+  limit = 30,
+  offset = 0,
+): Promise<SessionMessagesResponse> {
+  const { data } = await apiClient.get<SessionMessagesResponse>(
+    `/api/v1/chat/sessions/${sessionId}/messages`,
+    { params: { limit, offset } },
+  );
+  return data;
 }
 
 export async function sendChatMessage(payload: ChatRequest): Promise<ChatResponse> {
@@ -75,33 +93,41 @@ export async function sendChatStream(
   let rawBuffer = '';
   let doneCalled = false;
 
+  // abort 后的事件一律丢弃，防止竞态覆盖 cancelStream 已清理好的状态
+  const isAborted = () => signal?.aborted ?? false;
+
   const patchedHandlers: StreamHandlers = {
-    onMessage: handlers.onMessage,
-    onThinkingStart: handlers.onThinkingStart,
-    onThinking: handlers.onThinking,
-    onToolUse: handlers.onToolUse,
+    onMessage: (d) => { if (!isAborted()) handlers.onMessage(d); },
+    onThinkingStart: () => { if (!isAborted()) handlers.onThinkingStart?.(); },
+    onThinking: (d) => { if (!isAborted()) handlers.onThinking?.(d); },
+    onToolUse: (d) => { if (!isAborted()) handlers.onToolUse?.(d); },
     onDone: () => {
+      if (isAborted()) return;
       doneCalled = true;
       handlers.onDone();
     },
-    onError: handlers.onError,
+    onError: (msg) => { if (!isAborted()) handlers.onError(msg); },
   };
 
   try {
     while (true) {
+      if (isAborted()) break;
       const { done, value } = await reader.read();
       if (done) break;
       // 统一将 \r\n 规范化为 \n，兼容 SSE-Starlette 的 CRLF 行尾
       rawBuffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
       const parts = rawBuffer.split('\n\n');
       rawBuffer = parts.pop() ?? '';
-      for (const block of parts) parseBlock(block, patchedHandlers);
+      for (const block of parts) {
+        if (isAborted()) break;
+        parseBlock(block, patchedHandlers);
+      }
     }
 
-    if (rawBuffer.trim()) parseBlock(rawBuffer, patchedHandlers);
+    if (!isAborted() && rawBuffer.trim()) parseBlock(rawBuffer, patchedHandlers);
 
     // 流自然结束但没收到 done 事件时兜底
-    if (!doneCalled) handlers.onDone();
+    if (!isAborted() && !doneCalled) handlers.onDone();
   } catch (e) {
     // AbortError 或流被中断属于用户主动取消，静默处理
     const err = e as Error;
