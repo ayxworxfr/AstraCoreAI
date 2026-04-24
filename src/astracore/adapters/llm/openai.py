@@ -186,6 +186,7 @@ class OpenAIAdapter(LLMAdapter):
         stream = await client.chat.completions.create(**request_params)
 
         tool_call_buffer: dict[str, dict[str, Any]] = {}
+        tool_call_index_map: dict[int, str] = {}
 
         async for chunk in stream:
             if not chunk.choices:
@@ -201,18 +202,47 @@ class OpenAIAdapter(LLMAdapter):
 
             if delta.tool_calls:
                 for tc_delta in delta.tool_calls:
-                    if tc_delta.id:
-                        tool_call_buffer[tc_delta.id] = {
-                            "id": tc_delta.id,
-                            "name": tc_delta.function.name if tc_delta.function else "",
-                            "arguments": "",
-                        }
+                    index = getattr(tc_delta, "index", None)
+                    buffer_key: str | None = None
 
-                    if tc_delta.function and tc_delta.function.arguments:
-                        if tc_delta.id in tool_call_buffer:
-                            tool_call_buffer[tc_delta.id]["arguments"] += (
-                                tc_delta.function.arguments
+                    if tc_delta.id:
+                        buffer_key = tc_delta.id
+                        if (
+                            isinstance(index, int)
+                            and index in tool_call_index_map
+                            and tool_call_index_map[index] != buffer_key
+                        ):
+                            buffered = tool_call_buffer.pop(
+                                tool_call_index_map[index],
+                                {"id": tc_delta.id, "name": "", "arguments": ""},
                             )
+                            buffered["id"] = tc_delta.id
+                            tool_call_buffer[buffer_key] = buffered
+                        else:
+                            tool_call_buffer.setdefault(
+                                buffer_key,
+                                {"id": tc_delta.id, "name": "", "arguments": ""},
+                            )
+                        if isinstance(index, int):
+                            tool_call_index_map[index] = buffer_key
+                    elif isinstance(index, int):
+                        buffer_key = tool_call_index_map.get(index)
+                        if buffer_key is None:
+                            buffer_key = f"index:{index}"
+                            tool_call_index_map[index] = buffer_key
+                            tool_call_buffer[buffer_key] = {
+                                "id": "",
+                                "name": "",
+                                "arguments": "",
+                            }
+
+                    if buffer_key is None:
+                        continue
+
+                    if tc_delta.function and tc_delta.function.name:
+                        tool_call_buffer[buffer_key]["name"] = tc_delta.function.name
+                    if tc_delta.function and tc_delta.function.arguments:
+                        tool_call_buffer[buffer_key]["arguments"] += tc_delta.function.arguments
 
         for tc_data in tool_call_buffer.values():
             yield StreamEvent(
