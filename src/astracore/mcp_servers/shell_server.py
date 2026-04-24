@@ -152,8 +152,9 @@ async def run_command(command: str, cwd: str | None = None) -> str:
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
+            stdin=asyncio.subprocess.DEVNULL,   # 断开 stdin：避免子进程等待终端输入导致永久阻塞
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stderr=asyncio.subprocess.STDOUT,   # stderr 合并到 stdout，统一捕获
             cwd=str(work_dir),
         )
 

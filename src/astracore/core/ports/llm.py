@@ -17,8 +17,10 @@ class StreamEventType(StrEnum):
 
     TEXT_DELTA = "text_delta"
     THINKING_DELTA = "thinking_delta"
-    ROUND_START = "round_start"   # 工具循环每轮开始，前端以此分隔思考块
-    TOOL_CALL = "tool_call"
+    ROUND_START = "round_start"    # 工具循环每轮开始，前端以此分隔思考块
+    THINKING_STOP = "thinking_stop"  # 思考轮结束，携带 duration_ms
+    TOOL_CALL = "tool_call"          # LLM 决定调用工具（含 arguments）
+    TOOL_RESULT = "tool_result"      # 工具执行完毕，携带结果
     ERROR = "error"
     DONE = "done"
 

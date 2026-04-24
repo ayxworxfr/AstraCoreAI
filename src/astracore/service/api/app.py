@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from astracore.runtime.observability.logger import get_logger, setup_logging
 from astracore.service.api import chat, health, rag, settings, skills, system
+from astracore.service.middleware.logging import RequestLoggingMiddleware
 from astracore.service.seeds import seed_builtin_skills, seed_documents
 
 setup_logging()
@@ -83,6 +84,9 @@ def create_app() -> FastAPI:
     raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
     allowed_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
 
+    # 注意：FastAPI 中间件按注册逆序执行，RequestLoggingMiddleware 需最后注册，
+    # 确保它在所有中间件最外层运行，计时和 request_id 覆盖完整请求生命周期。
+    app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,

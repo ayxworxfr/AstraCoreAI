@@ -435,7 +435,7 @@ export const useChatStore = create<ChatStore>()(
                   textBuffer += delta;
                   updateAssistant({ content: textBuffer, status: 'streaming' });
                 },
-                onToolUse: (toolName) => {
+                onToolStart: (toolName, input) => {
                   set((s) => {
                     const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) =>
                       m.id !== assistantId
@@ -443,9 +443,26 @@ export const useChatStore = create<ChatStore>()(
                         : {
                             ...m,
                             thinkingMode: 'tool' as const,
-                            toolActivity: [...(m.toolActivity ?? []), { name: toolName, done: false }],
+                            toolActivity: [...(m.toolActivity ?? []), { name: toolName, done: false, input }],
                           },
                     );
+                    return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
+                  });
+                },
+                onToolResult: (toolName, _input, result, isError, durationMs) => {
+                  set((s) => {
+                    const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) => {
+                      if (m.id !== assistantId) return m;
+                      const activity = [...(m.toolActivity ?? [])];
+                      // 从后往前找最近一个同名且未完成的条目，标记为完成并附上结果
+                      for (let i = activity.length - 1; i >= 0; i--) {
+                        if (activity[i].name === toolName && !activity[i].done) {
+                          activity[i] = { ...activity[i], done: true, result, isError, durationMs };
+                          break;
+                        }
+                      }
+                      return { ...m, toolActivity: activity };
+                    });
                     return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
                   });
                 },

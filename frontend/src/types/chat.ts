@@ -14,6 +14,10 @@ export type MessageStatus = 'pending' | 'streaming' | 'done' | 'error';
 export type ToolActivity = {
   name: string;
   done: boolean;
+  input?: Record<string, unknown>;
+  result?: string;
+  isError?: boolean;
+  durationMs?: number;
 };
 
 export type ThinkingMode = 'normal' | 'deep' | 'tool';

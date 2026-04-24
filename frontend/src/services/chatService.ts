@@ -8,10 +8,13 @@ export type SessionMessagesResponse = {
 };
 
 type StreamHandlers = {
+  onConversationStart?: (sessionId: string, message: string) => void;
   onMessage: (delta: string) => void;
-  onThinkingStart?: () => void;   // 新一轮思考开始（工具循环每轮触发）
+  onThinkingStart?: () => void;
+  onThinkingStop?: (durationMs: number) => void;
   onThinking?: (delta: string) => void;
-  onToolUse?: (toolName: string) => void;
+  onToolStart?: (toolName: string, input: Record<string, unknown>) => void;
+  onToolResult?: (toolName: string, input: Record<string, unknown>, result: string, isError: boolean, durationMs: number) => void;
   onDone: () => void;
   onError: (msg: string) => void;
 };
@@ -53,12 +56,34 @@ function parseBlock(block: string, handlers: StreamHandlers): void {
     }
   }
   const data = dataLines.join('\n');
-  if (eventType === 'message') handlers.onMessage(data);
+  // 所有事件的 data 均为 JSON，统一解析后分发
+  const safeJson = (): Record<string, unknown> => {
+    try { return JSON.parse(data) as Record<string, unknown>; } catch { return {}; }
+  };
+  if (eventType === 'conversation') {
+    const d = safeJson();
+    handlers.onConversationStart?.(String(d.session_id ?? ''), String(d.message ?? ''));
+  }
+  else if (eventType === 'message') handlers.onMessage(String(safeJson().text ?? data));
   else if (eventType === 'thinking_start') handlers.onThinkingStart?.();
-  else if (eventType === 'thinking') handlers.onThinking?.(data);
-  else if (eventType === 'tool_use') handlers.onToolUse?.(data);
+  else if (eventType === 'thinking_stop') handlers.onThinkingStop?.((safeJson().duration_ms as number) ?? 0);
+  else if (eventType === 'thinking') handlers.onThinking?.(String(safeJson().text ?? data));
+  else if (eventType === 'tool_start') {
+    const d = safeJson();
+    handlers.onToolStart?.(String(d.tool ?? ''), (d.input as Record<string, unknown>) ?? {});
+  }
+  else if (eventType === 'tool_result') {
+    const d = safeJson();
+    handlers.onToolResult?.(
+      String(d.tool ?? ''),
+      (d.input as Record<string, unknown>) ?? {},
+      String(d.result ?? ''),
+      Boolean(d.is_error),
+      Number(d.duration_ms ?? 0),
+    );
+  }
   else if (eventType === 'done') handlers.onDone();
-  else if (eventType === 'error') handlers.onError(data || '流式请求失败');
+  else if (eventType === 'error') handlers.onError(String(safeJson().message ?? data) || '流式请求失败');
 }
 
 export async function sendChatStream(
@@ -97,10 +122,13 @@ export async function sendChatStream(
   const isAborted = () => signal?.aborted ?? false;
 
   const patchedHandlers: StreamHandlers = {
+    onConversationStart: (sid, msg) => { if (!isAborted()) handlers.onConversationStart?.(sid, msg); },
     onMessage: (d) => { if (!isAborted()) handlers.onMessage(d); },
     onThinkingStart: () => { if (!isAborted()) handlers.onThinkingStart?.(); },
+    onThinkingStop: (ms) => { if (!isAborted()) handlers.onThinkingStop?.(ms); },
     onThinking: (d) => { if (!isAborted()) handlers.onThinking?.(d); },
-    onToolUse: (d) => { if (!isAborted()) handlers.onToolUse?.(d); },
+    onToolStart: (name, input) => { if (!isAborted()) handlers.onToolStart?.(name, input); },
+    onToolResult: (name, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, input, result, isError, durationMs); },
     onDone: () => {
       if (isAborted()) return;
       doneCalled = true;

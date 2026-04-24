@@ -1,6 +1,8 @@
 """Chat API endpoints."""
 
 import asyncio
+import json
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
 from uuid import UUID, uuid4
@@ -425,6 +427,12 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
             request.enable_web,
             request.model,
         )
+        # 首帧：告知客户端会话上下文和用户问题
+        yield {"event": "conversation", "data": json.dumps(
+            {"session_id": str(session_id), "message": request.message,
+             "created_at": datetime.now(UTC).isoformat()},
+            ensure_ascii=False,
+        )}
         try:
             inject_system = await _build_system_prompt(
                 skill_id=request.skill_id,
@@ -487,36 +495,55 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                         if event.event_type == StreamEventType.ROUND_START:
                             # 新一轮开始：上一轮缓存的文本必然属于工具轮，发为 thinking
                             for text in round_text_buffer:
-                                yield {"event": "thinking", "data": text}
+                                yield {"event": "thinking", "data": json.dumps({"text": text}, ensure_ascii=False)}
                             round_text_buffer = []
                             in_tool_round = False
                             round_count = int(event.metadata.get("round", round_count + 1))
-                            yield {"event": "thinking_start", "data": str(event.metadata.get("round", 1))}  # noqa: E501
+                            yield {"event": "thinking_start", "data": json.dumps({"round": round_count})}
                         elif event.event_type == StreamEventType.TEXT_DELTA and event.content:
                             if in_tool_round:
                                 # 本轮已确认调用工具，文本为旁白，直接发为 thinking
-                                yield {"event": "thinking", "data": event.content}
+                                yield {"event": "thinking", "data": json.dumps({"text": event.content}, ensure_ascii=False)}
                             else:
                                 # 尚不确定本轮是否调用工具，先缓存
                                 round_text_buffer.append(event.content)
                         elif event.event_type == StreamEventType.THINKING_DELTA:
-                            yield {"event": "thinking", "data": event.content}
+                            yield {"event": "thinking", "data": json.dumps({"text": event.content}, ensure_ascii=False)}
+                        elif event.event_type == StreamEventType.THINKING_STOP:
+                            yield {"event": "thinking_stop", "data": json.dumps(
+                                {"duration_ms": event.metadata.get("duration_ms", 0)},
+                            )}
                         elif event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
                             # 本轮确认有工具调用，将缓存文本标记为 thinking
                             if not in_tool_round:
                                 for text in round_text_buffer:
-                                    yield {"event": "thinking", "data": text}
+                                    yield {"event": "thinking", "data": json.dumps({"text": text}, ensure_ascii=False)}
                                 round_text_buffer = []
                                 in_tool_round = True
-                            yield {"event": "tool_use", "data": event.tool_call.name}
+                            yield {"event": "tool_start", "data": json.dumps(
+                                {"tool": event.tool_call.name, "input": event.tool_call.arguments},
+                                ensure_ascii=False, default=str,
+                            )}
+                        elif event.event_type == StreamEventType.TOOL_RESULT:
+                            yield {"event": "tool_result", "data": json.dumps(
+                                {
+                                    "tool": event.metadata.get("tool", ""),
+                                    "input": event.metadata.get("input", {}),
+                                    "result": event.metadata.get("result", ""),
+                                    "is_error": event.metadata.get("is_error", False),
+                                    "duration_ms": event.metadata.get("duration_ms", 0),
+                                },
+                                ensure_ascii=False, default=str,
+                            )}
                     # 循环结束：缓存残留的文本来自最终无工具轮，即 AI 的最终回答
                     for text in round_text_buffer:
-                        yield {"event": "message", "data": text}
+                        yield {"event": "message", "data": json.dumps({"text": text}, ensure_ascii=False)}
 
                     safe_messages = _strip_dangling_tool_calls(session.get_messages())
                     if _needs_summary_fallback(safe_messages):
                         hit_iteration_limit = (
-                            round_count >= tool_loop.max_iterations
+                            not tool_loop.unlimited
+                            and round_count >= tool_loop.max_iterations
                             and safe_messages
                             and safe_messages[-1].role == MessageRole.TOOL
                         )
@@ -538,7 +565,7 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                                 and event.content
                             ):
                                 summary_text += event.content
-                                yield {"event": "message", "data": event.content}
+                                yield {"event": "message", "data": json.dumps({"text": event.content}, ensure_ascii=False)}
                         if summary_text.strip():
                             session.add_message(
                                 Message(role=MessageRole.ASSISTANT, content=summary_text)
@@ -547,9 +574,9 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                             # 总结收尾也未产生有效内容（通常因上下文过长），提示用户继续
                             hint = "信息量较大，本轮分析已暂停。会话已保存，请发送「继续」让 AI 继续完成分析。"
                             session.add_message(Message(role=MessageRole.ASSISTANT, content=hint))
-                            yield {"event": "message", "data": hint}
+                            yield {"event": "message", "data": json.dumps({"text": hint}, ensure_ascii=False)}
                     logger.info("stream 完成(工具路径): session=%s, rounds=%d", session_id, round_count)
-                    yield {"event": "done", "data": "[DONE]"}
+                    yield {"event": "done", "data": "{}"}
                 finally:
                     await _save_short_term_safe(session_id, session.get_messages())
 
@@ -566,18 +593,18 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                     **llm_kwargs,
                 ):
                     if event.event_type == StreamEventType.TEXT_DELTA:
-                        yield {"event": "message", "data": event.content}
+                        yield {"event": "message", "data": json.dumps({"text": event.content}, ensure_ascii=False)}
                     elif event.event_type == StreamEventType.THINKING_DELTA:
-                        yield {"event": "thinking", "data": event.content}
+                        yield {"event": "thinking", "data": json.dumps({"text": event.content}, ensure_ascii=False)}
                     elif event.event_type == StreamEventType.DONE:
                         logger.info("stream 完成(普通路径): session=%s", session_id)
-                        yield {"event": "done", "data": "[DONE]"}
+                        yield {"event": "done", "data": "{}"}
 
         except Exception as e:
             logger.exception("stream 异常: session=%s", session_id)
             detail = str(e)
             if e.__cause__ is not None:
                 detail = f"{detail} — {e.__cause__!s}"
-            yield {"event": "error", "data": detail}
+            yield {"event": "error", "data": json.dumps({"message": detail}, ensure_ascii=False)}
 
     return EventSourceResponse(event_generator())

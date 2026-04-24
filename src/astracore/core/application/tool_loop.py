@@ -1,6 +1,7 @@
 """Tool loop use case implementation."""
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -30,20 +31,34 @@ class ToolLoopUseCase:
         self.max_tool_result_chars = max_tool_result_chars
         self.tool_timeout_s = tool_timeout_s
 
+    @property
+    def unlimited(self) -> bool:
+        """max_iterations == 0 时不限制工具调用轮次。"""
+        return self.max_iterations == 0
+
     def _build_tool_guidance(self, iteration: int) -> str:
         """每轮注入给 LLM 的工具使用进度提示（不存入 session）。"""
-        remaining = self.max_iterations - iteration + 1
-        lines = [
-            f"[工具调用进度] 第 {iteration}/{self.max_iterations} 轮，剩余 {remaining} 次机会。",
-            "工具使用规范：",
-            "- 搜索文件时避免 **/* 等宽泛模式，优先指定具体目录和文件扩展名",
-            "- 先用少量调用探索目录结构，再针对性深入",
-            "- 单次工具结果过长时，使用 offset/page 参数分页读取",
-        ]
-        if remaining == 1:
-            lines.append(
-                "⚠️ 本轮不提供工具调用，请基于以上已获取的工具结果直接给出最终回答。"
-            )
+        if self.unlimited:
+            lines = [
+                f"[工具调用进度] 第 {iteration} 轮（无轮次限制）。",
+                "工具使用规范：",
+                "- 搜索文件时避免 **/* 等宽泛模式，优先指定具体目录和文件扩展名",
+                "- 先用少量调用探索目录结构，再针对性深入",
+                "- 单次工具结果过长时，使用 offset/page 参数分页读取",
+            ]
+        else:
+            remaining = self.max_iterations - iteration + 1
+            lines = [
+                f"[工具调用进度] 第 {iteration}/{self.max_iterations} 轮，剩余 {remaining} 次机会。",
+                "工具使用规范：",
+                "- 搜索文件时避免 **/* 等宽泛模式，优先指定具体目录和文件扩展名",
+                "- 先用少量调用探索目录结构，再针对性深入",
+                "- 单次工具结果过长时，使用 offset/page 参数分页读取",
+            ]
+            if remaining == 1:
+                lines.append(
+                    "⚠️ 本轮不提供工具调用，请基于以上已获取的工具结果直接给出最终回答。"
+                )
         return "\n".join(lines)
 
     def _inject_guidance(self, messages: list[Message], iteration: int) -> list[Message]:
@@ -98,9 +113,9 @@ class ToolLoopUseCase:
             tool_definitions = [t for t in tool_definitions if t["name"] in allowed_tools]
         iterations = 0
 
-        while iterations < self.max_iterations:
+        while self.unlimited or iterations < self.max_iterations:
             iterations += 1
-            is_last = (iterations == self.max_iterations)
+            is_last = (not self.unlimited) and (iterations == self.max_iterations)
             # 最后一轮不传工具，强制 LLM 给文本答案，避免产生无对应 tool_result 的 tool_use
             tools_for_llm = None if is_last else (tool_definitions if tool_definitions else None)
 
@@ -120,7 +135,7 @@ class ToolLoopUseCase:
 
             if not response.tool_calls:
                 break
-            if iterations >= self.max_iterations:
+            if not self.unlimited and iterations >= self.max_iterations:
                 break
 
             tool_results = []
@@ -190,9 +205,9 @@ class ToolLoopUseCase:
             tool_definitions = [t for t in tool_definitions if t["name"] in allowed_tools]
         iterations = 0
 
-        while iterations < self.max_iterations:
+        while self.unlimited or iterations < self.max_iterations:
             iterations += 1
-            is_last = (iterations == self.max_iterations)
+            is_last = (not self.unlimited) and (iterations == self.max_iterations)
             # 最后一轮不传工具，强制 LLM 给文本答案，避免产生无对应 tool_result 的 tool_use
             tools_for_llm = None if is_last else (tool_definitions if tool_definitions else None)
 
@@ -201,6 +216,7 @@ class ToolLoopUseCase:
                 event_type=StreamEventType.ROUND_START,
                 metadata={"round": iterations},
             )
+            round_start_time = time.monotonic()
 
             accumulated_content = ""
             accumulated_tool_calls = []
@@ -218,6 +234,12 @@ class ToolLoopUseCase:
                     accumulated_tool_calls.append(event.tool_call)
                 yield event
 
+            # 本轮 LLM 生成结束，告知前端耗时
+            yield StreamEvent(
+                event_type=StreamEventType.THINKING_STOP,
+                metadata={"duration_ms": int((time.monotonic() - round_start_time) * 1000)},
+            )
+
             session.add_message(
                 Message(
                     role=MessageRole.ASSISTANT,
@@ -228,22 +250,30 @@ class ToolLoopUseCase:
 
             if not accumulated_tool_calls:
                 break
-            if iterations >= self.max_iterations:
+            if not self.unlimited and iterations >= self.max_iterations:
                 break
 
             tool_results = []
             for tool_call in accumulated_tool_calls:
                 if not self.policy.check_security_policy(tool_call.name, tool_call.arguments):
+                    blocked = "Tool execution blocked by security policy"
+                    yield StreamEvent(
+                        event_type=StreamEventType.TOOL_RESULT,
+                        content=tool_call.name,
+                        metadata={"tool": tool_call.name, "input": tool_call.arguments,
+                                  "result": blocked, "is_error": True, "duration_ms": 0},
+                    )
                     tool_results.append(
                         ToolResult(
                             tool_call_id=tool_call.id,
                             name=tool_call.name,
-                            content="Tool execution blocked by security policy",
+                            content=blocked,
                             is_error=True,
                         )
                     )
                     continue
 
+                tool_start_time = time.monotonic()
                 try:
                     exec_result = await asyncio.wait_for(
                         self.tools.execute(
@@ -253,22 +283,44 @@ class ToolLoopUseCase:
                         timeout=self.tool_timeout_s,
                     )
                 except asyncio.TimeoutError:
+                    timeout_duration_ms = int((time.monotonic() - tool_start_time) * 1000)
+                    timeout_msg = (
+                        f"[超时] 工具 '{tool_call.name}' 执行超过 {self.tool_timeout_s:.0f}s，"
+                        "已中止。请换用更精确的参数重试。"
+                    )
+                    yield StreamEvent(
+                        event_type=StreamEventType.TOOL_RESULT,
+                        content=tool_call.name,
+                        metadata={"tool": tool_call.name, "input": tool_call.arguments,
+                                  "result": timeout_msg, "is_error": True,
+                                  "duration_ms": timeout_duration_ms},
+                    )
                     tool_results.append(
                         ToolResult(
                             tool_call_id=tool_call.id,
                             name=tool_call.name,
-                            content=f"[超时] 工具 '{tool_call.name}' 执行超过 {self.tool_timeout_s:.0f}s，已中止。请换用更精确的参数重试。",
+                            content=timeout_msg,
                             is_error=True,
                         )
                     )
                     continue
+
+                duration_ms = int((time.monotonic() - tool_start_time) * 1000)
+                content = self._truncate_tool_result(
+                    exec_result.output or exec_result.error or "Tool execution failed"
+                )
+                yield StreamEvent(
+                    event_type=StreamEventType.TOOL_RESULT,
+                    content=exec_result.tool_name,
+                    metadata={"tool": exec_result.tool_name, "input": tool_call.arguments,
+                              "result": content, "is_error": not exec_result.success,
+                              "duration_ms": duration_ms},
+                )
                 tool_results.append(
                     ToolResult(
                         tool_call_id=tool_call.id,
                         name=exec_result.tool_name,
-                        content=self._truncate_tool_result(
-                            exec_result.output or exec_result.error or "Tool execution failed"
-                        ),
+                        content=content,
                         is_error=not exec_result.success,
                     )
                 )

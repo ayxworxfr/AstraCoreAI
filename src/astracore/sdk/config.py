@@ -84,7 +84,7 @@ class AgentConfig(BaseModel):
     """Agent / tool-loop behavior configuration."""
 
     max_tool_result_chars: int = Field(default=20_000, ge=100)
-    max_tool_iterations: int = Field(default=10, ge=1, le=50)
+    max_tool_iterations: int = Field(default=10, ge=0)  # 0 = 不限轮次
     tool_timeout_s: float = Field(default=120.0, ge=1.0)
 
 
