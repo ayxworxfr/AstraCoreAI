@@ -12,6 +12,8 @@ from astracore.runtime.policy.engine import PolicyEngine
 
 
 class ChatUseCase:
+    _ANTHROPIC_BLOCKS_KEY = "anthropic_content_blocks"
+
     """Core chat use case with streaming support."""
 
     def __init__(
@@ -91,6 +93,7 @@ class ChatUseCase:
 
         accumulated_content = ""
         accumulated_tool_calls = []
+        assistant_metadata: dict[str, Any] = {}
         _saved = False
 
         try:
@@ -102,6 +105,10 @@ class ChatUseCase:
             ):
                 if event.event_type == StreamEventType.TEXT_DELTA and event.content:
                     accumulated_content += event.content
+                if event.event_type == StreamEventType.DONE:
+                    raw_blocks = event.metadata.get(self._ANTHROPIC_BLOCKS_KEY)
+                    if isinstance(raw_blocks, list) and raw_blocks:
+                        assistant_metadata[self._ANTHROPIC_BLOCKS_KEY] = raw_blocks
 
                 if event.tool_call:
                     accumulated_tool_calls.append(event.tool_call)
@@ -112,6 +119,7 @@ class ChatUseCase:
                 role=MessageRole.ASSISTANT,
                 content=accumulated_content,
                 tool_calls=accumulated_tool_calls,
+                metadata=assistant_metadata,
             )
             session.add_message(assistant_msg)
             await self._save_session(session)
@@ -125,6 +133,7 @@ class ChatUseCase:
                             role=MessageRole.ASSISTANT,
                             content=accumulated_content,
                             tool_calls=accumulated_tool_calls,
+                            metadata=assistant_metadata,
                         )
                     )
                 await self._save_session(session)

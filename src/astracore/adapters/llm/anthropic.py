@@ -11,6 +11,8 @@ logger = get_logger(__name__)
 
 
 class AnthropicAdapter(LLMAdapter):
+    _ANTHROPIC_BLOCKS_KEY = "anthropic_content_blocks"
+
     """Anthropic Claude LLM adapter."""
 
     def __init__(
@@ -84,6 +86,16 @@ class AnthropicAdapter(LLMAdapter):
                 continue
 
             # assistant 调用工具：content 是 text + tool_use 块列表
+            anthropic_blocks = msg.metadata.get(self._ANTHROPIC_BLOCKS_KEY)
+            if msg.role == MessageRole.ASSISTANT and isinstance(anthropic_blocks, list):
+                for block in anthropic_blocks:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_id = block.get("id")
+                        if isinstance(tool_id, str) and tool_id:
+                            known_tool_use_ids.add(tool_id)
+                converted.append({"role": "assistant", "content": anthropic_blocks})
+                continue
+
             if msg.has_tool_calls():
                 blocks: list[dict[str, Any]] = []
                 if msg.content:
@@ -215,8 +227,9 @@ class AnthropicAdapter(LLMAdapter):
                 "budget_tokens": thinking_budget,
             }
 
-        # index → {type, id?, name?, input_str?}
+        # index → {kind, ...}
         block_buffers: dict[int, dict[str, Any]] = {}
+        completed_blocks: list[tuple[int, dict[str, Any]]] = []
 
         async with client.messages.stream(**request_params) as stream:
             async for event in stream:
@@ -237,7 +250,16 @@ class AnthropicAdapter(LLMAdapter):
                             "input_str": "",
                         }
                     elif block_type == "thinking":
-                        block_buffers[idx] = {"kind": "thinking"}
+                        block_buffers[idx] = {
+                            "kind": "thinking",
+                            "thinking": "",
+                            "signature": "",
+                        }
+                    elif block_type == "text":
+                        block_buffers[idx] = {
+                            "kind": "text",
+                            "text": "",
+                        }
 
                 elif event.type == "content_block_delta":
                     delta = getattr(event, "delta", None)
@@ -247,15 +269,22 @@ class AnthropicAdapter(LLMAdapter):
                     idx = getattr(event, "index", 0)
 
                     if delta_type == "text_delta":
+                        if idx in block_buffers and block_buffers[idx].get("kind") == "text":
+                            block_buffers[idx]["text"] += getattr(delta, "text", "")
                         yield StreamEvent(
                             event_type=StreamEventType.TEXT_DELTA,
                             content=delta.text,
                         )
                     elif delta_type == "thinking_delta":
+                        if idx in block_buffers and block_buffers[idx].get("kind") == "thinking":
+                            block_buffers[idx]["thinking"] += getattr(delta, "thinking", "")
                         yield StreamEvent(
                             event_type=StreamEventType.THINKING_DELTA,
                             content=getattr(delta, "thinking", ""),
                         )
+                    elif delta_type == "signature_delta":
+                        if idx in block_buffers and block_buffers[idx].get("kind") == "thinking":
+                            block_buffers[idx]["signature"] += getattr(delta, "signature", "")
                     elif delta_type == "input_json_delta":
                         if idx in block_buffers and block_buffers[idx].get("kind") == "tool":
                             block_buffers[idx]["input_str"] += delta.partial_json
@@ -265,6 +294,17 @@ class AnthropicAdapter(LLMAdapter):
                     buf = block_buffers.pop(idx, None)
                     if buf and buf.get("kind") == "tool":
                         arguments = _json.loads(buf["input_str"]) if buf["input_str"] else {}
+                        completed_blocks.append(
+                            (
+                                idx,
+                                {
+                                    "type": "tool_use",
+                                    "id": buf["id"],
+                                    "name": buf["name"],
+                                    "input": arguments,
+                                },
+                            )
+                        )
                         yield StreamEvent(
                             event_type=StreamEventType.TOOL_CALL,
                             tool_call=ToolCall(
@@ -273,8 +313,31 @@ class AnthropicAdapter(LLMAdapter):
                                 arguments=arguments,
                             ),
                         )
+                    elif buf and buf.get("kind") == "thinking":
+                        block: dict[str, Any] = {
+                            "type": "thinking",
+                            "thinking": buf.get("thinking", ""),
+                        }
+                        signature = buf.get("signature", "")
+                        if signature:
+                            block["signature"] = signature
+                        completed_blocks.append((idx, block))
+                    elif buf and buf.get("kind") == "text":
+                        completed_blocks.append(
+                            (
+                                idx,
+                                {
+                                    "type": "text",
+                                    "text": buf.get("text", ""),
+                                },
+                            )
+                        )
 
-        yield StreamEvent(event_type=StreamEventType.DONE)
+        assistant_blocks = [block for _, block in sorted(completed_blocks, key=lambda item: item[0])]
+        yield StreamEvent(
+            event_type=StreamEventType.DONE,
+            metadata={self._ANTHROPIC_BLOCKS_KEY: assistant_blocks},
+        )
 
     async def count_tokens(self, messages: list[Message]) -> int:
         """Count tokens in messages."""
