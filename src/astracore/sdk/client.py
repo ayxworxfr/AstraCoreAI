@@ -20,7 +20,7 @@ from astracore.core.domain.message import Message
 from astracore.core.ports.llm import StreamEvent
 from astracore.core.ports.tool import ToolParameter
 from astracore.runtime.policy.engine import PolicyEngine
-from astracore.sdk.config import AstraCoreConfig
+from astracore.sdk.config import AstraCoreConfig, LLMProfileConfig
 
 
 class AstraCoreClient:
@@ -28,7 +28,7 @@ class AstraCoreClient:
 
     def __init__(self, config: AstraCoreConfig):
         self.config = config
-        self._llm = self._create_llm_adapter()
+        self._llm_adapters: dict[str, Any] = {}
         self._memory = HybridMemoryAdapter(
             redis_url=config.memory.redis_url,
             db_url=config.memory.db_url,
@@ -41,17 +41,8 @@ class AstraCoreClient:
         self._orchestrator = NativeWorkflowOrchestrator()
         self._policy = PolicyEngine()
 
-        self._chat_use_case = ChatUseCase(
-            llm_adapter=self._llm,
-            memory_adapter=self._memory,
-            policy_engine=self._policy,
-        )
-
-        self._tool_loop = ToolLoopUseCase(
-            llm_adapter=self._llm,
-            tool_adapter=self._tools,
-            policy_engine=self._policy,
-        )
+        self._chat_use_cases: dict[str, ChatUseCase] = {}
+        self._tool_loops: dict[str, ToolLoopUseCase] = {}
 
         self._memory_pipeline = MemoryPipeline(memory_adapter=self._memory)
 
@@ -59,46 +50,74 @@ class AstraCoreClient:
 
         self._agent_orchestration = AgentOrchestrationUseCase(orchestrator=self._orchestrator)
 
-    def _create_llm_adapter(self) -> Any:
-        """Create LLM adapter based on provider."""
-        if self.config.llm.provider == "anthropic":
+    def _create_llm_adapter(self, profile: LLMProfileConfig) -> Any:
+        """Create LLM adapter based on profile provider."""
+        if profile.provider == "anthropic":
             return AnthropicAdapter(
-                api_key=self.config.llm.api_key,
-                default_model=self.config.llm.model,
-                base_url=self.config.llm.base_url,
+                api_key=profile.api_key,
+                default_model=profile.model,
+                base_url=profile.base_url,
+                max_tokens=profile.max_tokens,
+                supports_temperature=profile.capabilities.temperature,
+                use_anthropic_blocks=profile.capabilities.anthropic_blocks,
             )
         return OpenAIAdapter(
-            api_key=self.config.llm.api_key,
-            default_model=self.config.llm.model,
-            base_url=self.config.llm.base_url,
+            api_key=profile.api_key,
+            default_model=profile.model,
+            base_url=profile.base_url,
+            max_tokens=profile.max_tokens,
         )
+
+    def _get_llm_adapter(self, profile_id: str | None = None) -> Any:
+        profile = self.config.llm.get_profile(profile_id)
+        if profile.id not in self._llm_adapters:
+            self._llm_adapters[profile.id] = self._create_llm_adapter(profile)
+        return self._llm_adapters[profile.id]
+
+    def _get_chat_use_case(self, profile_id: str | None = None) -> ChatUseCase:
+        profile = self.config.llm.get_profile(profile_id)
+        if profile.id not in self._chat_use_cases:
+            self._chat_use_cases[profile.id] = ChatUseCase(
+                llm_adapter=self._get_llm_adapter(profile.id),
+                memory_adapter=self._memory,
+                policy_engine=self._policy,
+            )
+        return self._chat_use_cases[profile.id]
+
+    def _get_tool_loop(self, profile_id: str | None = None) -> ToolLoopUseCase:
+        profile = self.config.llm.get_profile(profile_id)
+        if profile.id not in self._tool_loops:
+            self._tool_loops[profile.id] = ToolLoopUseCase(
+                llm_adapter=self._get_llm_adapter(profile.id),
+                tool_adapter=self._tools,
+                policy_engine=self._policy,
+            )
+        return self._tool_loops[profile.id]
 
     async def chat(
         self,
         message: str,
         session_id: UUID | None = None,
-        model: str | None = None,
+        model_profile: str | None = None,
     ) -> Message:
         """Send a chat message and get response."""
         session_id = session_id or uuid4()
-        return await self._chat_use_case.execute(
+        return await self._get_chat_use_case(model_profile).execute(
             session_id=session_id,
             user_message=message,
-            model=model,
         )
 
     async def chat_stream(
         self,
         message: str,
         session_id: UUID | None = None,
-        model: str | None = None,
+        model_profile: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Send a chat message and get streaming response."""
         session_id = session_id or uuid4()
-        async for event in self._chat_use_case.execute_stream(
+        async for event in self._get_chat_use_case(model_profile).execute_stream(
             session_id=session_id,
             user_message=message,
-            model=model,
         ):
             yield event
 

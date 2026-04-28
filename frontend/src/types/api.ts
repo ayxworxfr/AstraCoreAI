@@ -1,7 +1,7 @@
 export type ChatRequest = {
   message: string;
   session_id?: string;
-  model?: string;
+  model_profile?: string;
   temperature?: number;
   enable_thinking?: boolean;
   thinking_budget?: number;
@@ -15,6 +15,7 @@ export type ChatRequest = {
 export type ChatResponse = {
   session_id: string;
   message: string;
+  model_profile: string;
   model?: string;
   metadata?: Record<string, unknown>;
 };

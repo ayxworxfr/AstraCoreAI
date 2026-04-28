@@ -1,0 +1,26 @@
+llm:
+  default_profile: claude-sonnet
+  profiles:
+    - id: deepseek-chat
+      label: DeepSeek Chat
+      provider: anthropic
+      base_url: https://api.deepseek.com/anthropic
+      api_key_env: DEEPSEEK_API_KEY
+      model: deepseek-chat
+      max_tokens: 8192
+
+agent:
+  max_tool_result_chars: 20000
+  max_tool_iterations: 10
+  tool_timeout_s: 120
+
+memory:
+  redis_url: redis://redis:6379/0
+  db_url: sqlite+aiosqlite:////app/data/astracore.db
+
+retrieval:
+  collection_name: astracore
+  persist_directory: /app/data/chroma_db
+
+mcp:
+  servers: []

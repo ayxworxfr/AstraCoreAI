@@ -55,6 +55,7 @@ type ChatStore = {
   enableTools: boolean;
   enableWeb: boolean;
   activeSkillId: string | null;  // null = use default, 'none' = explicitly disabled, uuid = specific skill
+  activeModelId: string | null;  // null = use backend default model
   abortController: AbortController | null;
   sessionError: string | null;   // 当前会话错误，不持久化，刷新自动清除
 
@@ -71,6 +72,7 @@ type ChatStore = {
   setEnableTools: (value: boolean) => void;
   setEnableWeb: (value: boolean) => void;
   setActiveSkillId: (id: string | null) => void;
+  setActiveModelId: (id: string | null) => void;
   setSessionError: (msg: string | null) => void;
   deleteMessage: (conversationId: string, messageId: string) => void;
   sendMessage: (prompt: string) => Promise<void>;
@@ -100,24 +102,26 @@ export const useChatStore = create<ChatStore>()(
       enableTools: false,
       enableWeb: false,
       activeSkillId: null,
+      activeModelId: null,
       abortController: null,
       sessionError: null,
 
       createConversation: () => {
         // 新会话继承当前全局默认 skill（快照），后续更改不影响此会话
         const defaultSkillId = useSkillStore.getState().settings.default_skill_id || null;
-        const c: ConversationMeta = { ...buildConversation(), skillId: defaultSkillId };
+        const c: ConversationMeta = { ...buildConversation(), skillId: defaultSkillId, modelId: null };
         set((s) => ({
           conversations: sortConversations([c, ...s.conversations]),
           activeConversationId: c.id,
           activeSkillId: defaultSkillId,
+          activeModelId: null,
         }));
         return c.id;
       },
 
       switchConversation: (id) => {
         const conv = get().conversations.find((c) => c.id === id);
-        set({ activeConversationId: id, activeSkillId: conv?.skillId ?? null });
+        set({ activeConversationId: id, activeSkillId: conv?.skillId ?? null, activeModelId: conv?.modelId ?? null });
         // 若该会话消息未加载，异步从后端拉取
         if (!get().messagesByConversation[id]) {
           void get().loadMessages(id);
@@ -211,6 +215,16 @@ export const useChatStore = create<ChatStore>()(
           // 同步写入当前会话的独立 skill，使切换会话后仍能恢复
           conversations: s.conversations.map((c) =>
             c.id === activeConversationId ? { ...c, skillId: id } : c,
+          ),
+        }));
+      },
+      setActiveModelId: (id) => {
+        const { activeConversationId } = get();
+        set((s) => ({
+          activeModelId: id,
+          // 同步写入当前会话，使切换会话后仍能恢复
+          conversations: s.conversations.map((c) =>
+            c.id === activeConversationId ? { ...c, modelId: id } : c,
           ),
         }));
       },
@@ -325,7 +339,7 @@ export const useChatStore = create<ChatStore>()(
       },
 
       sendMessage: async (prompt) => {
-        const { activeConversationId, useStream, enableThinking, enableRag, enableTools, enableWeb, activeSkillId, conversations } = get();
+        const { activeConversationId, useStream, enableThinking, enableRag, enableTools, enableWeb, activeSkillId, activeModelId, conversations } = get();
         const trimmed = prompt.trim();
         const hasStreaming = (get().messagesByConversation[activeConversationId] ?? []).some(
           (m) => m.status === 'streaming',
@@ -423,6 +437,7 @@ export const useChatStore = create<ChatStore>()(
               {
                 message: trimmed,
                 session_id: activeConversationId,
+                model_profile: activeModelId ?? undefined,
                 enable_thinking: enableThinking,
                 enable_rag: enableRag,
                 use_tools: enableTools || enableWeb,
@@ -503,6 +518,7 @@ export const useChatStore = create<ChatStore>()(
             const res = await sendChatMessage({
               message: trimmed,
               session_id: activeConversationId,
+              model_profile: activeModelId ?? undefined,
               enable_rag: enableRag,
             });
             updateAssistant({ content: res.message || ASSISTANT_FALLBACK_TEXT.empty, status: 'done' });
@@ -547,6 +563,7 @@ export const useChatStore = create<ChatStore>()(
         enableTools: s.enableTools,
         enableWeb: s.enableWeb,
         activeSkillId: s.activeSkillId,
+        activeModelId: s.activeModelId,
         // sessionError / messagesByConversation / 分页状态故意不持久化
       }),
     },

@@ -7,6 +7,8 @@ export type ConversationMeta = {
   pinned: boolean;
   /** 会话独立 skill：undefined = 使用全局默认，'none' = 禁用，uuid = 指定 skill */
   skillId?: string | null;
+  /** 会话独立模型 Profile：null/undefined = 使用后端默认，string = 指定 profile id */
+  modelId?: string | null;
 };
 
 export type MessageStatus = 'pending' | 'streaming' | 'done' | 'error';

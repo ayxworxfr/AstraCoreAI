@@ -7,7 +7,7 @@
 - 让不同业务团队可以快速接入并复用统一 AI 能力
 - 保持框架核心稳定，避免被具体 Provider 或编排框架绑定
 - 同时提供 SDK 形态与可运行服务骨架（FastAPI）
-- 一次性覆盖 full stack 能力：核心对话、工具调用、记忆、RAG、多 Agent
+- 一次性覆盖 full stack 能力：核心对话、多模型 Profile、工具调用、记忆、RAG、多 Agent
 
 非目标（当前阶段不做）：
 
@@ -96,7 +96,7 @@ flowchart TD
 
 对外部依赖的实现层。
 
-- Provider：Claude/OpenAI 适配
+- Provider：Claude / OpenAI 兼容协议适配，按模型 Profile 动态选择
 - 存储：PostgreSQL（持久化）+ Redis（短期上下文与缓存）
 - 检索：向量库适配（支持后续替换）
 - 接口：FastAPI 网关、SSE 输出、鉴权与限流中间件
@@ -126,6 +126,7 @@ flowchart TD
 - 工具返回统一事件结构，便于前端与审计消费
 - 对失败工具进行可配置重试或降级
 - 可插入人工确认节点（高风险工具执行前）
+- 支持按所选模型能力决定是否启用工具调用，避免不支持工具的 profile 进入 Tool Loop
 
 ### 5.3 Memory 系统
 
@@ -155,7 +156,15 @@ flowchart TD
 - **三层系统提示**：Skill 专属提示 → 全局指令 → RAG 上下文，按顺序拼接注入
 - **用户设置**：默认 Skill（对话自动激活）+ 全局指令（所有对话追加）
 - **运行时参数**：Temperature、RAG top_k、对话上下文长度（context_max_messages）— 存储在 `UserSettingsRow` 键值表，按请求读取，无需重启
-- **系统信息 API**：`GET /api/v1/system/` 返回 LLM Provider/Model/base_url 与 Tavily 状态，供前端只读展示
+- **系统信息 API**：`GET /api/v1/system/` 返回 LLM profiles、模型能力、MCP server 与 Tavily 状态，供前端只读展示
+
+### 5.7 LLM Profile 注册表
+
+- **结构化配置**：`config/config.yaml` 保存 `llm.default_profile`、`llm.profiles`、`mcp.servers`、记忆与检索配置；`.env` 只保存密钥。
+- **Profile 路由**：Chat API 和 SDK 使用 `model_profile` 指定 profile id，不直接暴露上游模型名。
+- **适配器缓存**：Service 与 SDK 按 profile id 缓存 LLMAdapter、ChatUseCase 和 ToolLoopUseCase，避免重复初始化。
+- **能力推导**：`model_capabilities.py` 按 `provider`、`model`、`base_url` 内置推导 `tools`、`thinking`、`temperature`、`anthropic_blocks`。
+- **能力覆盖**：只有代理或新模型行为与内置表不一致时，才在 YAML 的 `capabilities` 写局部覆盖。
 
 ## 6. 与 LangGraph 的兼容策略
 
@@ -198,16 +207,15 @@ python_ai_framework/
     multi_agent/
 ```
 
-## 8. 配置模型（建议）
+## 8. 配置模型
 
-- `providers`: 多 Provider 列表与路由策略
-- `policy`: token、超时、重试、降级规则
-- `memory`: Redis/PostgreSQL 连接与保留策略
-- `rag`: 向量库、检索参数、重排参数
-- `agents`: 角色定义、协作模板、审批策略
-- `observability`: 日志级别、指标上报、追踪开关
+- `llm`: 多模型 Profile 注册表，包含默认 profile、连接信息和可选能力覆盖。
+- `agent`: 工具循环最大轮次、工具结果截断、工具调用超时等 Agent 运行参数。
+- `memory`: Redis/SQLite/PostgreSQL 连接与保留策略。
+- `retrieval`: 向量库 collection、持久化路径与检索参数。
+- `mcp`: 内置 filesystem/shell 与自定义 MCP server 配置。
 
-配置驱动优先，避免硬编码行为。
+配置驱动优先，密钥只通过 `.env` 注入，结构化配置统一放在 `config/` 目录。
 
 ## 9. 数据流（核心对话路径）
 
@@ -222,12 +230,12 @@ sequenceDiagram
     participant LLM as LLMAdapter
     participant TOOL as ToolAdapter
 
-    C->>API: ChatRequest
+    C->>API: ChatRequest(model_profile)
     API->>APP: execute(request)
     APP->>POL: applyPolicy(request)
     APP->>MEM: loadContext(session)
     APP->>RAG: retrieveIfNeeded(query)
-    APP->>LLM: generateStream(context)
+    APP->>LLM: generateStream(context, selected_profile)
     LLM-->>APP: streamEvent(text/tool_call)
     APP->>TOOL: execute(tool_call)
     TOOL-->>APP: tool_result
@@ -264,7 +272,7 @@ sequenceDiagram
 
 - full stack 并行复杂度高：采用统一 Ports 和策略层降低耦合
 - 多能力并发开发冲突：以领域模型和契约测试做“先行约束”
-- Provider 差异导致行为不一致：通过标准化响应事件与降级策略收敛
+- Provider 差异导致行为不一致：通过 Profile 注册表、能力推导和标准化响应事件收敛
 - 后续引入 LangGraph 变更风险：提前锁定编排抽象边界
 
 ---

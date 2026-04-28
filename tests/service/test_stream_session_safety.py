@@ -5,13 +5,18 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 from fastapi import FastAPI
-from starlette.requests import Request
 from sqlalchemy.pool import NullPool
+from starlette.requests import Request
 
 from astracore.adapters.db.session import get_engine
 from astracore.core.domain.message import Message, MessageRole, ToolCall, ToolResult
 from astracore.core.ports.llm import LLMResponse, StreamEvent, StreamEventType
-from astracore.service.api.chat import ChatRequest, _run_with_tools, _save_short_term_safe, chat_stream
+from astracore.service.api.chat import (
+    ChatRequest,
+    _run_with_tools,
+    _save_short_term_safe,
+    chat_stream,
+)
 
 
 async def test_save_short_term_safe_swallows_cancelled_error(monkeypatch) -> None:
@@ -49,7 +54,7 @@ async def test_run_with_tools_auto_summarizes_when_tool_loop_ends_without_final_
     fake_memory = AsyncMock()
     fake_memory.load_short_term.return_value = []
 
-    async def fake_execute_with_tools(session, model=None):
+    async def fake_execute_with_tools(session, **kwargs):
         session.add_message(
             Message(role=MessageRole.ASSISTANT, content="", tool_calls=[tool_call])
         )
@@ -75,8 +80,8 @@ async def test_run_with_tools_auto_summarizes_when_tool_loop_ends_without_final_
     fake_llm.generate.return_value = LLMResponse(content="这是自动补出来的总结", model="test")
 
     monkeypatch.setattr("astracore.service.api.chat._get_memory_adapter", lambda: fake_memory)
-    monkeypatch.setattr("astracore.service.api.chat._get_tool_loop_use_case", lambda _: fake_tool_loop)
-    monkeypatch.setattr("astracore.service.api.chat._get_llm_adapter", lambda: fake_llm)
+    monkeypatch.setattr("astracore.service.api.chat._get_tool_loop_use_case", lambda *_: fake_tool_loop)
+    monkeypatch.setattr("astracore.service.api.chat._get_llm_adapter", lambda *_: fake_llm)
     monkeypatch.setattr("astracore.service.api.chat._get_setting_value", AsyncMock(return_value=""))
 
     result = await _run_with_tools(
@@ -100,6 +105,7 @@ async def test_chat_stream_auto_summarizes_when_tool_loop_stops_at_tool_results(
 
     class FakeToolLoop:
         max_iterations = 1
+        unlimited = False
 
         async def execute_stream_with_tools(self, session, **kwargs):
             yield StreamEvent(
@@ -142,8 +148,8 @@ async def test_chat_stream_auto_summarizes_when_tool_loop_stops_at_tool_results(
     fake_llm = FakeSummaryLLM()
 
     monkeypatch.setattr("astracore.service.api.chat._get_memory_adapter", lambda: fake_memory)
-    monkeypatch.setattr("astracore.service.api.chat._get_tool_loop_use_case", lambda _: FakeToolLoop())
-    monkeypatch.setattr("astracore.service.api.chat._get_llm_adapter", lambda: fake_llm)
+    monkeypatch.setattr("astracore.service.api.chat._get_tool_loop_use_case", lambda *_: FakeToolLoop())
+    monkeypatch.setattr("astracore.service.api.chat._get_llm_adapter", lambda *_: fake_llm)
     monkeypatch.setattr("astracore.service.api.chat._get_setting_value", AsyncMock(return_value=""))
 
     app = FastAPI()
@@ -151,50 +157,11 @@ async def test_chat_stream_auto_summarizes_when_tool_loop_stops_at_tool_results(
     response = await chat_stream(ChatRequest(message="帮我分析一下", use_tools=True), request)
     events = [event async for event in response.body_iterator]
 
-    assert {"event": "message", "data": "基于工具结果的最终总结"} in events
-    assert events[-1] == {"event": "done", "data": "[DONE]"}
+    assert {"event": "message", "data": '{"text": "基于工具结果的最终总结"}'} in events
+    assert events[-1] == {"event": "done", "data": "{}"}
     assert any(
         "已达到工具循环最大轮次" in message.content
         for message in fake_llm.calls[0]
         if message.role == MessageRole.SYSTEM
     )
 
-
-async def test_chat_stream_emits_error_when_tool_loop_stream_stalls(monkeypatch) -> None:
-    """工具流式长时间无新事件时，应返回 error 事件而不是一直挂起。"""
-
-    fake_memory = AsyncMock()
-    fake_memory.load_short_term.return_value = []
-
-    class HangingToolLoop:
-        max_iterations = 1
-
-        async def execute_stream_with_tools(self, session, **kwargs):
-            _ = session, kwargs
-            yield StreamEvent(
-                event_type=StreamEventType.ROUND_START,
-                metadata={"round": 1},
-            )
-            await asyncio.Event().wait()
-
-    monkeypatch.setattr("astracore.service.api.chat._get_memory_adapter", lambda: fake_memory)
-    monkeypatch.setattr(
-        "astracore.service.api.chat._get_tool_loop_use_case",
-        lambda _: HangingToolLoop(),
-    )
-    monkeypatch.setattr(
-        "astracore.service.api.chat._get_stream_idle_timeout_seconds",
-        lambda: 0.01,
-    )
-    monkeypatch.setattr("astracore.service.api.chat._get_setting_value", AsyncMock(return_value=""))
-
-    app = FastAPI()
-    request = Request({"type": "http", "app": app, "headers": []})
-    response = await chat_stream(ChatRequest(message="帮我分析一下", use_tools=True), request)
-    events = [event async for event in response.body_iterator]
-
-    assert {"event": "thinking_start", "data": "1"} in events
-    assert any(
-        event["event"] == "error" and "流式响应超时" in event["data"]
-        for event in events
-    )

@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { Button, Input, Flex, Typography } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import { Button, Input, Flex, Modal, Typography } from 'antd';
 import { EditOutlined, RocketOutlined } from '@ant-design/icons';
 import { Conversations } from '@ant-design/x';
 import type { ConversationsProps } from '@ant-design/x';
+import type { InputRef } from 'antd/es/input';
 import { useChatStore } from '../../stores/chatStore';
 
 type ConversationItem = NonNullable<ConversationsProps['items']>[number];
@@ -37,6 +38,22 @@ export default function ConversationSidebar(): JSX.Element {
   } = useChatStore();
 
   const [search, setSearch] = useState('');
+  const [renameTargetId, setRenameTargetId] = useState<string | null>(null);
+  const [renameTitle, setRenameTitle] = useState('');
+  const renameInputRef = useRef<InputRef>(null);
+
+  const renameTarget = renameTargetId
+    ? conversations.find((conversation) => conversation.id === renameTargetId)
+    : undefined;
+  const canSubmitRename = renameTitle.trim().length > 0;
+
+  useEffect(() => {
+    if (!renameTargetId) return;
+    window.setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 0);
+  }, [renameTargetId]);
 
   const filtered = search.trim()
     ? conversations.filter((c) => c.title.toLowerCase().includes(search.trim().toLowerCase()))
@@ -51,6 +68,23 @@ export default function ConversationSidebar(): JSX.Element {
 
   const handleActiveChange = (key: string) => {
     switchConversation(key);
+  };
+
+  const openRenameModal = (id: string) => {
+    const current = conversations.find((c) => c.id === id);
+    setRenameTargetId(id);
+    setRenameTitle(current?.title ?? '');
+  };
+
+  const closeRenameModal = () => {
+    setRenameTargetId(null);
+    setRenameTitle('');
+  };
+
+  const submitRename = () => {
+    if (!renameTargetId || !canSubmitRename) return;
+    renameConversation(renameTargetId, renameTitle.trim());
+    closeRenameModal();
   };
 
   return (
@@ -110,9 +144,7 @@ export default function ConversationSidebar(): JSX.Element {
                   const id = String(item.key);
                   if (key === 'pin') togglePin(id);
                   if (key === 'rename') {
-                    const current = conversations.find((c) => c.id === id);
-                    const newTitle = window.prompt('请输入新标题', current?.title ?? '');
-                    if (newTitle?.trim()) renameConversation(id, newTitle.trim());
+                    openRenameModal(id);
                   }
                   if (key === 'clear') clearConversation(id);
                   if (key === 'delete') deleteConversation(id);
@@ -122,6 +154,31 @@ export default function ConversationSidebar(): JSX.Element {
           />
         )}
       </div>
+      <Modal
+        title="重命名会话"
+        open={Boolean(renameTargetId)}
+        okText="保存"
+        cancelText="取消"
+        okButtonProps={{ disabled: !canSubmitRename }}
+        onOk={submitRename}
+        onCancel={closeRenameModal}
+        destroyOnHidden
+      >
+        <Flex vertical gap={8} style={{ paddingTop: 8 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+            给当前会话起一个更容易识别的名字。
+          </Typography.Text>
+          <Input
+            ref={renameInputRef}
+            value={renameTitle}
+            maxLength={24}
+            showCount
+            placeholder={renameTarget?.title || '请输入新标题'}
+            onChange={(event) => setRenameTitle(event.target.value)}
+            onPressEnter={submitRename}
+          />
+        </Flex>
+      </Modal>
     </Flex>
   );
 }

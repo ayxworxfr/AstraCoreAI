@@ -17,6 +17,7 @@ import {
 import { Flex, Typography, Alert, Avatar, Button, Collapse, Tooltip, Popover, theme } from 'antd';
 import { useChatStore } from '../../stores/chatStore';
 import MarkdownContent from './MarkdownContent';
+import ModelSelector from './ModelSelector';
 import SkillSelector from '../skills/SkillSelector';
 import type { ChatMessage, ThinkingMode, ToolActivity } from '../../types/chat';
 
@@ -826,6 +827,7 @@ export default function ChatMain(): JSX.Element {
             </Tooltip>
 
             <SkillSelector disabled={isStreaming} />
+            <ModelSelector disabled={isStreaming} />
           </Flex>
 
           <Sender

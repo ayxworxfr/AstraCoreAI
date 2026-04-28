@@ -1,0 +1,57 @@
+llm:
+  default_profile: deepseek-chat
+  profiles:
+    - id: deepseek-chat
+      label: DeepSeek Chat
+      provider: anthropic
+      base_url: https://api.deepseek.com/anthropic
+      api_key_env: DEEPSEEK_API_KEY
+      model: deepseek-chat
+      max_tokens: 8192
+
+    - id: claude-sonnet
+      label: Claude Sonnet
+      provider: anthropic
+      base_url: https://llm-proxy.oa.com/aws
+      api_key_env: ANTHROPIC_PROXY_API_KEY
+      model: claude-sonnet-4-6
+      max_tokens: 8192
+
+    - id: claude-opus
+      label: Claude Opus
+      provider: anthropic
+      base_url: https://llm-proxy.oa.com/aws
+      api_key_env: ANTHROPIC_PROXY_API_KEY
+      model: claude-opus-4-7
+      max_tokens: 8192
+
+    - id: glm-5-1
+      label: GLM 5.1
+      provider: deepseek
+      base_url: https://llm-proxy.oa.com/private/v1
+      api_key_env: ANTHROPIC_PROXY_API_KEY
+      model: glm-5.1
+      max_tokens: 8192
+
+agent:
+  max_tool_result_chars: 20000
+  max_tool_iterations: 7
+  tool_timeout_s: 60
+
+memory:
+  redis_url: redis://localhost:6379/0
+  db_url: sqlite+aiosqlite:///./astracore.db
+
+retrieval:
+  collection_name: astracore
+  persist_directory: ./chroma_db
+
+mcp:
+  servers:
+    - type: filesystem
+      paths:
+        - ~/develope
+
+    - type: shell
+      allow_dirs:
+        - ~/develope

@@ -7,7 +7,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 ## 特性
 
 - **Clean Architecture**：Ports & Adapters 模式，Domain 层零外部依赖
-- **多 Provider LLM 支持**：Anthropic Claude（流式 tool args 正确累积）、OpenAI GPT，易于扩展
+- **多模型 Profile 支持**：通过 `config/config.yaml` 管理多个模型 profile，内置能力注册表自动推导 thinking/tools/temperature/anthropic_blocks
 - **工具执行**：原生工具并行/串行调用，带安全白名单与 XSS 检测
 - **MCP 工具集成**：通过 fastmcp 接入任意 MCP 服务器（内置 filesystem、shell，支持自定义）
 - **健壮工具循环**：悬空 tool_use 清理、总结收尾兜底、空响应引导续接、单次工具超时隔离、中间轮旁白与最终答案自动分流
@@ -17,7 +17,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 - **多 Agent 编排**：Planner/Executor/Reviewer 协作 + Workflow checkpoint 持久化
 - **策略引擎**：tenacity retry + asyncio timeout 实际生效，Token 预算 O(n) 截断
 - **双形态交付**：SDK 嵌入 + FastAPI 服务 HTTP 访问
-- **前端 SPA 控制台**：React + Vite + Zustand 会话式 Playground，含 Skill 管理、RAG 调试、系统运行参数配置
+- **前端 SPA 控制台**：React + Vite + Zustand 会话式 Playground，含模型 Profile 切换、Skill 管理、RAG 调试、系统运行参数配置
 - **安全基线**：CORS 环境变量白名单、输入验证预编译、敏感字段脱敏
 
 ## 测试状态
@@ -83,20 +83,13 @@ hatch run pip install -e ".[anthropic,openai,dev]"
 ```python
 import asyncio
 from astracore.sdk import AstraCoreClient, AstraCoreConfig
-from astracore.sdk.config import LLMConfig
-
 async def main():
-    config = AstraCoreConfig(
-        llm=LLMConfig(
-            provider="anthropic",
-            api_key="your-api-key",
-        )
-    )
-
+    # 默认读取 config/config.yaml，并通过 .env 中的 api_key_env 解析密钥
+    config = AstraCoreConfig()
     client = AstraCoreClient(config)
 
     # 简单对话
-    response = await client.chat("你好，你是谁？")
+    response = await client.chat("你好，你是谁？", model_profile="claude-sonnet")
     print(response.content)
 
     # 流式对话
@@ -154,8 +147,14 @@ src/astracore/
 │   ├── api/             # FastAPI 路由（Chat、RAG、Skills、Settings、System）
 │   └── middleware/      # HTTP 中间件
 └── sdk/
-    ├── client.py        # 主 SDK 客户端
-    └── config.py        # Pydantic v2 SettingsConfigDict 配置
+    ├── client.py              # 主 SDK 客户端
+    ├── config.py              # Pydantic v2 YAML 配置模型
+    └── model_capabilities.py  # 内置模型能力注册表
+
+config/
+├── config.yaml          # 本地开发结构化配置
+├── config.example.yaml  # 示例配置
+└── config.docker.yaml   # Docker 部署配置
 
 frontend/
 ├── src/app             # 应用入口与路由
@@ -167,38 +166,36 @@ frontend/
 
 ## 配置
 
-创建 `.env` 文件（参考 `.env.example`）：
+结构化配置放在 `config/config.yaml`（可从 `config/config.example.yaml` 复制），`.env` 只放密钥：
+
+```yaml
+llm:
+  default_profile: claude-sonnet
+  profiles:
+    - id: claude-sonnet
+      label: Claude Sonnet
+      provider: anthropic
+      base_url: https://api.anthropic.com
+      api_key_env: ANTHROPIC_API_KEY
+      model: claude-sonnet-4-6
+
+mcp:
+  servers:
+    - type: filesystem
+      paths:
+        - D:/project
+    - type: shell
+      allow_dirs:
+        - D:/project
+```
 
 ```bash
-# LLM 配置（provider: anthropic | deepseek）
-ASTRACORE__LLM__PROVIDER=anthropic
-ASTRACORE__LLM__API_KEY=sk-ant-xxx
-ASTRACORE__LLM__MODEL=claude-sonnet-4-6
-
-# Agent / 工具循环配置
-ASTRACORE__AGENT__MAX_TOOL_RESULT_CHARS=6000   # 单条工具结果截断上限，防止上下文爆炸
-ASTRACORE__AGENT__MAX_TOOL_ITERATIONS=7         # 工具循环最大轮次
-ASTRACORE__AGENT__TOOL_TIMEOUT_S=60             # 单次工具调用超时（秒）
-
-# 记忆配置
-ASTRACORE__MEMORY__REDIS_URL=redis://localhost:6379/0
-ASTRACORE__MEMORY__DB_URL=sqlite+aiosqlite:///./astracore.db
-
-# 检索配置
-ASTRACORE__RETRIEVAL__COLLECTION_NAME=astracore
-ASTRACORE__RETRIEVAL__PERSIST_DIRECTORY=./chroma_db
-
-# CORS（生产环境）
-ALLOWED_ORIGINS=http://localhost:5173,https://your-domain.com
-
-# Tavily 联网搜索（可选）
+# .env
+ANTHROPIC_API_KEY=sk-ant-xxx
 TAVILY_API_KEY=tvly-xxx
-
-# MCP 工具服务器（可选）
-# filesystem — 读写本地文件，需 Node.js
-# shell      — 在指定目录内执行受控 shell 命令
-ASTRACORE__MCP__SERVERS='[{"type":"filesystem","paths":["D:/project"]},{"type":"shell","allow_dirs":["D:/project"]}]'
 ```
+
+模型能力（工具调用、深度思考、temperature、Anthropic block 回放）由 `src/astracore/sdk/model_capabilities.py` 内置表自动推导。只有代理或新模型行为与内置表不一致时，才需要在 YAML 中写 `capabilities` 覆盖。
 
 ### MCP 服务器类型
 
@@ -246,8 +243,8 @@ make clean-rag    # 清空 ChromaDB 数据
 - **项目管理**：Hatch
 - **架构**：Clean Architecture + Ports & Adapters
 - **Web 框架**：FastAPI + uvicorn
-- **数据验证**：Pydantic 2.x（SettingsConfigDict + discriminated union）
-- **LLM Providers**：Anthropic Claude、OpenAI
+- **数据验证**：Pydantic 2.x（YAML 配置模型 + discriminated union）
+- **LLM Providers**：Anthropic Messages 协议、OpenAI 兼容协议（DeepSeek/GLM 等可通过 profile 接入）
 - **MCP**：fastmcp（Model Context Protocol 工具集成）
 - **存储**：Redis（短期记忆）、SQLite/aiosqlite（持久化）、PostgreSQL/asyncpg（长期存储）
 - **向量数据库**：ChromaDB
@@ -269,7 +266,7 @@ make clean-rag    # 清空 ChromaDB 数据
 ## 文件统计
 
 - **55 个 Python 源模块**：覆盖 Domain / Application / Ports / Adapters / Runtime / Service / SDK 全栈
-- **10 个测试文件，99 个测试**：单元测试全部通过（0.88s）
+- **测试覆盖**：覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略等核心链路
 - **4 个完整示例**：可直接运行的用例
 - **双形态交付**：SDK + Service 可用
 

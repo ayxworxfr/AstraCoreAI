@@ -26,6 +26,7 @@ class SkillResponse(BaseModel):
     description: str
     system_prompt: str
     is_builtin: bool
+    order: int
     created_at: datetime
     updated_at: datetime
 
@@ -49,6 +50,7 @@ def _to_response(row: SkillRow) -> SkillResponse:
         description=row.description,
         system_prompt=row.system_prompt,
         is_builtin=row.is_builtin,
+        order=row.sort_order,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -59,7 +61,11 @@ async def list_skills() -> list[SkillResponse]:
     """Return all skills ordered: built-ins first, then user-created by creation time."""
     async with get_session(_db_url()) as db:
         result = await db.execute(
-            select(SkillRow).order_by(SkillRow.is_builtin.desc(), SkillRow.created_at)
+            select(SkillRow).order_by(
+                SkillRow.is_builtin.desc(),
+                SkillRow.sort_order,
+                SkillRow.created_at,
+            )
         )
         return [_to_response(row) for row in result.scalars().all()]
 

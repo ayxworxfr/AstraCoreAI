@@ -16,12 +16,7 @@ services:
     env_file:
       - .env
     environment:
-      # Override localhost values from .env with container-network addresses
-      ASTRACORE__MEMORY__REDIS_URL: "redis://redis:6379/0"
-      ASTRACORE__MEMORY__DB_URL: "sqlite+aiosqlite:////app/data/astracore.db"
-      ASTRACORE__RETRIEVAL__PERSIST_DIRECTORY: "/app/data/chroma_db"
-      # Local-path MCP configs from .env are invalid inside the container
-      ASTRACORE__MCP__SERVERS: "[]"
+      ASTRACORE_CONFIG: "/app/config/config.docker.yaml"
     volumes:
       - astracore_data:/app/data
       - chroma_models:/home/appuser/.cache/chroma

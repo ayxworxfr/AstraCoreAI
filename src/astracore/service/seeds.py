@@ -1,8 +1,8 @@
 """启动时执行数据初始化：向量库文档写入 + 内置 Skill 写入。
 
 - docs/    目录下的 .md 文件写入向量数据库，新增文档只需放文件即可
-- skills/  目录下的 .md 文件作为内置 Skill 写入 SQLite，按文件名排序
-  - frontmatter 字段: name（必填）、description、default（true 表示首次启动时设为默认 Skill）
+- skills/  目录下的 .md 文件作为内置 Skill 写入 SQLite，按 order 排序
+  - frontmatter 字段: name（必填）、description、order、default（true 表示首次启动时设为默认 Skill）
   - 文件正文作为 system_prompt
 """
 
@@ -83,12 +83,13 @@ async def seed_documents(pipeline: object) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _parse_skill_md(path: Path) -> dict[str, str]:
-    """解析 skill .md，返回包含 source_key / name / description / system_prompt / default 的 dict。
+def _parse_skill_md(path: Path) -> dict:
+    """解析 skill .md，返回包含 source_key / name / description / order / system_prompt / default 的 dict。
 
     frontmatter 支持字段：
       name        必填，Skill 显示名称
       description 选填，简短描述
+      order       选填，内置 Skill 排序值，越小越靠前
       default     选填，true 表示首次启动时自动设为默认 Skill
     文件正文作为 system_prompt。source_key 取文件名（不含扩展名），作为稳定标识符。
     """
@@ -104,45 +105,55 @@ def _parse_skill_md(path: Path) -> dict[str, str]:
 
     if not meta.get("name"):
         raise ValueError(f"Skill 文件缺少 name 字段: {path}")
+    try:
+        sort_order = int(meta.get("order", "1000"))
+    except ValueError as exc:
+        raise ValueError(f"Skill 文件 order 字段必须是整数: {path}") from exc
 
     return {
         "source_key": path.stem,
         "name": meta["name"],
         "description": meta.get("description", ""),
+        "order": sort_order,
         "system_prompt": system_prompt,
         "default": meta.get("default", "false").lower() == "true",
     }
 
 
-def _load_builtin_skills() -> list[dict[str, str]]:
-    """按文件名排序加载 skills/ 目录下所有 .md 文件。"""
+def _load_builtin_skills() -> list[dict]:
+    """按 frontmatter order 加载 skills/ 目录下所有 .md 文件。"""
     if not SKILLS_DIR.exists():
         logger.warning("skills 目录不存在: %s，跳过内置 Skill 加载", SKILLS_DIR)
         return []
 
     skills = []
-    for path in sorted(SKILLS_DIR.glob("*.md")):
+    for path in SKILLS_DIR.glob("*.md"):
         try:
             skills.append(_parse_skill_md(path))
         except Exception:
             logger.exception("解析 Skill 文件失败: %s", path)
 
-    return skills
+    return sorted(skills, key=lambda skill: (skill["order"], skill["source_key"]))
 
 
-async def _ensure_source_key_column(db_url: str) -> None:
-    """为旧数据库补加 source_key 列（SQLite ALTER TABLE 幂等迁移）。"""
+async def _ensure_skill_columns(db_url: str) -> None:
+    """补齐内置 Skill 同步所需列。"""
     from sqlalchemy import text
 
     from astracore.adapters.db.session import get_engine
 
     engine = get_engine(db_url)
     async with engine.begin() as conn:
-        try:
-            await conn.execute(text("ALTER TABLE skills ADD COLUMN source_key TEXT"))
-            logger.info("已为 skills 表添加 source_key 列")
-        except Exception:
-            pass  # 列已存在，忽略
+        columns = [
+            ("source_key", "TEXT"),
+            ("sort_order", "INTEGER NOT NULL DEFAULT 1000"),
+        ]
+        for name, ddl in columns:
+            try:
+                await conn.execute(text(f"ALTER TABLE skills ADD COLUMN {name} {ddl}"))
+                logger.info("已为 skills 表添加 %s 列", name)
+            except Exception:
+                pass  # 列已存在，忽略
 
 
 async def seed_builtin_skills(db_url: str) -> None:
@@ -162,7 +173,7 @@ async def seed_builtin_skills(db_url: str) -> None:
     from astracore.adapters.db.models import SkillRow, UserSettingsRow
     from astracore.adapters.db.session import get_session
 
-    await _ensure_source_key_column(db_url)
+    await _ensure_skill_columns(db_url)
 
     builtin_skills = _load_builtin_skills()
     active_keys = {s["source_key"] for s in builtin_skills}
@@ -172,11 +183,6 @@ async def seed_builtin_skills(db_url: str) -> None:
         existing: dict[str, SkillRow] = {
             row.source_key: row for row in result.scalars().all() if row.source_key
         }
-        # source_key 为空的旧记录，按 name 索引备用
-        existing_by_name: dict[str, SkillRow] = {
-            row.name: row for row in result.scalars().all() if not row.source_key
-        }
-
         skill_ids: dict[str, str] = {}
 
         for skill in builtin_skills:
@@ -185,10 +191,6 @@ async def seed_builtin_skills(db_url: str) -> None:
 
             if key in existing:
                 row = existing[key]
-            elif name in existing_by_name:
-                # 旧数据库没有 source_key，按 name 匹配并补写 key
-                row = existing_by_name[name]
-                row.source_key = key
             else:
                 row = None
 
@@ -200,6 +202,7 @@ async def seed_builtin_skills(db_url: str) -> None:
                     description=skill["description"],
                     system_prompt=skill["system_prompt"],
                     is_builtin=True,
+                    sort_order=skill["order"],
                     source_key=key,
                     created_at=now,
                     updated_at=now,
@@ -212,27 +215,22 @@ async def seed_builtin_skills(db_url: str) -> None:
                     row.name != name
                     or row.description != skill["description"]
                     or row.system_prompt != skill["system_prompt"]
+                    or row.sort_order != skill["order"]
                 )
                 if changed:
                     row.name = name
                     row.description = skill["description"]
                     row.system_prompt = skill["system_prompt"]
+                    row.sort_order = skill["order"]
                     row.updated_at = datetime.now(UTC)
                     logger.debug("更新内置 Skill: %s (%s)", name, key)
 
             skill_ids[key] = row.id
 
-        # 删除孤儿内置 Skill：
-        #   1. 有 source_key 但 MD 文件已删除
-        #   2. 没有 source_key 且 name 也不在当前 Skill 列表（历史遗留数据）
-        active_names = {s["name"] for s in builtin_skills}
+        # 删除 MD 文件已删除的内置 Skill。
         for key, row in existing.items():
             if key not in active_keys:
                 logger.info("删除孤儿内置 Skill: %s (%s)", row.name, key)
-                await db.delete(row)
-        for name, row in existing_by_name.items():
-            if name not in active_names:
-                logger.info("删除历史遗留内置 Skill: %s", name)
                 await db.delete(row)
 
         # 仅在 default_skill_id 未设置时自动写入，不覆盖用户的选择

@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any
 from uuid import UUID, uuid4
@@ -24,7 +24,7 @@ from astracore.core.ports.llm import LLMAdapter, StreamEventType
 from astracore.core.ports.tool import ToolAdapter
 from astracore.runtime.observability.logger import get_logger
 from astracore.runtime.policy.engine import PolicyEngine
-from astracore.sdk.config import AstraCoreConfig
+from astracore.sdk.config import AstraCoreConfig, LLMProfileConfig
 from astracore.service.api import rag as rag_api
 from astracore.service.builtin_tools import build_tool_adapter
 
@@ -95,16 +95,15 @@ def _build_summary_fallback_messages(
 async def _generate_summary_fallback(
     *,
     messages: list[Message],
-    model: str | None,
+    model_profile: str | None,
     temperature: float,
     hit_iteration_limit: bool,
 ) -> str:
     """非流式收尾总结。"""
-    response = await _get_llm_adapter().generate(
+    response = await _get_llm_adapter(model_profile).generate(
         messages=_build_summary_fallback_messages(
             messages, hit_iteration_limit=hit_iteration_limit
         ),
-        model=model,
         temperature=temperature,
     )
     return response.content
@@ -115,22 +114,33 @@ def _get_settings() -> AstraCoreConfig:
     return AstraCoreConfig()
 
 
-@lru_cache(maxsize=1)
-def _get_llm_adapter() -> LLMAdapter:
-    cfg = _get_settings().llm
-    if cfg.provider == "anthropic":
+def _get_llm_profile(profile_id: str | None = None) -> LLMProfileConfig:
+    return _get_settings().llm.get_profile(profile_id)
+
+
+@lru_cache(maxsize=32)
+def _get_llm_adapter_by_profile_id(profile_id: str) -> LLMAdapter:
+    profile = _get_settings().llm.get_profile(profile_id)
+    if profile.provider == "anthropic":
         return AnthropicAdapter(
-            api_key=cfg.api_key,
-            default_model=cfg.model,
-            base_url=cfg.base_url,
-            max_tokens=cfg.max_tokens,
+            api_key=profile.api_key,
+            default_model=profile.model,
+            base_url=profile.base_url,
+            max_tokens=profile.max_tokens,
+            supports_temperature=profile.capabilities.temperature,
+            use_anthropic_blocks=profile.capabilities.anthropic_blocks,
         )
     return OpenAIAdapter(
-        api_key=cfg.api_key,
-        default_model=cfg.model,
-        base_url=cfg.base_url,
-        max_tokens=cfg.max_tokens,
+        api_key=profile.api_key,
+        default_model=profile.model,
+        base_url=profile.base_url,
+        max_tokens=profile.max_tokens,
     )
+
+
+def _get_llm_adapter(profile_id: str | None = None) -> LLMAdapter:
+    profile = _get_llm_profile(profile_id)
+    return _get_llm_adapter_by_profile_id(profile.id)
 
 
 @lru_cache(maxsize=1)
@@ -139,10 +149,10 @@ def _get_memory_adapter() -> HybridMemoryAdapter:
     return HybridMemoryAdapter(redis_url=cfg.redis_url, db_url=cfg.db_url)
 
 
-@lru_cache(maxsize=1)
-def _get_chat_use_case() -> ChatUseCase:
+@lru_cache(maxsize=32)
+def _get_chat_use_case(profile_id: str | None = None) -> ChatUseCase:
     return ChatUseCase(
-        llm_adapter=_get_llm_adapter(),
+        llm_adapter=_get_llm_adapter(profile_id),
         memory_adapter=_get_memory_adapter(),
         policy_engine=PolicyEngine(),
     )
@@ -154,10 +164,10 @@ def _resolve_tool_adapter(http_request: Request) -> ToolAdapter:
     return adapter if adapter is not None else build_tool_adapter()
 
 
-def _get_tool_loop_use_case(tool_adapter: ToolAdapter) -> ToolLoopUseCase:
+def _get_tool_loop_use_case(tool_adapter: ToolAdapter, profile_id: str | None = None) -> ToolLoopUseCase:
     cfg = _get_settings().agent
     return ToolLoopUseCase(
-        llm_adapter=_get_llm_adapter(),
+        llm_adapter=_get_llm_adapter(profile_id),
         tool_adapter=tool_adapter,
         policy_engine=PolicyEngine(),
         max_iterations=cfg.max_tool_iterations,
@@ -212,7 +222,7 @@ class ChatRequest(BaseModel):
 
     message: str
     session_id: UUID | None = None
-    model: str | None = None
+    model_profile: str | None = None
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     use_tools: bool = False
     enable_thinking: bool = False
@@ -228,14 +238,63 @@ class ChatResponse(BaseModel):
 
     session_id: UUID
     message: str
+    model_profile: str
     model: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+def _build_llm_kwargs(request: ChatRequest, profile: LLMProfileConfig) -> dict[str, Any]:
+    """Build provider kwargs after checking the selected profile capabilities."""
+    llm_kwargs: dict[str, Any] = {}
+    if request.enable_thinking:
+        if not profile.capabilities.thinking:
+            logger.info("LLM profile '%s' does not support thinking; falling back to normal mode", profile.id)
+            return llm_kwargs
+        llm_kwargs["enable_thinking"] = True
+        llm_kwargs["thinking_budget"] = request.thinking_budget
+    return llm_kwargs
+
+
+def _ensure_tool_capability(request: ChatRequest, profile: LLMProfileConfig) -> None:
+    if (request.use_tools or request.enable_web) and not profile.capabilities.tools:
+        raise ValueError(f"LLM profile '{profile.id}' does not support tool calling")
+
+
+async def _resolve_temperature(request: ChatRequest, profile: LLMProfileConfig) -> float:
+    if request.temperature is not None:
+        return request.temperature
+    saved = await _get_setting_value("temperature")
+    return float(saved) if saved else profile.temperature
+
+
+_BEIJING_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+_WEEKDAY_CN = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+
+
+def _build_current_time_info(now: datetime | None = None) -> str:
+    """生成注入给模型的当前北京时间上下文。"""
+    beijing_now = (now or datetime.now(_BEIJING_TZ)).astimezone(_BEIJING_TZ)
+    time_text = (
+        f"{beijing_now.year}年{beijing_now.month}月{beijing_now.day}日 "
+        f"{beijing_now.hour:02d}:{beijing_now.minute:02d}:{beijing_now.second:02d}"
+        f"（{_WEEKDAY_CN[beijing_now.weekday()]}）"
+    )
+    today_text = f"{beijing_now.year}年{beijing_now.month}月{beijing_now.day}日"
+    return "\n".join(
+        [
+            "【当前时间信息】",
+            f"- 北京时间：{time_text}",
+            "- 当用户问\"现在几点\"、\"什么时间\"时，直接告诉用户上述时间",
+            f"- 当用户提到\"今天\"时，指的是{today_text}",
+        ]
+    )
+
+
 def _render_skill_prompt(prompt: str, ai_name: str, owner_name: str) -> str:
-    """将 system_prompt 中的 {{ai_name}} / {{owner_name}} 替换为用户设定的值。"""
+    """将 system_prompt 中的动态占位符替换为请求时的上下文。"""
     result = prompt.replace("{{ai_name}}", ai_name or "AI 助手")
     result = result.replace("{{owner_name}}", owner_name or "用户")
+    result = result.replace("{{current_time_info}}", _build_current_time_info())
     return result
 
 
@@ -276,8 +335,10 @@ async def _run_with_tools(
     request: "ChatRequest", session_id: UUID, tool_adapter: ToolAdapter
 ) -> str:
     """Execute a chat turn through the tool loop."""
+    profile = _get_llm_profile(request.model_profile)
+    _ensure_tool_capability(request, profile)
     memory = _get_memory_adapter()
-    tool_loop = _get_tool_loop_use_case(tool_adapter)
+    tool_loop = _get_tool_loop_use_case(tool_adapter, profile.id)
 
     messages = await memory.load_short_term(session_id)
     session = SessionState(session_id=session_id)
@@ -293,7 +354,7 @@ async def _run_with_tools(
 
     session.add_message(Message(role=MessageRole.USER, content=request.message))
     try:
-        session = await tool_loop.execute_with_tools(session, model=request.model, allowed_tools=allowed_tools)
+        session = await tool_loop.execute_with_tools(session, allowed_tools=allowed_tools)
     except Exception:
         # 出错时也保存（至少保留用户消息），同时清理悬空的 tool_use
         await _save_short_term_safe(session_id, session.get_messages())
@@ -301,12 +362,10 @@ async def _run_with_tools(
 
     safe_messages = _strip_dangling_tool_calls(session.get_messages())
     if _needs_summary_fallback(safe_messages):
-        temperature = request.temperature
-        if temperature is None:
-            temperature = float(await _get_setting_value("temperature") or "0.7")
+        temperature = await _resolve_temperature(request, profile)
         summary = await _generate_summary_fallback(
             messages=safe_messages,
-            model=request.model,
+            model_profile=profile.id,
             temperature=temperature,
             hit_iteration_limit=False,
         )
@@ -362,27 +421,26 @@ async def get_session_messages(
 async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     """Chat endpoint. Set use_tools=true to route through the tool loop."""
     session_id = request.session_id or uuid4()
+    profile = _get_llm_profile(request.model_profile)
 
     try:
         if request.use_tools:
             tool_adapter = _resolve_tool_adapter(http_request)
             content = await _run_with_tools(request, session_id, tool_adapter)
-            return ChatResponse(session_id=session_id, message=content, model=request.model)
+            return ChatResponse(session_id=session_id, message=content, model_profile=profile.id, model=profile.model)
 
-        temperature = request.temperature
-        if temperature is None:
-            temperature = float(await _get_setting_value("temperature") or "0.7")
-        use_case = _get_chat_use_case()
+        temperature = await _resolve_temperature(request, profile)
+        use_case = _get_chat_use_case(profile.id)
         response_message = await use_case.execute(
             session_id=session_id,
             user_message=request.message,
-            model=request.model,
             temperature=temperature,
         )
         return ChatResponse(
             session_id=session_id,
             message=response_message.content,
-            model=request.model,
+            model_profile=profile.id,
+            model=profile.model,
         )
 
     except Exception as e:
@@ -420,12 +478,14 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
     tool_adapter = _resolve_tool_adapter(http_request)
 
     async def event_generator() -> Any:
+        profile = _get_llm_profile(request.model_profile)
         logger.info(
-            "stream 开始: session=%s, use_tools=%s, enable_web=%s, model=%s",
+            "stream 开始: session=%s, use_tools=%s, enable_web=%s, profile=%s, model=%s",
             session_id,
             request.use_tools,
             request.enable_web,
-            request.model,
+            profile.id,
+            profile.model,
         )
         # 首帧：告知客户端会话上下文和用户问题
         yield {"event": "conversation", "data": json.dumps(
@@ -441,16 +501,12 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                 message=request.message,
             )
 
-            temperature = request.temperature
-            if temperature is None:
-                temperature = float(await _get_setting_value("temperature") or "0.7")
+            _ensure_tool_capability(request, profile)
+            temperature = await _resolve_temperature(request, profile)
 
             context_max = int(await _get_setting_value("context_max_messages") or "20")
 
-            llm_kwargs: dict[str, Any] = {}
-            if request.enable_thinking:
-                llm_kwargs["enable_thinking"] = True
-                llm_kwargs["thinking_budget"] = request.thinking_budget
+            llm_kwargs = _build_llm_kwargs(request, profile)
 
             if request.use_tools or request.enable_web:
                 # 工具循环流式路径：动态获取所有已注册工具（含 MCP 工具）
@@ -462,7 +518,7 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                     allowed_tools = allowed_tools - {"web_search"}
 
                 memory = _get_memory_adapter()
-                tool_loop = _get_tool_loop_use_case(tool_adapter)
+                tool_loop = _get_tool_loop_use_case(tool_adapter, profile.id)
 
                 messages = await memory.load_short_term(session_id)
                 # 过滤旧 SYSTEM 消息（兼容历史数据），取最近 context_max 条
@@ -488,7 +544,6 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                     in_tool_round = False
                     async for event in tool_loop.execute_stream_with_tools(
                         session,
-                        model=request.model,
                         allowed_tools=allowed_tools,
                         **llm_kwargs,
                     ):
@@ -552,12 +607,11 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
                             session_id, round_count, hit_iteration_limit,
                         )
                         summary_text = ""
-                        async for event in _get_llm_adapter().generate_stream(
+                        async for event in _get_llm_adapter(profile.id).generate_stream(
                             messages=_build_summary_fallback_messages(
                                 safe_messages,
                                 hit_iteration_limit=hit_iteration_limit,
                             ),
-                            model=request.model,
                             temperature=temperature,
                         ):
                             if (
@@ -582,11 +636,10 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourc
 
             else:
                 # 普通流式路径（无工具）
-                use_case = _get_chat_use_case()
+                use_case = _get_chat_use_case(profile.id)
                 async for event in use_case.execute_stream(
                     session_id=session_id,
                     user_message=request.message,
-                    model=request.model,
                     temperature=temperature,
                     inject_system=inject_system,
                     context_max_messages=context_max,

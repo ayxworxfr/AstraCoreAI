@@ -35,6 +35,8 @@ dependencies = [
     "python-multipart>=0.0.9",
     "sse-starlette>=2.1.2",
     "aiofiles>=23.0.0",
+    "python-dotenv>=1.0.1",
+    "PyYAML>=6.0.2",
 ]
 
 [project.optional-dependencies]

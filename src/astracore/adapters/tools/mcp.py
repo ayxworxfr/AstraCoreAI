@@ -60,6 +60,10 @@ class MCPServerConfig(BaseModel):
 _SHELL_SERVER_SCRIPT = Path(__file__).parent.parent.parent / "mcp_servers" / "shell_server.py"
 
 
+def _normalize_path(path: str) -> str:
+    return str(Path(path).expanduser().resolve())
+
+
 def build_server_configs(entries: "list[MCPServerEntry]") -> list[MCPServerConfig]:
     """Convert SDK server configuration entries to internal MCPServerConfig objects."""
     from astracore.sdk.config import FilesystemServerConfig, ShellServerConfig  # noqa: PLC0415
@@ -70,12 +74,13 @@ def build_server_configs(entries: "list[MCPServerEntry]") -> list[MCPServerConfi
             result.append(MCPServerConfig(
                 name=entry.name,
                 command="npx",
-                args=["-y", "@modelcontextprotocol/server-filesystem"] + entry.paths,
+                args=["-y", "@modelcontextprotocol/server-filesystem"]
+                + [_normalize_path(path) for path in entry.paths],
             ))
         elif isinstance(entry, ShellServerConfig):
             args = [str(_SHELL_SERVER_SCRIPT)]
             for d in entry.allow_dirs:
-                args += ["--allow-dir", d]
+                args += ["--allow-dir", _normalize_path(d)]
             args += ["--timeout", str(entry.timeout)]
             result.append(MCPServerConfig(name=entry.name, command=sys.executable, args=args))
         else:
@@ -218,7 +223,7 @@ class MCPToolAdapter(ToolAdapter):
         for task in self._background_tasks:
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
-            except (asyncio.TimeoutError, Exception):
+            except (TimeoutError, Exception):
                 task.cancel()
                 try:
                     await task

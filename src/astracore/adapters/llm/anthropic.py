@@ -18,14 +18,18 @@ class AnthropicAdapter(LLMAdapter):
     def __init__(
         self,
         api_key: str,
-        default_model: str = "claude-3-5-sonnet-20241022",
+        default_model: str = "claude-sonnet-4-6",
         base_url: str | None = None,
         max_tokens: int = 8192,
+        supports_temperature: bool = True,
+        use_anthropic_blocks: bool = False,
     ):
         self.api_key = api_key
         self.default_model = default_model
         self._base_url = base_url
         self.max_tokens = max_tokens
+        self.supports_temperature = supports_temperature
+        self.use_anthropic_blocks = use_anthropic_blocks
         self._client: Any = None
 
     def _get_client(self) -> Any:
@@ -87,13 +91,26 @@ class AnthropicAdapter(LLMAdapter):
 
             # assistant 调用工具：content 是 text + tool_use 块列表
             anthropic_blocks = msg.metadata.get(self._ANTHROPIC_BLOCKS_KEY)
-            if msg.role == MessageRole.ASSISTANT and isinstance(anthropic_blocks, list):
-                for block in anthropic_blocks:
+            if (
+                self.use_anthropic_blocks
+                and msg.role == MessageRole.ASSISTANT
+                and isinstance(anthropic_blocks, list)
+            ):
+                replay_block_types = {"thinking", "text", "tool_use"}
+                replay_blocks = [
+                    block
+                    for block in anthropic_blocks
+                    if isinstance(block, dict) and block.get("type") in replay_block_types
+                ]
+                for block in replay_blocks:
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         tool_id = block.get("id")
                         if isinstance(tool_id, str) and tool_id:
                             known_tool_use_ids.add(tool_id)
-                converted.append({"role": "assistant", "content": anthropic_blocks})
+                if replay_blocks:
+                    converted.append({"role": "assistant", "content": replay_blocks})
+                elif msg.content:
+                    converted.append({"role": "assistant", "content": msg.content})
                 continue
 
             if msg.has_tool_calls():
@@ -145,8 +162,9 @@ class AnthropicAdapter(LLMAdapter):
             "model": model,
             "messages": converted_messages,
             "max_tokens": max_tokens,
-            "temperature": temperature,
         }
+        if self.supports_temperature:
+            request_params["temperature"] = temperature
 
         if system:
             request_params["system"] = system
@@ -211,9 +229,10 @@ class AnthropicAdapter(LLMAdapter):
             "model": model,
             "messages": converted_messages,
             "max_tokens": max_tokens,
-            # Extended Thinking 要求 temperature=1，普通模式保留用户设置
-            "temperature": 1.0 if enable_thinking else temperature,
         }
+        if self.supports_temperature:
+            # Extended Thinking 要求 temperature=1，普通模式保留用户设置
+            request_params["temperature"] = 1.0 if enable_thinking else temperature
 
         if system:
             request_params["system"] = system

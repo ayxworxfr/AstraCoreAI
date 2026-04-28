@@ -57,10 +57,8 @@ export default function SkillsPage(): JSX.Element {
   const sortedSkills = useMemo(() => {
     const copied = [...skills];
     copied.sort((a, b) => {
-      const aIsAssistant = a.name === '通用助手';
-      const bIsAssistant = b.name === '通用助手';
-      if (aIsAssistant !== bIsAssistant) return aIsAssistant ? -1 : 1;
       if (a.is_builtin !== b.is_builtin) return a.is_builtin ? -1 : 1;
+      if (a.order !== b.order) return a.order - b.order;
       return a.created_at.localeCompare(b.created_at);
     });
     return copied;

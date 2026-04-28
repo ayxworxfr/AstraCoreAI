@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, Index, JSON, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -42,6 +42,7 @@ class SkillRow(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     is_builtin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
     # MD 文件名（不含扩展名），作为内置 Skill 的稳定标识符，用于跨重启的 upsert 和孤儿清理
     source_key: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(

@@ -1,6 +1,7 @@
 """Tests for ToolLoopUseCase — tool execution, security block, max_iterations, build_defs."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from astracore.core.application.tool_loop import ToolLoopUseCase
 from astracore.core.domain.message import MessageRole, ToolCall
@@ -166,9 +167,10 @@ async def test_execute_stream_with_tools_skips_tool_execution_on_final_iteration
     events = [event async for event in uc.execute_stream_with_tools(session)]
 
     mock_tools.execute.assert_not_called()
-    assert len(events) == 2
+    assert len(events) == 3
     assert events[0].event_type == StreamEventType.ROUND_START
     assert events[1].tool_call == tool_call
+    assert events[2].event_type == StreamEventType.THINKING_STOP
     assert session.get_messages()[-1].role == MessageRole.ASSISTANT
 
 

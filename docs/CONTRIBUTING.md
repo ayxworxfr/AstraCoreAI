@@ -33,7 +33,7 @@ make setup
 
 # 3. 复制并填写环境变量
 cp .env.example .env
-# 编辑 .env，至少填写 ASTRACORE__LLM__API_KEY
+# 编辑 .env，至少填写 config/config.yaml 中 api_key_env 对应的密钥
 
 # 4. 前端依赖（仅前端开发需要）
 make fe-install
@@ -56,7 +56,7 @@ src/astracore/
 │   ├── domain/       # 纯领域模型 — 零外部依赖
 │   ├── application/  # 用例（Chat、ToolLoop、RAG、MultiAgent）
 │   └── ports/        # 抽象接口（LLM、Memory、Retriever、Tool、Workflow）
-├── adapters/         # 端口的具体实现（Anthropic、OpenAI、Redis、ChromaDB…）
+├── adapters/         # 端口的具体实现（Anthropic、OpenAI 兼容接口、Redis、ChromaDB…）
 ├── mcp_servers/      # 内置 MCP 服务器实现
 ├── runtime/
 │   ├── policy/       # PolicyEngine（retry / timeout）
@@ -65,7 +65,12 @@ src/astracore/
 ├── service/
 │   ├── api/          # FastAPI 路由
 │   └── middleware/
-└── sdk/              # 对外 SDK 入口
+└── sdk/              # 对外 SDK 入口与 YAML 配置模型
+
+config/
+├── config.yaml       # 本地开发结构化配置
+├── config.example.yaml
+└── config.docker.yaml
 
 frontend/src/
 ├── components/       # React UI 组件
@@ -175,18 +180,27 @@ domain ← application ← adapters ← service/sdk
 
 违反依赖方向的 import 会被 mypy 和 code review 拒绝。
 
+### 新增 LLM Profile
+
+优先通过 `config/config.yaml` 增加 profile，而不是新增适配器：
+
+1. 在 `llm.profiles` 添加稳定 `id`、展示 `label`、`provider`、`base_url`、`api_key_env`、`model`。
+2. 在根目录 `.env` 填写 `api_key_env` 指向的真实密钥。
+3. 如模型能力不在内置表中，先更新 `src/astracore/sdk/model_capabilities.py`。
+4. 只有代理或模型行为与内置表不一致时，才在 YAML 的 `capabilities` 写局部覆盖。
+
 ### 新增 LLM 适配器
 
-1. 在 `src/astracore/adapters/llm/` 新建文件，继承 `LLMAdapter`（`core/ports/llm.py`）
-2. 实现 `generate` 和 `generate_stream` 两个方法
-3. 在 `service/api/chat.py` 的 `_get_llm_adapter()` 中注册新 provider
-4. 补充对应单元测试
+1. 在 `src/astracore/adapters/llm/` 新建文件，继承 `LLMAdapter`（`core/ports/llm.py`）。
+2. 实现 `generate` 和 `generate_stream` 两个方法。
+3. 扩展 `LLMProfileConfig.provider` 的枚举与 Service/SDK 的 adapter factory。
+4. 补充 profile 配置加载、能力推导和适配器行为单元测试。
 
 ### 新增工具
 
 **内置工具**（无需外部进程）：在 `src/astracore/service/builtin_tools.py` 注册。
 
-**MCP 工具**：在 `.env` 的 `ASTRACORE__MCP__SERVERS` 中配置；类型为 `custom` 时提供 `command` / `args` / `env`。
+**MCP 工具**：在 `config/config.yaml` 的 `mcp.servers` 中配置；类型为 `custom` 时提供 `name` / `command` / `args` / `env`。
 
 ### SSE 事件协议
 
@@ -208,7 +222,7 @@ domain ← application ← adapters ← service/sdk
 
 ### 工具结果截断
 
-单次工具返回内容超过 `ASTRACORE__AGENT__MAX_TOOL_RESULT_CHARS`（默认 20000 字符）时自动截断，并在末尾附加分页提示。在 `ToolLoopUseCase._truncate_tool_result` 中实现，勿在工具本身做截断。
+单次工具返回内容超过 `config/config.yaml` 中 `agent.max_tool_result_chars`（默认 20000 字符）时自动截断，并在末尾附加分页提示。在 `ToolLoopUseCase._truncate_tool_result` 中实现，勿在工具本身做截断。
 
 ---
 

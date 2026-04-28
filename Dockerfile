@@ -27,6 +27,7 @@ WORKDIR /app
 # Install Python dependencies first (layer cache friendly)
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
+COPY config/ ./config/
 
 RUN pip install --no-cache-dir -e ".[anthropic,openai]" \
     && pip install --no-cache-dir chromadb

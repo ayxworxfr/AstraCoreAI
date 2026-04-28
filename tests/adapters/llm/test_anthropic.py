@@ -1,6 +1,7 @@
 """Tests for AnthropicAdapter — _convert_messages and generate_stream tool arg accumulation."""
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import MagicMock
 
 from astracore.adapters.llm.anthropic import AnthropicAdapter
 from astracore.core.domain.message import Message, MessageRole, ToolCall, ToolResult
@@ -79,6 +80,104 @@ def test_convert_messages_plain_assistant_message(adapter):
     msg = Message(role=MessageRole.ASSISTANT, content="Just text")
     result = adapter._convert_messages([msg])
     assert result[0]["content"] == "Just text"
+
+
+def test_convert_messages_replays_stored_thinking_blocks():
+    adapter = AnthropicAdapter(api_key="test-key", use_anthropic_blocks=True)
+    msg = Message(
+        role=MessageRole.ASSISTANT,
+        content="Final answer",
+        metadata={
+            "anthropic_content_blocks": [
+                {
+                    "type": "thinking",
+                    "thinking": "private chain of thought",
+                    "signature": "stale-signature",
+                },
+                {"type": "text", "text": "Final answer"},
+            ],
+        },
+    )
+
+    result = adapter._convert_messages([msg])
+
+    assert result == [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "thinking",
+                    "thinking": "private chain of thought",
+                    "signature": "stale-signature",
+                },
+                {"type": "text", "text": "Final answer"},
+            ],
+        }
+    ]
+
+
+def test_convert_messages_drops_stored_blocks_when_replay_disabled():
+    adapter = AnthropicAdapter(api_key="test-key", use_anthropic_blocks=False)
+    msg = Message(
+        role=MessageRole.ASSISTANT,
+        content="Final answer",
+        metadata={
+            "anthropic_content_blocks": [
+                {"type": "text", "text": "Final answer"},
+                {"type": "tool_use", "id": "tool_1", "name": "search", "input": {"q": "python"}},
+            ],
+        },
+    )
+
+    result = adapter._convert_messages([msg])
+
+    assert result == [{"role": "assistant", "content": "Final answer"}]
+
+
+def test_convert_messages_replays_text_and_tool_blocks_when_enabled():
+    adapter = AnthropicAdapter(api_key="test-key", use_anthropic_blocks=True)
+    msg = Message(
+        role=MessageRole.ASSISTANT,
+        content="Final answer",
+        metadata={
+            "anthropic_content_blocks": [
+                {"type": "thinking", "thinking": "private", "signature": "stale"},
+                {"type": "text", "text": "Final answer"},
+                {"type": "tool_use", "id": "tool_1", "name": "search", "input": {"q": "python"}},
+            ],
+        },
+    )
+
+    result = adapter._convert_messages([msg])
+
+    assert result == [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "private", "signature": "stale"},
+                {"type": "text", "text": "Final answer"},
+                {"type": "tool_use", "id": "tool_1", "name": "search", "input": {"q": "python"}},
+            ],
+        }
+    ]
+
+
+async def test_generate_omits_temperature_when_profile_disables_it():
+    adapter = AnthropicAdapter(api_key="test-key", supports_temperature=False)
+    create = AsyncMock()
+    create.return_value = MagicMock(
+        content=[MagicMock(type="text", text="ok")],
+        usage=MagicMock(input_tokens=1, output_tokens=1),
+    )
+    adapter._client = MagicMock()
+    adapter._client.messages.create = create
+
+    await adapter.generate(
+        messages=[Message(role=MessageRole.USER, content="Hi")],
+        temperature=0.2,
+    )
+
+    assert "temperature" not in create.call_args.kwargs
 
 
 # ---------- generate_stream — helpers ----------

@@ -256,7 +256,7 @@ self._memory = HybridMemoryAdapter(
 # LLM Configuration（统一四元配置）
 # ASTRACORE__LLM__PROVIDER: deepseek | anthropic
 ASTRACORE__LLM__PROVIDER=anthropic
-ASTRACORE__LLM__BASE_URL=https://llm-proxy.futuoa.com/aws
+ASTRACORE__LLM__BASE_URL=https://llm-proxy.oa.com/aws
 ASTRACORE__LLM__API_KEY=app-key-F1QWwWrSx3kfNTWw
 ASTRACORE__LLM__MODEL=claude-sonnet-4-6
 

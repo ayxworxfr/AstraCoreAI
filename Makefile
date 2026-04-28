@@ -12,10 +12,9 @@ YELLOW := \033[0;33m
 CYAN   := \033[0;36m
 NC     := \033[0m
 
-PYTHON := python3
+PYTHON := python
 HATCH_ENV_VARS := HATCH_DATA_DIR="$(CURDIR)/.hatch/data" HATCH_CACHE_DIR="$(CURDIR)/.hatch/cache" HATCH_ENV_TYPE_VIRTUAL_PATH="$(CURDIR)/.hatch/venvs" PIP_CACHE_DIR="$(CURDIR)/.cache/pip"
 HATCH  := $(HATCH_ENV_VARS) $(PYTHON) -m hatch
-ENV_RUN := set -a; [ -f .env ] && . ./.env; set +a;
 
 ##@ 帮助信息
 
@@ -53,7 +52,7 @@ setup: install deps rag-deps ## 一键初始化环境（含 RAG 轻量依赖）
 
 api: ## 启动 FastAPI 服务（http://127.0.0.1:8000）
 	@echo "$(GREEN)🚀 启动 API 服务...$(NC)"
-	@$(ENV_RUN) $(HATCH) run python examples/run_service.py
+	@$(HATCH) run python examples/run_service.py
 
 dev: api ## api 的别名
 
@@ -70,7 +69,7 @@ endif
 
 sdk-chat: ## 运行基础 SDK 对话示例
 	@echo "$(GREEN)💬 运行基础对话示例...$(NC)"
-	@$(ENV_RUN) $(HATCH) run python examples/basic_chat.py
+	@$(HATCH) run python examples/basic_chat.py
 
 fe-install: ## 安装前端依赖
 	@echo "$(GREEN)📦 安装前端依赖...$(NC)"

@@ -45,6 +45,8 @@ htmlcov/
 # Environment
 .env
 .env.local
+config.local.yaml
+config/config.local.yaml
 
 # ChromaDB
 chroma_db/

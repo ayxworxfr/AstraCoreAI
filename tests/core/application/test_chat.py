@@ -27,7 +27,7 @@ def mock_memory():
 def mock_llm():
     llm = AsyncMock()
     llm.generate.return_value = LLMResponse(
-        content="Hello from assistant", model="claude-3-5-sonnet-20241022"
+        content="Hello from assistant", model="claude-sonnet-4-6"
     )
     return llm
 

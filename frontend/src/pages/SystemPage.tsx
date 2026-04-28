@@ -115,18 +115,23 @@ function LLMInfoTab(): JSX.Element {
     return <Alert type="error" message={error} />;
   }
 
+  const defaultProfile = info?.llm.profiles.find((profile) => profile.id === info.llm.default_profile);
+
   return (
     <Flex gap={16} align="flex-start">
       <Card title="LLM 配置" style={{ flex: 1 }}>
         <Descriptions column={1} size="small" bordered>
-          <Descriptions.Item label="Provider">{info?.llm.provider ?? '—'}</Descriptions.Item>
-          <Descriptions.Item label="Model">{info?.llm.model ?? '—'}</Descriptions.Item>
+          <Descriptions.Item label="默认 Profile">
+            {defaultProfile ? (defaultProfile.label || defaultProfile.id) : '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="Provider">{defaultProfile?.provider ?? '—'}</Descriptions.Item>
+          <Descriptions.Item label="Model">{defaultProfile?.model ?? '—'}</Descriptions.Item>
           <Descriptions.Item label="Base URL">
-            {info?.llm.base_url ?? <Typography.Text type="secondary">（使用默认端点）</Typography.Text>}
+            {defaultProfile?.base_url ?? <Typography.Text type="secondary">（使用默认端点）</Typography.Text>}
           </Descriptions.Item>
           <Descriptions.Item label="API Key">
             {info ? (
-              info.llm.api_key_configured ? (
+              defaultProfile?.api_key_configured ? (
                 <Badge status="success" text="已配置" />
               ) : (
                 <Badge status="error" text="未配置" />
@@ -134,6 +139,31 @@ function LLMInfoTab(): JSX.Element {
             ) : '—'}
           </Descriptions.Item>
         </Descriptions>
+      </Card>
+
+      <Card title="模型 Profiles" style={{ flex: 1 }}>
+        {info ? (
+          <Flex vertical gap={10}>
+            {info.llm.profiles.map((profile) => (
+              <Card key={profile.id} size="small" styles={{ body: { padding: '10px 12px' } }}>
+                <Flex align="center" justify="space-between" gap={12}>
+                  <div>
+                    <Typography.Text strong>
+                      {profile.label || profile.id}
+                    </Typography.Text>
+                    <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 2 }}>
+                      {profile.provider} / {profile.model}
+                    </Typography.Text>
+                  </div>
+                  <Flex align="center" gap={6}>
+                    {profile.id === info.llm.default_profile && <Badge status="processing" text="默认" />}
+                    <Badge status={profile.api_key_configured ? 'success' : 'error'} text={profile.api_key_configured ? 'Key 已配置' : 'Key 缺失'} />
+                  </Flex>
+                </Flex>
+              </Card>
+            ))}
+          </Flex>
+        ) : '—'}
       </Card>
 
       <Card title="工具 & 集成" style={{ flex: 1 }}>
@@ -150,7 +180,7 @@ function LLMInfoTab(): JSX.Element {
                   </Typography.Text>
                 </Flex>
               ) : (
-                <Badge status="default" text="未启用（未配置 ASTRACORE__MCP__SERVERS）" />
+                <Badge status="default" text="未启用（未配置 YAML MCP servers）" />
               )
             ) : '—'}
           </Descriptions.Item>

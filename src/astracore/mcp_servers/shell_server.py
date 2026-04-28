@@ -70,8 +70,13 @@ def _parse_args() -> argparse.Namespace:
 
 _args = _parse_args()
 
+
+def _normalize_path(path: str) -> Path:
+    return Path(path).expanduser().resolve()
+
+
 # 将允许目录规范化为绝对路径
-_ALLOWED_DIRS: list[Path] = [Path(d).resolve() for d in _args.allow_dirs]
+_ALLOWED_DIRS: list[Path] = [_normalize_path(d) for d in _args.allow_dirs]
 _TIMEOUT: float = _args.timeout
 
 mcp = FastMCP(
@@ -176,7 +181,7 @@ async def run_command(command: str, cwd: str | None = None) -> str:
             raise RuntimeError(output_line)
         return output_line
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         if proc.returncode is None:
             proc.kill()
             await proc.wait()

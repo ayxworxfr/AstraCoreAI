@@ -36,7 +36,7 @@ def mock_memory_adapter():
 
 @pytest.fixture
 def mock_llm_response():
-    return LLMResponse(content="Test response", model="claude-3-5-sonnet-20241022")
+    return LLMResponse(content="Test response", model="claude-sonnet-4-6")
 
 
 @pytest.fixture

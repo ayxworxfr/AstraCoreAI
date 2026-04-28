@@ -8,8 +8,8 @@
 - 双主题（深色 / 浅色）无缝切换，所有组件跟随主题
 - AI 消息支持完整 Markdown 渲染（代码高亮、表格、列表等）
 - 完整会话管理：创建、切换、重命名、删除、清空、持久化恢复
-- 流式 SSE 输出稳定，打字光标动效流畅
-- 后端接口完全兼容，不需要改动后端
+- 流式 SSE 输出稳定，支持工具调用进度、思考块展示和空响应兜底
+- 支持后端多模型 Profile 注册表，前端自动读取并切换可用模型
 
 ## 2. 技术栈
 
@@ -39,7 +39,7 @@
 │  （仅 Chat 页）  │                                          │
 │                  │                                          │
 └──────────────────┴──────────────────────────────────────────┘
-       260px                      剩余宽度
+       300px                      剩余宽度
 ```
 
 - **Chat 页**：左侧显示会话列表面板，右侧为完整聊天区
@@ -50,9 +50,9 @@
 
 ```
 ┌──────────────────┬──────────────────────────────────────────┐
-│  [+ 新建会话]    │  ┌──────────────────────────────────┐   │
-│  [搜索会话...]   │  │  会话标题                         │   │
-│  ──────────────  │  │  [重命名] [清空] [删除]           │   │
+│  AstraCoreAI     │  ┌──────────────────────────────────┐   │
+│  [+ 新建会话]    │  │  会话标题                         │   │
+│  [搜索会话...]   │  │  [模型 Profile] [Skill] [操作]    │   │
 │  会话 1          │  └──────────────────────────────────┘   │
 │  会话 2 ●        │                                          │
 │  会话 3          │  ① 空态：Welcome + 推荐 Prompts          │
@@ -116,7 +116,9 @@
 
 - **用户消息**：主色蓝背景，右对齐，无头像
 - **AI 消息**：Surface 背景，左侧带 `[A]` 头像图标，内容区渲染 Markdown
-- **流式输出**：Bubble 内置 `loading` 状态与打字光标，无需自行实现
+- **思考与工具**：工具轮旁白展示为 thinking 区块，工具调用显示执行中/完成/失败状态
+- **流式输出**：Bubble 内置 `loading` 状态与打字光标，SSE 结束时统一收敛状态
+- **滚动条**：Chat 主区域使用简约自定义滚动条，按明暗主题适配，支持拖动和点击轨道平滑跳转
 
 ### 4.3 Welcome 空态
 
@@ -157,7 +159,8 @@ frontend/src/
 ├── components/
 │   ├── chat/
 │   │   ├── ConversationSidebar.tsx  ← @ant-design/x Conversations + 新建/搜索
-│   │   ├── ChatMain.tsx             ← Bubble.List + Welcome + Sender + SkillSelector
+│   │   ├── ChatMain.tsx             ← Bubble.List + Welcome + Sender + SkillSelector + 自定义滚动条
+│   │   ├── ModelSelector.tsx        ← 后端 LLM profile 下拉选择
 │   │   └── MarkdownContent.tsx      ← react-markdown 渲染器（代码高亮）
 │   ├── rag/
 │   │   ├── RagMarkdownEditor.tsx    ← Markdown 预览 + 编辑切换（复用于 Skill 编辑）
@@ -172,7 +175,7 @@ frontend/src/
 │   └── system/
 │       └── HealthStatusCard.tsx     ← 健康/就绪状态卡片
 ├── stores/
-│   ├── chatStore.ts                 ← 会话 + 消息 + 流式状态 + activeSkillId
+│   ├── chatStore.ts                 ← 会话 + 消息 + 流式状态 + activeSkillId + modelId
 │   ├── skillStore.ts                ← Skills 列表 + 用户设置（持久化）
 │   └── settingsStore.ts             ← theme: 'light' | 'dark'（持久化）
 ├── services/
@@ -180,7 +183,7 @@ frontend/src/
 │   ├── chatService.ts               ← POST /chat/ + SSE /chat/stream + DELETE /sessions/:id
 │   ├── ragService.ts                ← POST /rag/retrieve
 │   ├── skillService.ts              ← GET/POST/PUT/DELETE /skills/ + GET/PUT /settings/
-│   ├── systemService.ts             ← GET /system/（LLM 信息 + Tavily 状态）
+│   ├── systemService.ts             ← GET /system/（LLM profiles + Tavily + MCP 状态）
 │   └── healthService.ts             ← GET /health/ 和 /health/ready
 └── types/
     ├── api.ts                       ← 后端接口类型
@@ -213,14 +216,19 @@ type ConversationMeta = {
   lastMessagePreview: string
   messageCount: number
   pinned: boolean
+  skillId?: string | null // 会话独立 Skill：undefined = 默认，'none' = 禁用，uuid = 指定 Skill
+  modelId?: string | null // 会话独立模型 Profile：null/undefined = 后端默认
 }
 
 type ChatMessage = {
   id: string
   role: 'user' | 'assistant'
   content: string
+  thinkingBlocks?: string[]
+  thinkingMode?: 'normal' | 'deep' | 'tool'
+  toolActivity?: ToolActivity[]
   status: 'pending' | 'streaming' | 'done' | 'error'
-  createdAt: Date
+  createdAt: string
 }
 ```
 
@@ -235,6 +243,7 @@ isStreaming: boolean
 streamingConversationId: string | null
 useStream: boolean              // 流式开关，持久化
 activeSkillId: string | null    // 当前激活的 Skill ID（null = 使用默认）
+activeModelId: string | null    // 当前激活的模型 profile id（null = 后端默认）
 
 // 动作
 createConversation()            // 新建，自动切换为当前
@@ -243,6 +252,7 @@ renameConversation(id, title)
 deleteConversation(id)          // 删除后自动切到最近会话或新建，并清除后端 session 记忆
 clearConversation(id)           // 清空消息，保留会话，并清除后端 session 记忆
 setActiveSkillId(id)            // 切换激活 Skill
+setActiveModelId(id)            // 切换激活模型 Profile
 sendMessage(prompt)             // 非流式
 sendStreamMessage(prompt)       // SSE 流式
 cancelStream()                  // 中断流式请求
@@ -288,18 +298,20 @@ toggleTheme()
 
 ```
 POST /api/v1/chat/
-Body: { message, session_id, skill_id?, model?, temperature? }
-Response: { session_id, message, model?, metadata }
+Body: { message, session_id?, skill_id?, model_profile?, temperature?, enable_thinking?, thinking_budget?, enable_rag?, use_tools?, enable_web? }
+Response: { session_id, message, model_profile, model?, metadata? }
 ```
 
 ### 7.2 Chat 流式（SSE）
 
 ```
 POST /api/v1/chat/stream
-Body: { message, session_id, skill_id?, model?, temperature? }
+Body: { message, session_id?, skill_id?, model_profile?, temperature?, enable_thinking?, thinking_budget?, enable_rag?, use_tools?, enable_web? }
 
 SSE 事件：
   event: message  data: <文本增量>
+  event: thinking_start / thinking / thinking_stop
+  event: tool_use / tool_start / tool_result
   event: done     data: [DONE]
   event: error    data: <错误信息>
 ```
@@ -307,8 +319,10 @@ SSE 事件：
 前端处理流程：
 1. 发起请求前插入 `status: 'streaming'` 的 assistant 占位消息
 2. 每个 `message` 事件追加到占位消息内容
-3. 收到 `done` → 置 `status: 'done'`
-4. 收到 `error` 或网络异常 → 置 `status: 'error'`，展示重试入口
+3. thinking 事件写入 `thinkingBlocks`，空 thinking block 不渲染
+4. tool 事件写入 `toolActivity`，让用户知道用了哪些工具
+5. 收到 `done` → 置 `status: 'done'`
+6. 收到 `error` 或网络异常 → 置 `status: 'error'`，展示重试入口
 
 ### 7.3 Session 记忆清理
 
@@ -347,14 +361,24 @@ PUT /api/v1/settings/         Body: 以上字段的子集  → 同上
 ### 7.7 系统信息
 
 ```
-GET /api/v1/system/   → { llm: { provider, model, base_url, api_key_configured }, tavily_configured }
+GET /api/v1/system/   → {
+  llm: {
+    default_profile,
+    profiles: [{
+      id, label, provider, model, base_url, api_key_configured, max_tokens,
+      capabilities: { tools, thinking, temperature, anthropic_blocks }
+    }]
+  },
+  tavily_configured,
+  mcp_servers: [{ name, type }]
+}
 ```
 
 ### 7.8 健康检查
 
 ```
 GET /health/        → { status }
-GET /health/ready   → { ready }
+GET /health/ready   → { status }
 ```
 
 ## 8. 交互规则
@@ -373,6 +397,8 @@ GET /health/ready   → { ready }
 - Bubble 组件 `loading` 状态展示打字光标
 - 中断按钮（Sender 内置 Stop 按钮）可取消流式请求
 - 流异常结束时消息显示错误状态，提供重试按钮
+- 工具调用中的中间轮文字只进入 thinking 区，不冒充最终答案
+- 结尾空响应时后端会返回续接提示，前端不再只显示"（空响应）"
 
 ### 8.3 一致性保障
 

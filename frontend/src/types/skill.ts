@@ -4,6 +4,7 @@ export type Skill = {
   description: string;
   system_prompt: string;
   is_builtin: boolean;
+  order: number;
   created_at: string;
   updated_at: string;
 };

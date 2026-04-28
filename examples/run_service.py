@@ -2,9 +2,12 @@
 
 import logging
 
+from dotenv import load_dotenv
 import uvicorn
 
 from astracore.service.api.app import create_app
+
+load_dotenv()
 
 # Enable INFO-level logs for astracore so MCP diagnostics are visible
 logging.getLogger("astracore").setLevel(logging.INFO)
