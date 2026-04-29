@@ -72,6 +72,10 @@ _args = _parse_args()
 
 
 def _normalize_path(path: str) -> Path:
+    if path == "~" or path.startswith("~/") or path.startswith("~\\"):
+        home = os.environ.get("HOME") or str(Path.home())
+        suffix = path[2:] if len(path) > 1 else ""
+        return (Path(home) / suffix).resolve()
     return Path(path).expanduser().resolve()
 
 

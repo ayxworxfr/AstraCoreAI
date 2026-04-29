@@ -432,6 +432,7 @@ export default function ChatMain(): JSX.Element {
     enableTools,
     enableWeb,
     sessionError,
+    initConversations,
     setEnableThinking,
     setEnableRag,
     setEnableTools,
@@ -442,6 +443,11 @@ export default function ChatMain(): JSX.Element {
     loadMessages,
     loadMoreMessages,
   } = useChatStore();
+
+  // 应用启动时从后端加载对话列表
+  useEffect(() => {
+    void initConversations();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const messages = messagesByConversation[activeConversationId] ?? [];
   const isStreaming = messages.some((m) => m.status === 'streaming');

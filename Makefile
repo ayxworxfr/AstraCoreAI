@@ -12,7 +12,7 @@ YELLOW := \033[0;33m
 CYAN   := \033[0;36m
 NC     := \033[0m
 
-PYTHON := python
+PYTHON := python3
 HATCH_ENV_VARS := HATCH_DATA_DIR="$(CURDIR)/.hatch/data" HATCH_CACHE_DIR="$(CURDIR)/.hatch/cache" HATCH_ENV_TYPE_VIRTUAL_PATH="$(CURDIR)/.hatch/venvs" PIP_CACHE_DIR="$(CURDIR)/.cache/pip"
 HATCH  := $(HATCH_ENV_VARS) $(PYTHON) -m hatch
 

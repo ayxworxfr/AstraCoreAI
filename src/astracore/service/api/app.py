@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from astracore.runtime.observability.logger import get_logger, setup_logging
-from astracore.service.api import chat, health, rag, settings, skills, system
+from astracore.service.api import chat, conversations, health, rag, settings, skills, system
 from astracore.service.middleware.logging import RequestLoggingMiddleware
 from astracore.service.seeds import seed_builtin_skills, seed_documents
 
@@ -97,6 +97,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix="/health", tags=["health"])
     app.include_router(chat.router, prefix="/api/v1/chat", tags=["chat"])
+    app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["conversations"])
     app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
     app.include_router(skills.router, prefix="/api/v1/skills", tags=["skills"])
     app.include_router(settings.router, prefix="/api/v1/settings", tags=["settings"])

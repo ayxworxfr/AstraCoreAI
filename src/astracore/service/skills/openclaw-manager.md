@@ -20,27 +20,24 @@ order: 70
 
 ---
 
-## 常用命令
+## 命令速查
 
-- `openclaw gateway`
-- `openclaw gateway run`
-- `openclaw gateway status`
-- `openclaw gateway status --deep`
-- `openclaw gateway status --json`
-- `openclaw gateway install`
-- `openclaw gateway start`
-- `openclaw gateway stop`
-- `openclaw gateway restart`
-- `openclaw gateway uninstall`
+### 状态查询
+- `openclaw gateway status` — 日常状态确认
+- `openclaw gateway status --deep` — 深度诊断（排障用）
+- `openclaw gateway status --json` — 结构化输出（脚本用）
+
+### 生命周期
+- `openclaw gateway start / stop / restart`
+- `openclaw gateway install / uninstall`
+
+### 运行 / 日志 / 排障
+- `openclaw gateway run [--port 18789] [--verbose] [--allow-unconfigured]`
 - `openclaw logs --follow`
 - `openclaw doctor`
 
-常见启动参数：
-
-- `openclaw gateway --port 18789`
-- `openclaw gateway --verbose`
-- `openclaw gateway --force`
-- `openclaw gateway --allow-unconfigured`
+### `--force` 使用条件
+**仅在以下情况才用**：{{owner_name}} 明确要求，或 `openclaw doctor` 诊断确认是 stuck 状态。日常启停禁用。
 
 ---
 
@@ -50,10 +47,16 @@ order: 70
 - **启动**: 先查状态；已运行就不重复启动；未运行再用 `openclaw gateway start`
 - **停止**: 先查状态；未运行就说明；运行中再 `openclaw gateway stop`，之后复查状态
 - **重启**: 先查状态，再 `openclaw gateway restart`；异常时看 `status --deep`、日志和 `doctor`
-- **等待**: 启动、重启、warm-up 可能较慢；状态显示 `loaded`、`warm-up` 或端口未就绪时，用递增 sleep 退避后再复查，例如 `10s → 20s → 30s`，不要短时间连续调用工具
+- **等待**: 启动、重启、warm-up 可能较慢；状态显示 `loaded`、`warm-up` 或端口未就绪时，用递增 sleep 退避后再复查：`10s → 20s → 30s`，不要短时间连续调用工具
 - **日志**: 使用 `openclaw logs --follow`，先提炼异常点，不要只贴原文
 - **排障**: 启动不了、频繁挂、状态异常时优先跑 `openclaw doctor`
 
 `stop` / `restart` 可能命令挂住但服务已完成操作，最终以 `status` 为准。
+
+---
+
+## 失败兜底
+
+命令报错或超时：先跑 `openclaw gateway status` 确认实际状态（可能命令挂住但服务已生效），再决定是否重试。**连续 2 次失败必须跑 `openclaw doctor` 诊断，不要盲目重试。**
 
 ⚠️ 用户只让查状态或看日志时，不要擅自重启、停止或使用 `--force`。

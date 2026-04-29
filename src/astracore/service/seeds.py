@@ -128,6 +128,8 @@ def _load_builtin_skills() -> list[dict]:
 
     skills = []
     for path in SKILLS_DIR.glob("*.md"):
+        if path.stem.upper() in {"README", "CHANGELOG", "LICENSE"}:
+            continue
         try:
             skills.append(_parse_skill_md(path))
         except Exception:

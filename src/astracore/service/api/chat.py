@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any
@@ -9,9 +10,10 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
 
-from astracore.adapters.db.models import SkillRow, UserSettingsRow
+from astracore.adapters.db.models import ChatRunRow, ConversationRow, SkillRow, UserSettingsRow
 from astracore.adapters.db.session import get_session
 from astracore.adapters.llm.anthropic import AnthropicAdapter
 from astracore.adapters.llm.openai import OpenAIAdapter
@@ -30,6 +32,66 @@ from astracore.service.builtin_tools import build_tool_adapter
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+_RUN_TERMINAL_STATUSES = {"done", "error", "cancelled"}
+
+
+class _ActiveRun:
+    """进程内 run 状态与订阅者；token 热路径只写这里，不写数据库。"""
+
+    def __init__(self, row: ChatRunRow):
+        self.task: asyncio.Task[None] | None = None
+        self.subscribers: set[asyncio.Queue[tuple[str, str]]] = set()
+        self.state: dict[str, Any] = {
+            "run_id": row.id,
+            "session_id": row.session_id,
+            "status": row.status,
+            "user_message": row.user_message,
+            "assistant_content": row.assistant_content,
+            "thinking_blocks": row.thinking_blocks or [],
+            "tool_activity": row.tool_activity or [],
+            "error": row.error,
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        }
+
+    def update(self, **patch: Any) -> None:
+        self.state.update(patch)
+        self.state["updated_at"] = datetime.now(UTC).isoformat()
+
+    def payload(self) -> dict[str, Any]:
+        return dict(self.state)
+
+
+_ACTIVE_RUNS: dict[str, _ActiveRun] = {}
+
+
+def _json_event(data: dict[str, Any]) -> str:
+    return json.dumps(data, ensure_ascii=False, default=str)
+
+
+def _enqueue_run_event(queue: asyncio.Queue[tuple[str, str]], item: tuple[str, str]) -> None:
+    """向订阅队列写入事件；队列满时丢弃旧事件，保留最新状态。"""
+
+    while True:
+        try:
+            queue.put_nowait(item)
+            return
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
+
+def _broadcast_run_event(run_id: str, event: str, data: dict[str, Any]) -> None:
+    active = _ACTIVE_RUNS.get(run_id)
+    if active is None:
+        return
+    payload = _json_event(data)
+    for queue in active.subscribers:
+        _enqueue_run_event(queue, (event, payload))
 
 
 def _strip_dangling_tool_calls(messages: list) -> list:
@@ -209,6 +271,8 @@ async def _get_setting_value(key: str) -> str:
 class MessageItem(BaseModel):
     role: str
     content: str
+    thinking_blocks: list[str] = Field(default_factory=list)
+    tool_activity: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SessionMessagesResponse(BaseModel):
@@ -241,6 +305,26 @@ class ChatResponse(BaseModel):
     model_profile: str
     model: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatRunResponse(BaseModel):
+    run_id: str
+    session_id: str
+    status: str
+
+
+class ChatRunStateResponse(BaseModel):
+    run_id: str
+    session_id: str
+    status: str
+    user_message: str
+    assistant_content: str = ""
+    thinking_blocks: list[str] = Field(default_factory=list)
+    tool_activity: list[dict[str, Any]] = Field(default_factory=list)
+    error: str = ""
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
 
 
 def _build_llm_kwargs(request: ChatRequest, profile: LLMProfileConfig) -> dict[str, Any]:
@@ -331,6 +415,420 @@ async def _build_system_prompt(
     return "\n\n---\n\n".join(parts) or None
 
 
+def _run_row_to_state(row: ChatRunRow) -> ChatRunStateResponse:
+    return ChatRunStateResponse(
+        run_id=row.id,
+        session_id=row.session_id,
+        status=row.status,
+        user_message=row.user_message,
+        assistant_content=row.assistant_content,
+        thinking_blocks=row.thinking_blocks or [],
+        tool_activity=row.tool_activity or [],
+        error=row.error,
+        created_at=row.created_at.isoformat(),
+        updated_at=row.updated_at.isoformat(),
+        completed_at=row.completed_at.isoformat() if row.completed_at else None,
+    )
+
+
+async def _get_run_row(run_id: str) -> ChatRunRow | None:
+    async with get_session(_get_settings().memory.db_url) as db:
+        return await db.get(ChatRunRow, run_id)
+
+
+async def _get_active_run_row(session_id: UUID) -> ChatRunRow | None:
+    async with get_session(_get_settings().memory.db_url) as db:
+        result = await db.execute(
+            select(ChatRunRow)
+            .where(
+                ChatRunRow.session_id == str(session_id),
+                ChatRunRow.status == "running",
+            )
+            .order_by(ChatRunRow.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+
+async def _update_run_row(run_id: str, **patch: Any) -> ChatRunRow | None:
+    async with get_session(_get_settings().memory.db_url) as db:
+        row = await db.get(ChatRunRow, run_id)
+        if row is None:
+            return None
+        for key, value in patch.items():
+            setattr(row, key, value)
+        row.updated_at = datetime.now(UTC)
+        if row.status in _RUN_TERMINAL_STATUSES and row.completed_at is None:
+            row.completed_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(row)
+        return row
+
+
+async def _update_conversation_from_messages(session_id: UUID, messages: list[Message]) -> None:
+    visible = [m for m in messages if m.role in (MessageRole.USER, MessageRole.ASSISTANT)]
+    preview = visible[-1].content[:256] if visible else ""
+    async with get_session(_get_settings().memory.db_url) as db:
+        row = await db.get(ConversationRow, str(session_id))
+        if row is None:
+            return
+        if row.title == "新会话" and row.message_count == 0 and visible:
+            first_user = next((m for m in visible if m.role == MessageRole.USER), None)
+            if first_user:
+                row.title = first_user.content[:24] or "新会话"
+        row.last_message_preview = preview
+        row.message_count = len(visible)
+        row.updated_at = datetime.now(UTC)
+        await db.commit()
+
+
+def _update_active_run_state(run_id: str, **patch: Any) -> None:
+    active = _ACTIVE_RUNS.get(run_id)
+    if active is None:
+        return
+    active.update(**patch)
+
+
+def _run_state_payload(row: ChatRunRow) -> dict[str, Any]:
+    return _run_row_to_state(row).model_dump()
+
+
+async def _create_run_row(request: ChatRequest, session_id: UUID) -> ChatRunRow:
+    run_id = str(uuid4())
+    now = datetime.now(UTC)
+    row = ChatRunRow(
+        id=run_id,
+        session_id=str(session_id),
+        status="running",
+        request=request.model_dump(mode="json"),
+        user_message=request.message,
+        created_at=now,
+        updated_at=now,
+    )
+    async with get_session(_get_settings().memory.db_url) as db:
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        return row
+
+
+def _broadcast_snapshot(run_id: str, row: ChatRunRow) -> None:
+    _broadcast_run_event(run_id, "run_state", _run_state_payload(row))
+
+
+async def _execute_normal_run(
+    *,
+    run_id: str,
+    request: ChatRequest,
+    session_id: UUID,
+    profile: LLMProfileConfig,
+    inject_system: str | None,
+    temperature: float,
+    context_max: int,
+    llm_kwargs: dict[str, Any],
+) -> None:
+    memory = _get_memory_adapter()
+    messages = [m for m in await memory.load_short_term(session_id) if m.role != MessageRole.SYSTEM]
+    session = SessionState(session_id=session_id)
+    session.restore_messages(messages)
+    session.add_message(Message(role=MessageRole.USER, content=request.message))
+    await _save_short_term_safe(session_id, session.get_messages())
+    await _update_conversation_from_messages(session_id, session.get_messages())
+
+    llm_messages = session.get_messages()
+    if context_max and len(llm_messages) > context_max:
+        llm_messages = llm_messages[-context_max:]
+    if inject_system:
+        llm_messages = [Message(role=MessageRole.SYSTEM, content=inject_system)] + llm_messages
+
+    accumulated_content = ""
+    thinking_blocks: list[str] = []
+    assistant_metadata: dict[str, Any] = {}
+    async for event in _get_llm_adapter(profile.id).generate_stream(
+        messages=llm_messages,
+        temperature=temperature,
+        **llm_kwargs,
+    ):
+        if event.event_type == StreamEventType.TEXT_DELTA and event.content:
+            accumulated_content += event.content
+            _broadcast_run_event(run_id, "message", {"text": event.content})
+            _update_active_run_state(
+                run_id,
+                assistant_content=accumulated_content,
+                thinking_blocks=list(thinking_blocks),
+                tool_activity=[],
+            )
+        elif event.event_type == StreamEventType.THINKING_DELTA and event.content:
+            if not thinking_blocks:
+                thinking_blocks.append("")
+                _broadcast_run_event(run_id, "thinking_start", {"round": 1})
+            thinking_blocks[-1] += event.content
+            _broadcast_run_event(run_id, "thinking", {"text": event.content})
+            _update_active_run_state(
+                run_id,
+                assistant_content=accumulated_content,
+                thinking_blocks=list(thinking_blocks),
+                tool_activity=[],
+            )
+        elif event.event_type == StreamEventType.DONE:
+            raw_blocks = event.metadata.get(ChatUseCase._ANTHROPIC_BLOCKS_KEY)
+            if isinstance(raw_blocks, list) and raw_blocks:
+                assistant_metadata[ChatUseCase._ANTHROPIC_BLOCKS_KEY] = raw_blocks
+
+    session.add_message(
+        Message(
+            role=MessageRole.ASSISTANT,
+            content=accumulated_content,
+            metadata=assistant_metadata,
+        )
+    )
+    await _save_short_term_safe(session_id, session.get_messages())
+    await _update_conversation_from_messages(session_id, session.get_messages())
+    row = await _update_run_row(
+        run_id,
+        assistant_content=accumulated_content,
+        thinking_blocks=thinking_blocks,
+        tool_activity=[],
+        status="done",
+    )
+    if row:
+        _broadcast_snapshot(run_id, row)
+    _broadcast_run_event(run_id, "done", {})
+
+
+async def _execute_tool_run(
+    *,
+    run_id: str,
+    request: ChatRequest,
+    session_id: UUID,
+    profile: LLMProfileConfig,
+    tool_adapter: ToolAdapter,
+    inject_system: str | None,
+    temperature: float,
+    context_max: int,
+    llm_kwargs: dict[str, Any],
+) -> None:
+    all_tools = {d.name for d in tool_adapter.get_definitions()}
+    allowed_tools = all_tools
+    if not request.enable_rag:
+        allowed_tools = allowed_tools - {"search_knowledge_base"}
+    if not request.enable_web:
+        allowed_tools = allowed_tools - {"web_search"}
+
+    memory = _get_memory_adapter()
+    tool_loop = _get_tool_loop_use_case(tool_adapter, profile.id)
+    messages = [m for m in await memory.load_short_term(session_id) if m.role != MessageRole.SYSTEM]
+    if len(messages) > context_max:
+        messages = messages[-context_max:]
+    session = SessionState(session_id=session_id)
+    initial_messages: list[Message] = []
+    if inject_system:
+        initial_messages.append(Message(role=MessageRole.SYSTEM, content=inject_system))
+    initial_messages.extend(messages)
+    session.restore_messages(initial_messages)
+    session.add_message(Message(role=MessageRole.USER, content=request.message))
+    await _save_short_term_safe(session_id, session.get_messages())
+    await _update_conversation_from_messages(session_id, session.get_messages())
+
+    round_count = 0
+    round_text_buffer: list[str] = []
+    in_tool_round = False
+    assistant_content = ""
+    thinking_blocks: list[str] = []
+    tool_activity: list[dict[str, Any]] = []
+    async for event in tool_loop.execute_stream_with_tools(
+        session,
+        allowed_tools=allowed_tools,
+        **llm_kwargs,
+    ):
+        if event.event_type == StreamEventType.ROUND_START:
+            for text in round_text_buffer:
+                if not thinking_blocks:
+                    thinking_blocks.append("")
+                thinking_blocks[-1] += text
+                _broadcast_run_event(run_id, "thinking", {"text": text})
+            round_text_buffer = []
+            in_tool_round = False
+            round_count = int(event.metadata.get("round", round_count + 1))
+            thinking_blocks.append("")
+            _broadcast_run_event(run_id, "thinking_start", {"round": round_count})
+        elif event.event_type == StreamEventType.TEXT_DELTA and event.content:
+            if in_tool_round:
+                if not thinking_blocks:
+                    thinking_blocks.append("")
+                thinking_blocks[-1] += event.content
+                _broadcast_run_event(run_id, "thinking", {"text": event.content})
+            else:
+                round_text_buffer.append(event.content)
+        elif event.event_type == StreamEventType.THINKING_DELTA and event.content:
+            if not thinking_blocks:
+                thinking_blocks.append("")
+            thinking_blocks[-1] += event.content
+            _broadcast_run_event(run_id, "thinking", {"text": event.content})
+        elif event.event_type == StreamEventType.THINKING_STOP:
+            _broadcast_run_event(
+                run_id,
+                "thinking_stop",
+                {"duration_ms": event.metadata.get("duration_ms", 0)},
+            )
+        elif event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
+            if not in_tool_round:
+                if not thinking_blocks:
+                    thinking_blocks.append("")
+                for text in round_text_buffer:
+                    thinking_blocks[-1] += text
+                    _broadcast_run_event(run_id, "thinking", {"text": text})
+                round_text_buffer = []
+                in_tool_round = True
+            item = {
+                "name": event.tool_call.name,
+                "done": False,
+                "input": event.tool_call.arguments,
+            }
+            tool_activity.append(item)
+            _broadcast_run_event(
+                run_id,
+                "tool_start",
+                {"tool": event.tool_call.name, "input": event.tool_call.arguments},
+            )
+        elif event.event_type == StreamEventType.TOOL_RESULT:
+            tool_name = str(event.metadata.get("tool", ""))
+            result_text = str(event.metadata.get("result", ""))
+            for item in reversed(tool_activity):
+                if item.get("name") == tool_name and not item.get("done"):
+                    item.update(
+                        {
+                            "done": True,
+                            "result": result_text,
+                            "isError": bool(event.metadata.get("is_error", False)),
+                            "durationMs": int(event.metadata.get("duration_ms", 0)),
+                        }
+                    )
+                    break
+            _broadcast_run_event(
+                run_id,
+                "tool_result",
+                {
+                    "tool": tool_name,
+                    "input": event.metadata.get("input", {}),
+                    "result": result_text,
+                    "is_error": event.metadata.get("is_error", False),
+                    "duration_ms": event.metadata.get("duration_ms", 0),
+                },
+            )
+
+        _update_active_run_state(
+            run_id,
+            assistant_content=assistant_content,
+            thinking_blocks=list(thinking_blocks),
+            tool_activity=list(tool_activity),
+        )
+
+    for text in round_text_buffer:
+        assistant_content += text
+        _broadcast_run_event(run_id, "message", {"text": text})
+
+    safe_messages = _strip_dangling_tool_calls(session.get_messages())
+    if _needs_summary_fallback(safe_messages):
+        hit_iteration_limit = (
+            not tool_loop.unlimited
+            and round_count >= tool_loop.max_iterations
+            and safe_messages
+            and safe_messages[-1].role == MessageRole.TOOL
+        )
+        summary_text = ""
+        async for event in _get_llm_adapter(profile.id).generate_stream(
+            messages=_build_summary_fallback_messages(
+                safe_messages,
+                hit_iteration_limit=hit_iteration_limit,
+            ),
+            temperature=temperature,
+        ):
+            if event.event_type == StreamEventType.TEXT_DELTA and event.content:
+                summary_text += event.content
+                assistant_content += event.content
+                _broadcast_run_event(run_id, "message", {"text": event.content})
+        if summary_text.strip():
+            session.add_message(Message(role=MessageRole.ASSISTANT, content=summary_text))
+        else:
+            hint = "信息量较大，本轮分析已暂停。会话已保存，请发送「继续」让 AI 继续完成分析。"
+            assistant_content += hint
+            session.add_message(Message(role=MessageRole.ASSISTANT, content=hint))
+            _broadcast_run_event(run_id, "message", {"text": hint})
+
+    await _save_short_term_safe(session_id, session.get_messages())
+    await _update_conversation_from_messages(session_id, session.get_messages())
+    row = await _update_run_row(
+        run_id,
+        assistant_content=assistant_content,
+        thinking_blocks=thinking_blocks,
+        tool_activity=[{**item, "done": True} for item in tool_activity],
+        status="done",
+    )
+    if row:
+        _broadcast_snapshot(run_id, row)
+    _broadcast_run_event(run_id, "done", {})
+
+
+async def _run_chat_in_background(
+    *,
+    run_id: str,
+    request: ChatRequest,
+    session_id: UUID,
+    tool_adapter: ToolAdapter,
+) -> None:
+    try:
+        profile = _get_llm_profile(request.model_profile)
+        _ensure_tool_capability(request, profile)
+        inject_system = await _build_system_prompt(
+            skill_id=request.skill_id,
+            disable_skill=request.disable_skill,
+            enable_rag=request.enable_rag,
+            message=request.message,
+        )
+        temperature = await _resolve_temperature(request, profile)
+        context_max = int(await _get_setting_value("context_max_messages") or "20")
+        llm_kwargs = _build_llm_kwargs(request, profile)
+
+        if request.use_tools or request.enable_web:
+            await _execute_tool_run(
+                run_id=run_id,
+                request=request,
+                session_id=session_id,
+                profile=profile,
+                tool_adapter=tool_adapter,
+                inject_system=inject_system,
+                temperature=temperature,
+                context_max=context_max,
+                llm_kwargs=llm_kwargs,
+            )
+        else:
+            await _execute_normal_run(
+                run_id=run_id,
+                request=request,
+                session_id=session_id,
+                profile=profile,
+                inject_system=inject_system,
+                temperature=temperature,
+                context_max=context_max,
+                llm_kwargs=llm_kwargs,
+            )
+    except asyncio.CancelledError:
+        row = await _update_run_row(run_id, status="cancelled", error="用户已停止生成")
+        if row:
+            _broadcast_snapshot(run_id, row)
+        _broadcast_run_event(run_id, "error", {"message": "用户已停止生成"})
+        raise
+    except Exception as e:
+        logger.exception("后台 chat run 失败: run_id=%s", run_id)
+        row = await _update_run_row(run_id, status="error", error=str(e))
+        if row:
+            _broadcast_snapshot(run_id, row)
+        _broadcast_run_event(run_id, "error", {"message": str(e)})
+    finally:
+        _ACTIVE_RUNS.pop(run_id, None)
+
+
 async def _run_with_tools(
     request: "ChatRequest", session_id: UUID, tool_adapter: ToolAdapter
 ) -> str:
@@ -410,11 +908,140 @@ async def get_session_messages(
     end = total - offset
     start = max(0, end - limit)
     page = visible[start:end]
+
+    async with get_session(_get_settings().memory.db_url) as db:
+        result = await db.execute(
+            select(ChatRunRow)
+            .where(
+                ChatRunRow.session_id == str(session_id),
+                ChatRunRow.status == "done",
+            )
+            .order_by(ChatRunRow.created_at.asc())
+        )
+        runs = result.scalars().all()
+
+    run_meta: dict[tuple[str, str], list[tuple[list[str], list[dict[str, Any]]]]] = {}
+    for run in runs:
+        if not run.assistant_content:
+            continue
+        key = (run.user_message, run.assistant_content)
+        run_meta.setdefault(key, []).append((run.thinking_blocks or [], run.tool_activity or []))
+
+    message_meta: dict[int, tuple[list[str], list[dict[str, Any]]]] = {}
+    for index in range(1, len(visible)):
+        previous = visible[index - 1]
+        current = visible[index]
+        if previous.role != MessageRole.USER or current.role != MessageRole.ASSISTANT:
+            continue
+        matches = run_meta.get((previous.content, current.content))
+        if matches:
+            message_meta[index] = matches.pop(0)
+
     return SessionMessagesResponse(
-        messages=[MessageItem(role=m.role.value, content=m.content) for m in page],
+        messages=[
+            MessageItem(
+                role=m.role.value,
+                content=m.content,
+                thinking_blocks=message_meta.get(start + i, ([], []))[0],
+                tool_activity=message_meta.get(start + i, ([], []))[1],
+            )
+            for i, m in enumerate(page)
+        ],
         total=total,
         has_more=start > 0,
     )
+
+
+@router.get("/sessions/{session_id}/runs/active", response_model=ChatRunStateResponse | None)
+async def get_active_run(session_id: UUID) -> ChatRunStateResponse | None:
+    for active in _ACTIVE_RUNS.values():
+        if active.state.get("session_id") == str(session_id):
+            return ChatRunStateResponse(**active.payload())
+
+    row = await _get_active_run_row(session_id)
+    if row is None:
+        return None
+    return _run_row_to_state(row)
+
+
+@router.post("/runs", response_model=ChatRunResponse, status_code=202)
+async def create_chat_run(request: ChatRequest, http_request: Request) -> ChatRunResponse:
+    session_id = request.session_id or uuid4()
+    active = await _get_active_run_row(session_id)
+    if active is not None and active.id in _ACTIVE_RUNS:
+        return ChatRunResponse(run_id=active.id, session_id=active.session_id, status=active.status)
+    if active is not None:
+        await _update_run_row(active.id, status="error", error="服务重启导致生成任务中断")
+
+    row = await _create_run_row(request, session_id)
+    tool_adapter = _resolve_tool_adapter(http_request)
+    active_run = _ActiveRun(row)
+    _ACTIVE_RUNS[row.id] = active_run
+    active_run.task = asyncio.create_task(
+        _run_chat_in_background(
+            run_id=row.id,
+            request=request,
+            session_id=session_id,
+            tool_adapter=tool_adapter,
+        )
+    )
+    logger.info("创建后台 chat run: run_id=%s, session=%s", row.id, session_id)
+    return ChatRunResponse(run_id=row.id, session_id=str(session_id), status=row.status)
+
+
+@router.get("/runs/{run_id}/stream")
+async def stream_chat_run(run_id: UUID) -> EventSourceResponse:
+    async def event_generator() -> AsyncIterator[dict[str, str]]:
+        rid = str(run_id)
+        row = await _get_run_row(rid)
+        if row is None:
+            yield {"event": "error", "data": _json_event({"message": "Run not found"})}
+            return
+
+        active = _ACTIVE_RUNS.get(rid)
+        if active is not None:
+            yield {"event": "run_state", "data": _json_event(active.payload())}
+        else:
+            yield {"event": "run_state", "data": _json_event(_run_state_payload(row))}
+
+        if row.status in _RUN_TERMINAL_STATUSES:
+            yield {"event": "done" if row.status == "done" else "error", "data": _json_event({"message": row.error})}
+            return
+
+        if active is None:
+            row = await _update_run_row(rid, status="error", error="生成任务已中断，请重新发送")
+            if row:
+                yield {"event": "run_state", "data": _json_event(_run_state_payload(row))}
+            yield {"event": "error", "data": _json_event({"message": "生成任务已中断，请重新发送"})}
+            return
+
+        queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(maxsize=200)
+        active.subscribers.add(queue)
+        try:
+            while True:
+                event, data = await queue.get()
+                yield {"event": event, "data": data}
+                if event in {"done", "error"}:
+                    break
+        finally:
+            active.subscribers.discard(queue)
+
+    return EventSourceResponse(event_generator())
+
+
+@router.post("/runs/{run_id}/cancel", response_model=ChatRunStateResponse)
+async def cancel_chat_run(run_id: UUID) -> ChatRunStateResponse:
+    rid = str(run_id)
+    active = _ACTIVE_RUNS.get(rid)
+    if active is not None and active.task is not None:
+        active.task.cancel()
+        active.update(status="cancelled", error="用户已停止生成", completed_at=datetime.now(UTC).isoformat())
+    row = await _update_run_row(rid, status="cancelled", error="用户已停止生成")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    _broadcast_snapshot(rid, row)
+    _broadcast_run_event(rid, "error", {"message": "用户已停止生成"})
+    return _run_row_to_state(row)
 
 
 @router.post("/", response_model=ChatResponse)
@@ -470,194 +1097,6 @@ async def _build_rag_context(query: str) -> str | None:
 
 @router.post("/stream")
 async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourceResponse:
-    """Streaming chat endpoint.
-
-    use_tools=True 时走工具循环流式路径，每轮思考产生独立 thinking_start/thinking 事件对。
-    """
-    session_id = request.session_id or uuid4()
-    tool_adapter = _resolve_tool_adapter(http_request)
-
-    async def event_generator() -> Any:
-        profile = _get_llm_profile(request.model_profile)
-        logger.info(
-            "stream 开始: session=%s, use_tools=%s, enable_web=%s, profile=%s, model=%s",
-            session_id,
-            request.use_tools,
-            request.enable_web,
-            profile.id,
-            profile.model,
-        )
-        # 首帧：告知客户端会话上下文和用户问题
-        yield {"event": "conversation", "data": json.dumps(
-            {"session_id": str(session_id), "message": request.message,
-             "created_at": datetime.now(UTC).isoformat()},
-            ensure_ascii=False,
-        )}
-        try:
-            inject_system = await _build_system_prompt(
-                skill_id=request.skill_id,
-                disable_skill=request.disable_skill,
-                enable_rag=request.enable_rag,
-                message=request.message,
-            )
-
-            _ensure_tool_capability(request, profile)
-            temperature = await _resolve_temperature(request, profile)
-
-            context_max = int(await _get_setting_value("context_max_messages") or "20")
-
-            llm_kwargs = _build_llm_kwargs(request, profile)
-
-            if request.use_tools or request.enable_web:
-                # 工具循环流式路径：动态获取所有已注册工具（含 MCP 工具）
-                all_tools = {d.name for d in tool_adapter.get_definitions()}
-                allowed_tools = all_tools
-                if not request.enable_rag:
-                    allowed_tools = allowed_tools - {"search_knowledge_base"}
-                if not request.enable_web:
-                    allowed_tools = allowed_tools - {"web_search"}
-
-                memory = _get_memory_adapter()
-                tool_loop = _get_tool_loop_use_case(tool_adapter, profile.id)
-
-                messages = await memory.load_short_term(session_id)
-                # 过滤旧 SYSTEM 消息（兼容历史数据），取最近 context_max 条
-                messages = [m for m in messages if m.role != MessageRole.SYSTEM]
-                if len(messages) > context_max:
-                    messages = messages[-context_max:]
-                session = SessionState(session_id=session_id)
-                # SYSTEM 消息必须在 index 0，_inject_guidance 才能正确识别并合并
-                initial_messages: list[Message] = []
-                if inject_system:
-                    initial_messages.append(Message(role=MessageRole.SYSTEM, content=inject_system))
-                initial_messages.extend(messages)
-                session.restore_messages(initial_messages)
-                session.add_message(
-                    Message(role=MessageRole.USER, content=request.message)
-                )
-
-                try:
-                    round_count = 0
-                    # 中间工具轮的文本缓存：遇到 TOOL_CALL 才确认该轮是工具轮，
-                    # 将缓存文本作为 thinking 发出；循环结束后残留内容是最终回答。
-                    round_text_buffer: list[str] = []
-                    in_tool_round = False
-                    async for event in tool_loop.execute_stream_with_tools(
-                        session,
-                        allowed_tools=allowed_tools,
-                        **llm_kwargs,
-                    ):
-                        if event.event_type == StreamEventType.ROUND_START:
-                            # 新一轮开始：上一轮缓存的文本必然属于工具轮，发为 thinking
-                            for text in round_text_buffer:
-                                yield {"event": "thinking", "data": json.dumps({"text": text}, ensure_ascii=False)}
-                            round_text_buffer = []
-                            in_tool_round = False
-                            round_count = int(event.metadata.get("round", round_count + 1))
-                            yield {"event": "thinking_start", "data": json.dumps({"round": round_count})}
-                        elif event.event_type == StreamEventType.TEXT_DELTA and event.content:
-                            if in_tool_round:
-                                # 本轮已确认调用工具，文本为旁白，直接发为 thinking
-                                yield {"event": "thinking", "data": json.dumps({"text": event.content}, ensure_ascii=False)}
-                            else:
-                                # 尚不确定本轮是否调用工具，先缓存
-                                round_text_buffer.append(event.content)
-                        elif event.event_type == StreamEventType.THINKING_DELTA:
-                            yield {"event": "thinking", "data": json.dumps({"text": event.content}, ensure_ascii=False)}
-                        elif event.event_type == StreamEventType.THINKING_STOP:
-                            yield {"event": "thinking_stop", "data": json.dumps(
-                                {"duration_ms": event.metadata.get("duration_ms", 0)},
-                            )}
-                        elif event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
-                            # 本轮确认有工具调用，将缓存文本标记为 thinking
-                            if not in_tool_round:
-                                for text in round_text_buffer:
-                                    yield {"event": "thinking", "data": json.dumps({"text": text}, ensure_ascii=False)}
-                                round_text_buffer = []
-                                in_tool_round = True
-                            yield {"event": "tool_start", "data": json.dumps(
-                                {"tool": event.tool_call.name, "input": event.tool_call.arguments},
-                                ensure_ascii=False, default=str,
-                            )}
-                        elif event.event_type == StreamEventType.TOOL_RESULT:
-                            yield {"event": "tool_result", "data": json.dumps(
-                                {
-                                    "tool": event.metadata.get("tool", ""),
-                                    "input": event.metadata.get("input", {}),
-                                    "result": event.metadata.get("result", ""),
-                                    "is_error": event.metadata.get("is_error", False),
-                                    "duration_ms": event.metadata.get("duration_ms", 0),
-                                },
-                                ensure_ascii=False, default=str,
-                            )}
-                    # 循环结束：缓存残留的文本来自最终无工具轮，即 AI 的最终回答
-                    for text in round_text_buffer:
-                        yield {"event": "message", "data": json.dumps({"text": text}, ensure_ascii=False)}
-
-                    safe_messages = _strip_dangling_tool_calls(session.get_messages())
-                    if _needs_summary_fallback(safe_messages):
-                        hit_iteration_limit = (
-                            not tool_loop.unlimited
-                            and round_count >= tool_loop.max_iterations
-                            and safe_messages
-                            and safe_messages[-1].role == MessageRole.TOOL
-                        )
-                        logger.info(
-                            "触发总结收尾: session=%s, rounds=%d, hit_limit=%s",
-                            session_id, round_count, hit_iteration_limit,
-                        )
-                        summary_text = ""
-                        async for event in _get_llm_adapter(profile.id).generate_stream(
-                            messages=_build_summary_fallback_messages(
-                                safe_messages,
-                                hit_iteration_limit=hit_iteration_limit,
-                            ),
-                            temperature=temperature,
-                        ):
-                            if (
-                                event.event_type == StreamEventType.TEXT_DELTA
-                                and event.content
-                            ):
-                                summary_text += event.content
-                                yield {"event": "message", "data": json.dumps({"text": event.content}, ensure_ascii=False)}
-                        if summary_text.strip():
-                            session.add_message(
-                                Message(role=MessageRole.ASSISTANT, content=summary_text)
-                            )
-                        else:
-                            # 总结收尾也未产生有效内容（通常因上下文过长），提示用户继续
-                            hint = "信息量较大，本轮分析已暂停。会话已保存，请发送「继续」让 AI 继续完成分析。"
-                            session.add_message(Message(role=MessageRole.ASSISTANT, content=hint))
-                            yield {"event": "message", "data": json.dumps({"text": hint}, ensure_ascii=False)}
-                    logger.info("stream 完成(工具路径): session=%s, rounds=%d", session_id, round_count)
-                    yield {"event": "done", "data": "{}"}
-                finally:
-                    await _save_short_term_safe(session_id, session.get_messages())
-
-            else:
-                # 普通流式路径（无工具）
-                use_case = _get_chat_use_case(profile.id)
-                async for event in use_case.execute_stream(
-                    session_id=session_id,
-                    user_message=request.message,
-                    temperature=temperature,
-                    inject_system=inject_system,
-                    context_max_messages=context_max,
-                    **llm_kwargs,
-                ):
-                    if event.event_type == StreamEventType.TEXT_DELTA:
-                        yield {"event": "message", "data": json.dumps({"text": event.content}, ensure_ascii=False)}
-                    elif event.event_type == StreamEventType.THINKING_DELTA:
-                        yield {"event": "thinking", "data": json.dumps({"text": event.content}, ensure_ascii=False)}
-                    elif event.event_type == StreamEventType.DONE:
-                        logger.info("stream 完成(普通路径): session=%s", session_id)
-                        yield {"event": "done", "data": "{}"}
-
-        except Exception as e:
-            logger.exception("stream 异常: session=%s", session_id)
-            detail = str(e)
-            if e.__cause__ is not None:
-                detail = f"{detail} — {e.__cause__!s}"
-            yield {"event": "error", "data": json.dumps({"message": detail}, ensure_ascii=False)}
-
-    return EventSourceResponse(event_generator())
+    """兼容旧入口：创建后台 run，并订阅该 run。"""
+    run = await create_chat_run(request, http_request)
+    return await stream_chat_run(UUID(run.run_id))

@@ -1,21 +1,24 @@
 """Streaming session safety regression tests."""
 
 import asyncio
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from fastapi import FastAPI
 from sqlalchemy.pool import NullPool
-from starlette.requests import Request
 
 from astracore.adapters.db.session import get_engine
 from astracore.core.domain.message import Message, MessageRole, ToolCall, ToolResult
 from astracore.core.ports.llm import LLMResponse, StreamEvent, StreamEventType
 from astracore.service.api.chat import (
+    _ACTIVE_RUNS,
+    _ActiveRun,
+    _broadcast_run_event,
     ChatRequest,
+    _execute_tool_run,
     _run_with_tools,
     _save_short_term_safe,
-    chat_stream,
 )
 
 
@@ -32,6 +35,42 @@ async def test_save_short_term_safe_swallows_cancelled_error(monkeypatch) -> Non
     )
 
     assert mock_memory.save_short_term.await_count == 1
+
+
+def test_broadcast_keeps_subscriber_when_queue_is_full() -> None:
+    """订阅队列满时应丢旧事件而不是静默移除订阅者。"""
+
+    now = datetime.now(UTC)
+    run_id = "run-full-queue"
+    row = SimpleNamespace(
+        id=run_id,
+        session_id=str(uuid4()),
+        status="running",
+        user_message="hello",
+        assistant_content="",
+        thinking_blocks=[],
+        tool_activity=[],
+        error="",
+        created_at=now,
+        updated_at=now,
+        completed_at=None,
+    )
+    queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(maxsize=2)
+    queue.put_nowait(("message", '{"text":"old-1"}'))
+    queue.put_nowait(("message", '{"text":"old-2"}'))
+
+    active = _ActiveRun(row)
+    active.subscribers.add(queue)
+    _ACTIVE_RUNS[run_id] = active
+    try:
+        _broadcast_run_event(run_id, "run_state", {"assistant_content": "完整内容"})
+        _broadcast_run_event(run_id, "done", {})
+
+        queued_events = [queue.get_nowait()[0], queue.get_nowait()[0]]
+        assert queue in active.subscribers
+        assert queued_events == ["run_state", "done"]
+    finally:
+        _ACTIVE_RUNS.pop(run_id, None)
 
 
 def test_get_engine_uses_null_pool_for_sqlite() -> None:
@@ -97,11 +136,12 @@ async def test_run_with_tools_auto_summarizes_when_tool_loop_ends_without_final_
 async def test_chat_stream_auto_summarizes_when_tool_loop_stops_at_tool_results(
     monkeypatch,
 ) -> None:
-    """流式工具模式在没有最终正文时，应自动补发总结文本而不是空响应。"""
+    """后台流式工具 run 在没有最终正文时，应自动补发总结文本而不是空响应。"""
 
     tool_call = ToolCall(name="read_text_file", arguments={"path": "/tmp/demo"})
     fake_memory = AsyncMock()
     fake_memory.load_short_term.return_value = []
+    emitted: list[tuple[str, dict]] = []
 
     class FakeToolLoop:
         max_iterations = 1
@@ -151,14 +191,28 @@ async def test_chat_stream_auto_summarizes_when_tool_loop_stops_at_tool_results(
     monkeypatch.setattr("astracore.service.api.chat._get_tool_loop_use_case", lambda *_: FakeToolLoop())
     monkeypatch.setattr("astracore.service.api.chat._get_llm_adapter", lambda *_: fake_llm)
     monkeypatch.setattr("astracore.service.api.chat._get_setting_value", AsyncMock(return_value=""))
+    monkeypatch.setattr("astracore.service.api.chat._save_short_term_safe", AsyncMock())
+    monkeypatch.setattr("astracore.service.api.chat._update_conversation_from_messages", AsyncMock())
+    monkeypatch.setattr("astracore.service.api.chat._update_run_row", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "astracore.service.api.chat._broadcast_run_event",
+        lambda _run_id, event, data: emitted.append((event, data)),
+    )
 
-    app = FastAPI()
-    request = Request({"type": "http", "app": app, "headers": []})
-    response = await chat_stream(ChatRequest(message="帮我分析一下", use_tools=True), request)
-    events = [event async for event in response.body_iterator]
+    await _execute_tool_run(
+        run_id="run-1",
+        request=ChatRequest(message="帮我分析一下", use_tools=True),
+        session_id=uuid4(),
+        profile=MagicMock(id="test-profile"),
+        tool_adapter=MagicMock(),
+        inject_system=None,
+        temperature=0.7,
+        context_max=20,
+        llm_kwargs={},
+    )
 
-    assert {"event": "message", "data": '{"text": "基于工具结果的最终总结"}'} in events
-    assert events[-1] == {"event": "done", "data": "{}"}
+    assert ("message", {"text": "基于工具结果的最终总结"}) in emitted
+    assert emitted[-1] == ("done", {})
     assert any(
         "已达到工具循环最大轮次" in message.content
         for message in fake_llm.calls[0]

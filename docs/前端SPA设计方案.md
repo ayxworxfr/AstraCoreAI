@@ -8,7 +8,7 @@
 - 双主题（深色 / 浅色）无缝切换，所有组件跟随主题
 - AI 消息支持完整 Markdown 渲染（代码高亮、表格、列表等）
 - 完整会话管理：创建、切换、重命名、删除、清空、持久化恢复
-- 流式 SSE 输出稳定，支持工具调用进度、思考块展示和空响应兜底
+- 流式 SSE 输出稳定，支持工具调用进度、思考块展示、空响应兜底和刷新后恢复后台生成
 - 支持后端多模型 Profile 注册表，前端自动读取并切换可用模型
 
 ## 2. 技术栈
@@ -117,7 +117,7 @@
 - **用户消息**：主色蓝背景，右对齐，无头像
 - **AI 消息**：Surface 背景，左侧带 `[A]` 头像图标，内容区渲染 Markdown
 - **思考与工具**：工具轮旁白展示为 thinking 区块，工具调用显示执行中/完成/失败状态
-- **流式输出**：Bubble 内置 `loading` 状态与打字光标，SSE 结束时统一收敛状态
+- **流式输出**：Bubble 内置 `loading` 状态与打字光标，SSE 订阅后台 Chat Run，结束时统一收敛状态
 - **滚动条**：Chat 主区域使用简约自定义滚动条，按明暗主题适配，支持拖动和点击轨道平滑跳转
 
 ### 4.3 Welcome 空态
@@ -171,7 +171,7 @@ frontend/src/
 │   │   ├── SkillCard.tsx            ← Skill 卡片（查看/编辑/删除）
 │   │   ├── SkillModal.tsx           ← Skill 创建/编辑弹窗
 │   │   ├── SkillSelector.tsx        ← 对话工具栏 Skill 切换下拉
-│   │   └── GlobalInstructionEditor.tsx  ← 默认 Skill 选择 + 全局指令编辑
+│   │   └── GlobalInstructionEditor.tsx  ← 默认 Skill、AI 名称、主人名称 + 全局指令编辑
 │   └── system/
 │       └── HealthStatusCard.tsx     ← 健康/就绪状态卡片
 ├── stores/
@@ -180,7 +180,7 @@ frontend/src/
 │   └── settingsStore.ts             ← theme: 'light' | 'dark'（持久化）
 ├── services/
 │   ├── apiClient.ts                 ← axios 实例 + 错误规范化
-│   ├── chatService.ts               ← POST /chat/ + SSE /chat/stream + DELETE /sessions/:id
+│   ├── chatService.ts               ← Chat Run 创建/订阅/取消 + 消息分页 + Session 清理
 │   ├── ragService.ts                ← POST /rag/retrieve
 │   ├── skillService.ts              ← GET/POST/PUT/DELETE /skills/ + GET/PUT /settings/
 │   ├── systemService.ts             ← GET /system/（LLM profiles + Tavily + MCP 状态）
@@ -241,22 +241,24 @@ activeConversationId: string
 messagesByConversation: Record<string, ChatMessage[]>
 isStreaming: boolean
 streamingConversationId: string | null
+activeRunId: string | null      // 后端后台 Chat Run ID，用于取消与恢复订阅
+subscribedRunIds: Record<string, boolean> // 当前已订阅的 run，用于防止重复 SSE 订阅
 useStream: boolean              // 流式开关，持久化
 activeSkillId: string | null    // 当前激活的 Skill ID（null = 使用默认）
 activeModelId: string | null    // 当前激活的模型 profile id（null = 后端默认）
 
 // 动作
 createConversation()            // 新建，自动切换为当前
-switchConversation(id)          // 切换（流式中禁止切换）
+switchConversation(id)          // 切换会话，若目标会话有 active run 则自动恢复订阅
 renameConversation(id, title)
 deleteConversation(id)          // 删除后自动切到最近会话或新建，并清除后端 session 记忆
 clearConversation(id)           // 清空消息，保留会话，并清除后端 session 记忆
 setActiveSkillId(id)            // 切换激活 Skill
 setActiveModelId(id)            // 切换激活模型 Profile
-sendMessage(prompt)             // 非流式
-sendStreamMessage(prompt)       // SSE 流式
-cancelStream()                  // 中断流式请求
-hydrateFromStorage()            // 启动时从 localStorage 恢复
+sendMessage(prompt)             // 创建后台 Chat Run 并订阅 SSE
+resumeActiveRun(conversationId)  // 刷新/切换会话后恢复运行中的 run
+cancelStream()                  // 取消后台 run 并收敛前端状态
+loadMessages(conversationId)     // 从后端分页加载历史消息
 ```
 
 ### 6.3 skillStore
@@ -264,7 +266,7 @@ hydrateFromStorage()            // 启动时从 localStorage 恢复
 ```typescript
 // 状态（持久化到 localStorage）
 skills: Skill[]
-settings: UserSettings        // { default_skill_id, global_instruction, temperature, rag_top_k, context_max_messages }
+settings: UserSettings        // { default_skill_id, global_instruction, temperature, rag_top_k, context_max_messages, ai_name, owner_name }
 isLoading: boolean
 
 // 动作
@@ -287,8 +289,7 @@ toggleTheme()
 
 | 键 | 内容 |
 |---|---|
-| `astracore.conversations.v1` | 会话元数据列表 |
-| `astracore.messages.<id>.v1` | 各会话消息（按会话分桶） |
+| `astracore.chat.v2` | 当前会话 ID、流式/工具/RAG/Web 开关等轻量 UI 偏好；会话列表和消息由后端 DB 维护 |
 | `astracore.settings.v1` | 主题偏好 |
 | `astracore.skill-store.v1` | Skills 列表与用户设置（Zustand persist） |
 
@@ -302,27 +303,36 @@ Body: { message, session_id?, skill_id?, model_profile?, temperature?, enable_th
 Response: { session_id, message, model_profile, model?, metadata? }
 ```
 
-### 7.2 Chat 流式（SSE）
+### 7.2 Chat Run 流式（SSE）
 
 ```
-POST /api/v1/chat/stream
+POST /api/v1/chat/runs
 Body: { message, session_id?, skill_id?, model_profile?, temperature?, enable_thinking?, thinking_budget?, enable_rag?, use_tools?, enable_web? }
+Response: { run_id, session_id, status }
 
+GET /api/v1/chat/runs/:run_id/stream
 SSE 事件：
-  event: message  data: <文本增量>
+  event: run_state       data: { run_id, session_id, status, assistant_content, thinking_blocks, tool_activity, ... }
+  event: message         data: { text }
   event: thinking_start / thinking / thinking_stop
-  event: tool_use / tool_start / tool_result
-  event: done     data: [DONE]
-  event: error    data: <错误信息>
+  event: tool_start / tool_result
+  event: done            data: {}
+  event: error           data: { message }
+
+GET  /api/v1/chat/sessions/:session_id/runs/active
+POST /api/v1/chat/runs/:run_id/cancel
 ```
 
 前端处理流程：
-1. 发起请求前插入 `status: 'streaming'` 的 assistant 占位消息
-2. 每个 `message` 事件追加到占位消息内容
-3. thinking 事件写入 `thinkingBlocks`，空 thinking block 不渲染
-4. tool 事件写入 `toolActivity`，让用户知道用了哪些工具
-5. 收到 `done` → 置 `status: 'done'`
-6. 收到 `error` 或网络异常 → 置 `status: 'error'`，展示重试入口
+1. 发送前插入用户消息和 `status: 'streaming'` 的 assistant 占位消息
+2. 调用 `POST /chat/runs` 创建后端后台 run，并保存 `activeRunId`
+3. 订阅 `/chat/runs/:run_id/stream`，订阅前检查 `subscribedRunIds`，保证同一个 run 只有一个 SSE 连接
+4. 每个 `message` 事件追加到占位消息内容
+5. thinking 事件写入 `thinkingBlocks`，tool 事件写入 `toolActivity`
+6. 收到 `done` 后重新加载后端消息历史，保证最终内容以 DB 为准
+7. 页面刷新或切换回会话时，通过 active run 接口恢复正在运行的生成任务，`run_state` 用于还原完整 UI 快照
+8. 若发送流程与恢复流程同时命中同一个 run，以已订阅 run 为准，清理乐观插入的临时消息，避免两个相同气泡
+9. 手动停止调用 cancel 接口，取消后端任务并收敛本地 loading 状态
 
 ### 7.3 Session 记忆清理
 
@@ -352,7 +362,7 @@ DELETE /api/v1/skills/:id     → 204 No Content
 ### 7.6 用户设置
 
 ```
-GET /api/v1/settings/         → { default_skill_id, global_instruction, temperature, rag_top_k, context_max_messages }
+GET /api/v1/settings/         → { default_skill_id, global_instruction, temperature, rag_top_k, context_max_messages, ai_name, owner_name }
 PUT /api/v1/settings/         Body: 以上字段的子集  → 同上
 ```
 
@@ -389,14 +399,15 @@ GET /health/ready   → { status }
 - 首条用户消息自动设为会话标题（截断到 24 字）
 - 重命名通过 Conversations 组件内联编辑（不用 `window.prompt`）
 - 删除当前会话后自动切换到最近活跃会话；若无则新建空白会话
-- 流式输出过程中禁止切换会话，顶部提示"生成中，请稍候"
+- 流式输出过程中允许刷新页面；刷新后重新订阅当前会话 active run
 - 会话列表支持置顶和搜索过滤
 
 ### 8.2 流式输出
 
 - Bubble 组件 `loading` 状态展示打字光标
-- 中断按钮（Sender 内置 Stop 按钮）可取消流式请求
-- 流异常结束时消息显示错误状态，提供重试按钮
+- 中断按钮（Sender 内置 Stop 按钮）会调用后端 cancel 接口，真正取消后台 run
+- SSE 订阅异常不等于生成失败；若后台 run 仍在运行，重新进入会话会恢复订阅
+- 同一个 `run_id` 只能保留一个 SSE 订阅；React StrictMode、页面恢复和发送流程并发时，都以 `subscribedRunIds` 去重
 - 工具调用中的中间轮文字只进入 thinking 区，不冒充最终答案
 - 结尾空响应时后端会返回续接提示，前端不再只显示"（空响应）"
 
@@ -404,6 +415,7 @@ GET /health/ready   → { status }
 
 - 每条消息写入必须携带 `conversationId`
 - 严禁将流式增量写入非当前激活会话
+- run 恢复时使用固定消息 ID（如 `run-${run_id}`）替换旧的 streaming assistant，不能为同一 run 追加第二个 assistant 气泡
 - 任何异常结束都将 assistant 消息状态收敛到 `error` 或 `done`
 
 ## 9. 错误处理
@@ -411,7 +423,7 @@ GET /health/ready   → { status }
 | 场景 | 处理方式 |
 |---|---|
 | 网络请求失败 | 消息气泡显示错误态，提供重试 |
-| SSE 流中断 | 消息置 `error` 状态，不静默失败 |
+| SSE 订阅中断 | 重新查询 active run 并恢复订阅；只有 run 本身失败才展示错误 |
 | localStorage 损坏 | 检测异常时自动清空并重置，提示用户 |
 | 后端 5xx | 统一错误提示，展示 `detail` 字段内容 |
 
@@ -465,6 +477,7 @@ GET /health/ready   → { status }
 
 - 双主题切换流畅，无组件主题不跟随问题
 - 会话能力完整：新建、切换、重命名、删除、清空、刷新恢复
+- 生成恢复：AI 回答过程中刷新页面后，后端 run 继续执行，前端回到会话可恢复订阅并展示最终结果
 - 会话一致性：多会话下不串消息
 - Chat 普通与流式链路稳定可用
 - AI 消息 Markdown 正确渲染，代码块有高亮

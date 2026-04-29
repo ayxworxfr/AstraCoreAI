@@ -61,6 +61,10 @@ _SHELL_SERVER_SCRIPT = Path(__file__).parent.parent.parent / "mcp_servers" / "sh
 
 
 def _normalize_path(path: str) -> str:
+    if path == "~" or path.startswith("~/") or path.startswith("~\\"):
+        home = os.environ.get("HOME") or str(Path.home())
+        suffix = path[2:] if len(path) > 1 else ""
+        return str((Path(home) / suffix).resolve())
     return str(Path(path).expanduser().resolve())
 
 

@@ -1,14 +1,20 @@
-import type { ChatRequest, ChatResponse } from '../types/api';
+import type { ChatRequest, ChatResponse, ChatRunResponse, ChatRunState } from '../types/api';
 import { apiClient, normalizeError } from './apiClient';
 
 export type SessionMessagesResponse = {
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  messages: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    thinking_blocks: string[];
+    tool_activity: ChatRunState['tool_activity'];
+  }>;
   total: number;
   has_more: boolean;
 };
 
 type StreamHandlers = {
   onConversationStart?: (sessionId: string, message: string) => void;
+  onRunState?: (state: ChatRunState) => void;
   onMessage: (delta: string) => void;
   onThinkingStart?: () => void;
   onThinkingStop?: (durationMs: number) => void;
@@ -32,6 +38,23 @@ export async function fetchSessionMessages(
     `/api/v1/chat/sessions/${sessionId}/messages`,
     { params: { limit, offset } },
   );
+  return data;
+}
+
+export async function createChatRun(payload: ChatRequest): Promise<ChatRunResponse> {
+  const { data } = await apiClient.post<ChatRunResponse>('/api/v1/chat/runs', payload);
+  return data;
+}
+
+export async function fetchActiveChatRun(sessionId: string): Promise<ChatRunState | null> {
+  const { data } = await apiClient.get<ChatRunState | null>(
+    `/api/v1/chat/sessions/${sessionId}/runs/active`,
+  );
+  return data;
+}
+
+export async function cancelChatRun(runId: string): Promise<ChatRunState> {
+  const { data } = await apiClient.post<ChatRunState>(`/api/v1/chat/runs/${runId}/cancel`);
   return data;
 }
 
@@ -64,6 +87,7 @@ function parseBlock(block: string, handlers: StreamHandlers): void {
     const d = safeJson();
     handlers.onConversationStart?.(String(d.session_id ?? ''), String(d.message ?? ''));
   }
+  else if (eventType === 'run_state') handlers.onRunState?.(safeJson() as ChatRunState);
   else if (eventType === 'message') handlers.onMessage(String(safeJson().text ?? data));
   else if (eventType === 'thinking_start') handlers.onThinkingStart?.();
   else if (eventType === 'thinking_stop') handlers.onThinkingStop?.((safeJson().duration_ms as number) ?? 0);
@@ -158,6 +182,67 @@ export async function sendChatStream(
     if (!isAborted() && !doneCalled) handlers.onDone();
   } catch (e) {
     // AbortError 或流被中断属于用户主动取消，静默处理
+    const err = e as Error;
+    if (err.name === 'AbortError' || /abort/i.test(err.message)) return;
+    handlers.onError(normalizeError(e));
+  }
+}
+
+export async function subscribeChatRun(
+  runId: string,
+  handlers: StreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${import.meta.env.VITE_API_BASE_URL ?? ''}/api/v1/chat/runs/${runId}/stream`,
+      { method: 'GET', signal },
+    );
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') return;
+    handlers.onError(normalizeError(e));
+    return;
+  }
+
+  if (!response.ok) {
+    handlers.onError(`HTTP ${response.status}`);
+    return;
+  }
+
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let rawBuffer = '';
+  const isAborted = () => signal?.aborted ?? false;
+
+  const patchedHandlers: StreamHandlers = {
+    onConversationStart: (sid, msg) => { if (!isAborted()) handlers.onConversationStart?.(sid, msg); },
+    onRunState: (state) => { if (!isAborted()) handlers.onRunState?.(state); },
+    onMessage: (d) => { if (!isAborted()) handlers.onMessage(d); },
+    onThinkingStart: () => { if (!isAborted()) handlers.onThinkingStart?.(); },
+    onThinkingStop: (ms) => { if (!isAborted()) handlers.onThinkingStop?.(ms); },
+    onThinking: (d) => { if (!isAborted()) handlers.onThinking?.(d); },
+    onToolStart: (name, input) => { if (!isAborted()) handlers.onToolStart?.(name, input); },
+    onToolResult: (name, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, input, result, isError, durationMs); },
+    onDone: () => { if (!isAborted()) handlers.onDone(); },
+    onError: (msg) => { if (!isAborted()) handlers.onError(msg); },
+  };
+
+  try {
+    while (true) {
+      if (isAborted()) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+      rawBuffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+      const parts = rawBuffer.split('\n\n');
+      rawBuffer = parts.pop() ?? '';
+      for (const block of parts) {
+        if (isAborted()) break;
+        parseBlock(block, patchedHandlers);
+      }
+    }
+    if (!isAborted() && rawBuffer.trim()) parseBlock(rawBuffer, patchedHandlers);
+  } catch (e) {
     const err = e as Error;
     if (err.name === 'AbortError' || /abort/i.test(err.message)) return;
     handlers.onError(normalizeError(e));

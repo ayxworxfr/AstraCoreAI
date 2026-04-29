@@ -73,6 +73,63 @@ class ChatSessionRow(Base):
     )
 
 
+class ChatRunRow(Base):
+    """Background chat generation run, decoupled from browser SSE connections."""
+
+    __tablename__ = "chat_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    request: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    user_message: Mapped[str] = mapped_column(Text, nullable=False)
+    assistant_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    thinking_blocks: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    tool_activity: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_chat_runs_session_status_updated", "session_id", "status", "updated_at"),
+    )
+
+
+class ConversationRow(Base):
+    """Persisted conversation metadata (title, pin status, skill/model preferences)."""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False, default="新会话")
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    skill_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_message_preview: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 class UserSettingsRow(Base):
     """Key-value store for user preferences."""
 

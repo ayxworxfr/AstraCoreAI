@@ -75,6 +75,7 @@ flowchart TD
 负责业务用例编排，是框架核心行为所在。
 
 - `ChatUseCase`：对话入口、流式输出、调用策略引擎
+- `ChatRun`：Service 层后台生成任务，解耦浏览器 SSE 连接与实际 LLM 生成生命周期
 - `ToolLoopUseCase`：工具调用循环、失败恢复、回写上下文
 - `MemoryPipeline`：短期记忆与长期记忆融合
 - `RAGPipeline`：召回、重排、引用拼接
@@ -99,7 +100,7 @@ flowchart TD
 - Provider：Claude / OpenAI 兼容协议适配，按模型 Profile 动态选择
 - 存储：PostgreSQL（持久化）+ Redis（短期上下文与缓存）
 - 检索：向量库适配（支持后续替换）
-- 接口：FastAPI 网关、SSE 输出、鉴权与限流中间件
+- 接口：FastAPI 网关、后台 Chat Run、SSE 订阅输出、鉴权与限流中间件
 - 可观测：日志、指标、Trace
 
 ### 4.5 Interfaces 层
@@ -120,7 +121,20 @@ flowchart TD
 - 调用降级（例如从复杂模型降级到经济模型）
 - 安全策略（工具白名单、字段脱敏）
 
-### 5.2 Tool 调度引擎
+### 5.2 Chat Run 后台生成
+
+Service 层将一次前端对话发送抽象为 `ChatRunRow`，避免浏览器连接成为生成任务的生命周期边界。
+
+- **创建任务**：`POST /api/v1/chat/runs` 写入 `chat_runs`，并在后端进程内启动 asyncio 后台任务。
+- **订阅输出**：`GET /api/v1/chat/runs/{run_id}/stream` 只订阅当前 run 的事件流；连接断开不取消后台任务。
+- **刷新恢复**：前端刷新后通过 `GET /api/v1/chat/sessions/{session_id}/runs/active` 找回运行中的 run，并重新订阅。
+- **热路径状态**：运行中的 run 以进程内 `_ActiveRun` 保存 `assistant_content`、`thinking_blocks`、`tool_activity`、`status` 和 `error`，SSE 重连时优先返回内存快照，避免每个 token 写 SQLite。
+- **完成落库**：run 完成后一次性更新 `ChatRunRow` 最终状态，将 user/assistant 消息写入短期记忆，并更新 `ConversationRow` 的标题、预览和消息数。
+- **取消语义**：手动停止调用 `POST /api/v1/chat/runs/{run_id}/cancel`，取消后台任务并将状态标记为 `cancelled`。
+
+> 当前后台 run 保证“页面刷新不丢任务”；若后端进程自身重启，运行中的 in-process task 会中断，后续可演进为独立任务队列。
+
+### 5.3 Tool 调度引擎
 
 - 支持串行与并行工具执行
 - 工具返回统一事件结构，便于前端与审计消费
@@ -128,7 +142,7 @@ flowchart TD
 - 可插入人工确认节点（高风险工具执行前）
 - 支持按所选模型能力决定是否启用工具调用，避免不支持工具的 profile 进入 Tool Loop
 
-### 5.3 Memory 系统
+### 5.4 Memory 系统
 
 - 短期记忆：三层架构 — Redis（TTL 淘汰 + 容量上限，热路径）→ 本地字典缓存（fallback）→ SQLite 持久化（重启恢复）
 - 长期记忆：PostgreSQL 存会话摘要、用户偏好、关键事件
@@ -136,21 +150,21 @@ flowchart TD
 - 记忆检索：按会话、用户、场景标签召回
 - 会话清理：删除或清空对话时同步删除后端短期记忆，防止数据孤岛
 
-### 5.4 RAG 系统
+### 5.5 RAG 系统
 
 - 索引管道：文本清洗、切块、向量化、入库
 - 检索链路：召回 -> 重排 -> 引用注入
 - 引用返回：每段回答附带来源信息
 - 与 Chat/Agent 融合：根据任务场景自动切换检索策略
 
-### 5.5 多 Agent 协作
+### 5.6 多 Agent 协作
 
 - 角色最小集：Planner、Executor、Reviewer
 - 协作协议：任务拆分、状态回写、交付验收
 - 人工审批：关键节点可暂停并等待人工确认
 - 故障恢复：保存工作流快照，支持断点续跑
 
-### 5.6 Skill 系统
+### 5.7 Skill 系统
 
 - **Skill 提示词库**：内置 Skill + 用户自定义 Skill，CRUD 全量管理，支持标记内置不可删除
 - **三层系统提示**：Skill 专属提示 → 全局指令 → RAG 上下文，按顺序拼接注入
@@ -158,7 +172,7 @@ flowchart TD
 - **运行时参数**：Temperature、RAG top_k、对话上下文长度（context_max_messages）— 存储在 `UserSettingsRow` 键值表，按请求读取，无需重启
 - **系统信息 API**：`GET /api/v1/system/` 返回 LLM profiles、模型能力、MCP server 与 Tavily 状态，供前端只读展示
 
-### 5.7 LLM Profile 注册表
+### 5.8 LLM Profile 注册表
 
 - **结构化配置**：`config/config.yaml` 保存 `llm.default_profile`、`llm.profiles`、`mcp.servers`、记忆与检索配置；`.env` 只保存密钥。
 - **Profile 路由**：Chat API 和 SDK 使用 `model_profile` 指定 profile id，不直接暴露上游模型名。
@@ -222,32 +236,41 @@ python_ai_framework/
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant API as FastAPIOrSDK
-    participant APP as ChatUseCase
+    participant API as FastAPIService
+    participant RUN as ChatRunTask
+    participant APP as ChatUseCaseOrToolLoop
     participant POL as PolicyEngine
     participant RAG as RAGPipeline
-    participant MEM as MemoryPipeline
+    participant MEM as MemoryAdapter
+    participant DB as SQLiteChatRuns
     participant LLM as LLMAdapter
     participant TOOL as ToolAdapter
 
-    C->>API: ChatRequest(model_profile)
-    API->>APP: execute(request)
+    C->>API: POST /chat/runs
+    API->>DB: insert ChatRunRow(status=running)
+    API-->>C: {run_id, session_id}
+    API->>RUN: asyncio.create_task(run_id)
+    C->>API: GET /chat/runs/{run_id}/stream
+    RUN->>MEM: loadContext(session)
+    RUN->>RAG: retrieveIfNeeded(query)
+    RUN->>APP: execute stream
     APP->>POL: applyPolicy(request)
-    APP->>MEM: loadContext(session)
-    APP->>RAG: retrieveIfNeeded(query)
     APP->>LLM: generateStream(context, selected_profile)
-    LLM-->>APP: streamEvent(text/tool_call)
-    APP->>TOOL: execute(tool_call)
-    TOOL-->>APP: tool_result
-    APP->>LLM: continueWith(tool_result)
-    APP-->>API: streamResponse
-    API-->>C: SSE/ChunkedOutput
+    LLM-->>RUN: streamEvent(text/tool_call)
+    RUN->>RUN: update in-memory run state
+    RUN-->>API: broadcast SSE event
+    API-->>C: message/thinking/tool event
+    RUN->>TOOL: execute(tool_call)
+    TOOL-->>RUN: tool_result
+    RUN->>MEM: save final messages
+    RUN->>DB: persist final run status
 ```
 
 ## 10. 错误处理与可靠性
 
 - 统一错误码：区分用户错误、依赖错误、系统错误
 - 流式场景提供阶段化错误事件，避免无响应超时
+- 浏览器刷新只断开 SSE 订阅，不取消后台 Chat Run；前端通过 active run 接口恢复，并按 `run_id` 去重订阅，避免同一 run 重复渲染
 - 对 Provider 429/5xx 进行指数退避重试
 - 对工具失败设置最大重试次数和熔断阈值
 - 审计记录请求轨迹、工具调用轨迹与关键策略命中

@@ -28,6 +28,7 @@ function getTimeGroup(updatedAt: string): string {
 export default function ConversationSidebar(): JSX.Element {
   const {
     conversations,
+    conversationsLoaded,
     activeConversationId,
     createConversation,
     switchConversation,
@@ -104,7 +105,7 @@ export default function ConversationSidebar(): JSX.Element {
           icon={<EditOutlined />}
           block
           size="large"
-          onClick={() => createConversation()}
+          onClick={() => void createConversation()}
         >
           新建会话
         </Button>
@@ -118,12 +119,12 @@ export default function ConversationSidebar(): JSX.Element {
 
       {/* 会话列表 */}
       <div style={{ flex: 1, overflow: 'auto', padding: '0 4px' }}>
-        {filtered.length === 0 ? (
+        {!conversationsLoaded || filtered.length === 0 ? (
           <Typography.Text
             type="secondary"
             style={{ fontSize: 13, display: 'block', textAlign: 'center', padding: '16px 8px' }}
           >
-            {search ? '无匹配结果' : '暂无会话'}
+            {!conversationsLoaded ? '加载中...' : search ? '无匹配结果' : '暂无会话'}
           </Typography.Text>
         ) : (
           <Conversations

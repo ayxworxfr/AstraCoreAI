@@ -11,6 +11,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 - **工具执行**：原生工具并行/串行调用，带安全白名单与 XSS 检测
 - **MCP 工具集成**：通过 fastmcp 接入任意 MCP 服务器（内置 filesystem、shell，支持自定义）
 - **健壮工具循环**：悬空 tool_use 清理、总结收尾兜底、空响应引导续接、单次工具超时隔离、中间轮旁白与最终答案自动分流
+- **后台 Chat Run**：流式回答由后端后台任务驱动，SSE 仅负责订阅输出；刷新页面不会中断生成，重连后可恢复当前 run
 - **记忆系统**：Redis 短期（TTL 淘汰）+ SQLite 短期持久化（重启恢复）+ PostgreSQL 长期存储，Redis 不可用时自动降级到 SQLite
 - **RAG 管道**：ChromaDB 向量搜索（幂等 upsert）、文档分块、引用支持
 - **Skill 系统**：Skill 提示词管理（CRUD + 内置/自定义）、全局指令编辑、对话时动态切换激活 Skill
@@ -23,11 +24,11 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 ## 测试状态
 
 ```
-99 tests passed in 0.88s  ✅
+120 tests passed in 2.66s ✅
 ruff: 0 errors             ✅
 ```
 
-覆盖 9 个核心模块：SessionState、PolicyEngine、SecurityValidator、RAGPipeline、ChatUseCase、ToolLoopUseCase、AnthropicAdapter、HybridMemoryAdapter、NativeWorkflowOrchestrator
+覆盖核心链路：SessionState、PolicyEngine、SecurityValidator、RAGPipeline、ChatUseCase、ToolLoopUseCase、LLM 适配器、HybridMemoryAdapter、MCP、Skill、流式会话安全等
 
 ## 架构
 
@@ -110,6 +111,15 @@ make api
 # http://127.0.0.1:8000/docs
 ```
 
+服务端 Chat 流式回答采用后台 run 模型：
+
+- `POST /api/v1/chat/runs` 创建后台生成任务
+- `GET /api/v1/chat/runs/{run_id}/stream` 订阅 SSE 输出
+- `GET /api/v1/chat/sessions/{session_id}/runs/active` 查询会话中正在运行的任务
+- `POST /api/v1/chat/runs/{run_id}/cancel` 手动取消生成
+
+浏览器刷新只会断开 SSE 订阅，不会取消后端生成；页面恢复后会重新订阅 active run，完成后结果写入会话记忆。
+
 ### 基础用法 - 前端 SPA
 
 ```bash
@@ -144,7 +154,7 @@ src/astracore/
 │   ├── observability/   # 结构化日志、指标端口
 │   └── security/        # SecurityValidator（XSS、长度、内容过滤）
 ├── service/
-│   ├── api/             # FastAPI 路由（Chat、RAG、Skills、Settings、System）
+│   ├── api/             # FastAPI 路由（Chat Run、RAG、Skills、Settings、System）
 │   └── middleware/      # HTTP 中间件
 └── sdk/
     ├── client.py              # 主 SDK 客户端
@@ -258,7 +268,7 @@ make clean-rag    # 清空 ChromaDB 数据
 - [x] M2：记忆、预算、策略、可观测性
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
-- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 99 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅
+- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅
 - [ ] M6：可靠性与安全 — 熔断器、API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档
