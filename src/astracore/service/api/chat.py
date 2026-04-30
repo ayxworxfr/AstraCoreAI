@@ -668,10 +668,6 @@ async def get_session_messages(
 ) -> SessionMessagesResponse:
     all_msgs = await _get_memory_adapter().load_short_term(session_id)
     visible = [m for m in all_msgs if m.role in (MessageRole.USER, MessageRole.ASSISTANT)]
-    total = len(visible)
-    end = total - offset
-    start = max(0, end - limit)
-    page = visible[start:end]
 
     async with get_session(_get_settings().memory.db_url) as db:
         result = await db.execute(
@@ -684,33 +680,51 @@ async def get_session_messages(
         )
         runs = result.scalars().all()
 
-    run_meta: dict[tuple[str, str], list[tuple[list[str], list[dict[str, Any]]]]] = {}
+    run_meta: dict[str, list[ChatRunRow]] = {}
     for run in runs:
         if not run.assistant_content:
             continue
-        key = (run.user_message, run.assistant_content)
-        run_meta.setdefault(key, []).append((run.thinking_blocks or [], run.tool_activity or []))
+        run_meta.setdefault(run.user_message, []).append(run)
 
-    message_meta: dict[int, tuple[list[str], list[dict[str, Any]]]] = {}
-    for index in range(1, len(visible)):
-        previous = visible[index - 1]
+    folded: list[MessageItem] = []
+    index = 0
+    while index < len(visible):
         current = visible[index]
-        if previous.role != MessageRole.USER or current.role != MessageRole.ASSISTANT:
+        if current.role != MessageRole.USER:
+            folded.append(MessageItem(role=current.role.value, content=current.content))
+            index += 1
             continue
-        matches = run_meta.get((previous.content, current.content))
+
+        folded.append(MessageItem(role=current.role.value, content=current.content))
+        next_user_index = index + 1
+        while next_user_index < len(visible) and visible[next_user_index].role != MessageRole.USER:
+            next_user_index += 1
+
+        matches = run_meta.get(current.content)
         if matches:
-            message_meta[index] = matches.pop(0)
+            run = matches.pop(0)
+            folded.append(
+                MessageItem(
+                    role=MessageRole.ASSISTANT.value,
+                    content=run.assistant_content,
+                    thinking_blocks=run.thinking_blocks or [],
+                    tool_activity=run.tool_activity or [],
+                )
+            )
+            index = next_user_index
+            continue
+
+        for message in visible[index + 1:next_user_index]:
+            folded.append(MessageItem(role=message.role.value, content=message.content))
+        index = next_user_index
+
+    total = len(folded)
+    end = total - offset
+    start = max(0, end - limit)
+    page = folded[start:end]
 
     return SessionMessagesResponse(
-        messages=[
-            MessageItem(
-                role=m.role.value,
-                content=m.content,
-                thinking_blocks=message_meta.get(start + i, ([], []))[0],
-                tool_activity=message_meta.get(start + i, ([], []))[1],
-            )
-            for i, m in enumerate(page)
-        ],
+        messages=page,
         total=total,
         has_more=start > 0,
     )

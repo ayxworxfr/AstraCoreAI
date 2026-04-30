@@ -181,8 +181,14 @@ class ChatOrchestrator:
 
     @staticmethod
     def prepare_for_save(messages: list[Message]) -> list[Message]:
-        """Drop SYSTEM messages and trailing dangling tool calls before persisting."""
-        msgs = [m for m in messages if m.role != MessageRole.SYSTEM]
+        """Drop internal tool-loop messages before persisting visible chat history."""
+        msgs = [
+            m
+            for m in messages
+            if m.role != MessageRole.SYSTEM
+            and m.role != MessageRole.TOOL
+            and not (m.role == MessageRole.ASSISTANT and m.tool_calls)
+        ]
         return ChatOrchestrator.strip_dangling_tool_calls(msgs)
 
     @staticmethod
