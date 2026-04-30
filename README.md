@@ -12,12 +12,13 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 - **MCP 工具集成**：通过 fastmcp 接入任意 MCP 服务器（内置 filesystem、shell，支持自定义）
 - **健壮工具循环**：悬空 tool_use 清理、总结收尾兜底、空响应引导续接、单次工具超时隔离、中间轮旁白与最终答案自动分流
 - **后台 Chat Run**：流式回答由后端后台任务驱动，SSE 仅负责订阅输出；刷新页面不会中断生成，重连后可恢复当前 run
+- **共享执行引擎**：`ChatOrchestrator` 作为 SDK 与 HTTP Service 的统一 chat 管道；system prompt 组装、LLM 路由、工具循环、session 持久化全部在此实现，两端功能完全一致
 - **记忆系统**：Redis 短期（TTL 淘汰）+ SQLite 短期持久化（重启恢复）+ PostgreSQL 长期存储，Redis 不可用时自动降级到 SQLite
 - **RAG 管道**：ChromaDB 向量搜索（幂等 upsert）、文档分块、引用支持
 - **Skill 系统**：Skill 提示词管理（CRUD + 内置/自定义）、全局指令编辑、对话时动态切换激活 Skill
 - **多 Agent 编排**：Planner/Executor/Reviewer 协作 + Workflow checkpoint 持久化
 - **策略引擎**：tenacity retry + asyncio timeout 实际生效，Token 预算 O(n) 截断
-- **双形态交付**：SDK 嵌入 + FastAPI 服务 HTTP 访问
+- **双形态交付**：SDK 嵌入 + FastAPI 服务 HTTP 访问，两者共享同一 ChatOrchestrator 执行引擎
 - **前端 SPA 控制台**：React + Vite + Zustand 会话式 Playground，含模型 Profile 切换、Skill 管理、RAG 调试、系统运行参数配置
 - **安全基线**：CORS 环境变量白名单、输入验证预编译、敏感字段脱敏
 
@@ -81,22 +82,36 @@ hatch run pip install -e ".[anthropic,openai,dev]"
 
 ### 基础用法 - SDK
 
+SDK 必须通过 `async with` 上下文管理器使用（MCP 工具等异步资源在此阶段初始化）：
+
 ```python
 import asyncio
-from astracore.sdk import AstraCoreClient, AstraCoreConfig
+from astracore.sdk import AstraCoreClient
+
 async def main():
     # 默认读取 config/config.yaml，并通过 .env 中的 api_key_env 解析密钥
-    config = AstraCoreConfig()
-    client = AstraCoreClient(config)
+    async with AstraCoreClient() as client:
+        # 简单对话
+        result = await client.chat("你好，你是谁？", model_profile="claude-sonnet")
+        print(result.content)
+        print("session_id:", result.session_id)
 
-    # 简单对话
-    response = await client.chat("你好，你是谁？", model_profile="claude-sonnet")
-    print(response.content)
+        # 续接上轮会话的流式对话
+        async for event in client.chat_stream(
+            "讲一个故事",
+            session_id=result.session_id,
+        ):
+            if event.content:
+                print(event.content, end="", flush=True)
 
-    # 流式对话
-    async for event in client.chat_stream("讲一个故事"):
-        if event.content:
-            print(event.content, end="", flush=True)
+        # 工具调用 + RAG + Skill 等均通过同一 chat_stream 接口
+        async for event in client.chat_stream(
+            "列出当前目录下的文件",
+            use_tools=True,
+            enable_rag=False,
+        ):
+            if event.content:
+                print(event.content, end="", flush=True)
 
 asyncio.run(main())
 ```
@@ -155,9 +170,11 @@ src/astracore/
 │   └── security/        # SecurityValidator（XSS、长度、内容过滤）
 ├── service/
 │   ├── api/             # FastAPI 路由（Chat Run、RAG、Skills、Settings、System）
-│   └── middleware/      # HTTP 中间件
+│   ├── middleware/      # HTTP 中间件
+│   ├── chat_orchestrator.py   # 共享 chat 执行引擎（SDK 与 Service 共用）
+│   └── prompt_utils.py        # 系统提示工具函数
 └── sdk/
-    ├── client.py              # 主 SDK 客户端
+    ├── client.py              # 主 SDK 客户端（async context manager）
     ├── config.py              # Pydantic v2 YAML 配置模型
     └── model_capabilities.py  # 内置模型能力注册表
 
@@ -232,11 +249,14 @@ make clean-rag    # 清空 ChromaDB 数据
 
 ## 示例
 
-- **基础对话**：`examples/basic_chat.py`
-- **RAG 管道**：`examples/rag_example.py`
-- **工具调用**：`examples/tool_calling.py`
-- **多 Agent**：`examples/multi_agent.py`
-- **服务运行**：`examples/run_service.py`
+所有示例均通过 `AstraCoreClient` SDK 直接运行，无需先启动 HTTP 服务：
+
+- **基础对话**：`python examples/basic_chat.py` — 同步/流式对话、会话续接
+- **工具调用**：`python examples/tool_calling.py [--web]` — 工具事件流、自定义工具注册
+- **RAG 管道**：`python examples/rag_example.py` — 文档索引、向量检索、RAG 增强对话
+- **并发会话**：`python examples/multi_agent.py` — asyncio.gather 并发多会话
+- **Skill + 工具**：`python examples/skill_with_tools.py [skill名] [--web]` — Skill 绑定与工具联动
+- **服务运行**：`python examples/run_service.py [--port 8080] [--reload]` — 启动 FastAPI HTTP 服务
 - **前端调试台**：`frontend/`
 
 ## 核心设计原则
@@ -268,17 +288,17 @@ make clean-rag    # 清空 ChromaDB 数据
 - [x] M2：记忆、预算、策略、可观测性
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
-- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅
+- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatOrchestrator）✅ SDK 全功能对齐 ✅
 - [ ] M6：可靠性与安全 — 熔断器、API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档
 
 ## 文件统计
 
-- **55 个 Python 源模块**：覆盖 Domain / Application / Ports / Adapters / Runtime / Service / SDK 全栈
-- **测试覆盖**：覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略等核心链路
-- **4 个完整示例**：可直接运行的用例
-- **双形态交付**：SDK + Service 可用
+- **69 个 Python 源模块**：覆盖 Domain / Application / Ports / Adapters / Runtime / Service / SDK 全栈
+- **测试覆盖**：120 个单元测试，覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略等核心链路
+- **6 个完整示例**：可直接通过 SDK 运行，无需 HTTP 服务
+- **双形态交付**：SDK + Service 共享同一 ChatOrchestrator 执行引擎
 
 ## 许可证
 

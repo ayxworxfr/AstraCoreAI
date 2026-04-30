@@ -180,6 +180,21 @@ domain ← application ← adapters ← service/sdk
 
 违反依赖方向的 import 会被 mypy 和 code review 拒绝。
 
+### SDK 与 Service 共享执行引擎
+
+`service/chat_orchestrator.py` 中的 `ChatOrchestrator` 是 SDK 与 HTTP Service 的统一 chat 执行引擎，包含：
+
+- **LLM / ToolLoop 工厂**：按 profile 创建并缓存 `LLMAdapter`，每次调用创建 `ToolLoopUseCase`
+- **提示词组装**：`build_system_prompt`（Skill + 全局指令 + RAG 三层）、`build_rag_context`
+- **消息工具方法**：`strip_dangling_tool_calls`、`prepare_for_save`、`needs_summary_fallback`、`build_summary_fallback_messages`
+- **核心流式方法**：`stream_normal`（普通对话）、`stream_with_tools`（工具循环）
+
+**HTTP Service**（`service/api/chat.py`）在 `_execute_normal_run` / `_execute_tool_run` 中消费 orchestrator 输出的 `StreamEvent`，叠加 SSE 广播、run 追踪等 HTTP 专属逻辑。
+
+**SDK**（`sdk/client.py`）在 `chat_stream` 中直接 yield orchestrator 的事件流，叠加 MCP 生命周期管理等 SDK 专属逻辑。
+
+新增涉及对话管道的功能时，优先修改 `ChatOrchestrator`，不要在两端各自复制逻辑。
+
 ### 新增 LLM Profile
 
 优先通过 `config/config.yaml` 增加 profile，而不是新增适配器：
@@ -209,16 +224,19 @@ domain ← application ← adapters ← service/sdk
 | event | data 字段 |
 |---|---|
 | `conversation` | `{"session_id", "message", "created_at"}` |
+| `run_state` | `ChatRunState` 完整快照（重连时用于恢复进度） |
 | `thinking_start` | `{"round"}` |
 | `thinking` | `{"text"}` |
 | `thinking_stop` | `{"duration_ms"}` |
 | `tool_start` | `{"tool", "input"}` |
 | `tool_result` | `{"tool", "input", "result", "is_error", "duration_ms"}` |
 | `message` | `{"text"}` |
-| `done` | `{}` |
+| `done` | `{"conversation": {"title", "last_message_preview", "message_count", "updated_at"}}` |
 | `error` | `{"message"}` |
 
-前端统一通过 `chatService.ts` 中的 `safeJson()` 解析，新增事件类型须同步更新 `parseBlock`。
+`done` 事件的 `conversation` 字段携带后端更新后的会话元数据，前端收到后直接同步本地状态，无需再发 PATCH 请求。如果会话行不存在（如纯 SDK 调用未创建 ConversationRow），该字段可能为 `null`。
+
+前端统一通过 `chatService.ts` 中的 `safeJson()` 解析，新增事件类型须同步更新 `parseBlock` 和 `StreamHandlers` 类型定义。
 
 ### 工具结果截断
 

@@ -12,6 +12,13 @@ export type SessionMessagesResponse = {
   has_more: boolean;
 };
 
+export type ConversationUpdate = {
+  title: string;
+  last_message_preview: string;
+  message_count: number;
+  updated_at: string;
+};
+
 type StreamHandlers = {
   onConversationStart?: (sessionId: string, message: string) => void;
   onRunState?: (state: ChatRunState) => void;
@@ -21,7 +28,7 @@ type StreamHandlers = {
   onThinking?: (delta: string) => void;
   onToolStart?: (toolName: string, input: Record<string, unknown>) => void;
   onToolResult?: (toolName: string, input: Record<string, unknown>, result: string, isError: boolean, durationMs: number) => void;
-  onDone: () => void;
+  onDone: (conversation?: ConversationUpdate) => void;
   onError: (msg: string) => void;
 };
 
@@ -106,7 +113,7 @@ function parseBlock(block: string, handlers: StreamHandlers): void {
       Number(d.duration_ms ?? 0),
     );
   }
-  else if (eventType === 'done') handlers.onDone();
+  else if (eventType === 'done') handlers.onDone(safeJson().conversation as ConversationUpdate | undefined);
   else if (eventType === 'error') handlers.onError(String(safeJson().message ?? data) || '流式请求失败');
 }
 
@@ -153,10 +160,10 @@ export async function sendChatStream(
     onThinking: (d) => { if (!isAborted()) handlers.onThinking?.(d); },
     onToolStart: (name, input) => { if (!isAborted()) handlers.onToolStart?.(name, input); },
     onToolResult: (name, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, input, result, isError, durationMs); },
-    onDone: () => {
+    onDone: (conv) => {
       if (isAborted()) return;
       doneCalled = true;
-      handlers.onDone();
+      handlers.onDone(conv);
     },
     onError: (msg) => { if (!isAborted()) handlers.onError(msg); },
   };
@@ -224,7 +231,7 @@ export async function subscribeChatRun(
     onThinking: (d) => { if (!isAborted()) handlers.onThinking?.(d); },
     onToolStart: (name, input) => { if (!isAborted()) handlers.onToolStart?.(name, input); },
     onToolResult: (name, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, input, result, isError, durationMs); },
-    onDone: () => { if (!isAborted()) handlers.onDone(); },
+    onDone: (conv) => { if (!isAborted()) handlers.onDone(conv); },
     onError: (msg) => { if (!isAborted()) handlers.onError(msg); },
   };
 

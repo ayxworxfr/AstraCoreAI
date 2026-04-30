@@ -1,52 +1,46 @@
-"""Multi-agent workflow example using AstraCore SDK."""
+"""并发会话示例：演示同时发起多个独立对话，以及基于结果续接会话。
+
+流程：asyncio.gather 并发两个独立问答 → 取第一个的 session_id 续接追问。
+
+用法：
+    python examples/multi_agent.py
+"""
 
 import asyncio
-import os
 
-from astracore.core.domain.agent import AgentRole, AgentTask
-from astracore.sdk import AstraCoreClient, AstraCoreConfig
-from astracore.sdk.config import LLMConfig
+from dotenv import load_dotenv
+
+from astracore.sdk import AstraCoreClient
+
+load_dotenv()
 
 
 async def main() -> None:
-    """Run multi-agent workflow example."""
-    config = AstraCoreConfig(
-        llm=LLMConfig(
-            provider="anthropic",
-            api_key=os.getenv("ANTHROPIC_API_KEY", "test-key"),
+    async with AstraCoreClient() as client:
+        # 1. 并发发起两个独立对话
+        print("=== 并发独立会话 ===\n")
+        q1 = "用一句话解释什么是大语言模型。"
+        q2 = "用一句话解释什么是向量数据库。"
+
+        r1, r2 = await asyncio.gather(
+            client.chat(q1),
+            client.chat(q2),
         )
-    )
+        print(f"Q: {q1}\nA: {r1.content}\n")
+        print(f"Q: {q2}\nA: {r2.content}\n")
 
-    client = AstraCoreClient(config)
+        # 2. 基于第一个会话续接追问
+        print("=== 续接会话（基于第一轮回复）===\n")
+        r3 = await client.chat(
+            "给出一个实际应用例子。",
+            session_id=r1.session_id,
+        )
+        print(f"Q: 给出一个实际应用例子。\nA: {r3.content}\n")
 
-    print("=== Multi-Agent Workflow Example ===\n")
 
-    objective = "Create a comprehensive report on AI framework design patterns"
-
-    print(f"Objective: {objective}\n")
-
-    workflow = await client.create_agent_workflow(objective=objective)
-
-    print(f"Workflow created: {workflow.workflow_id}")
-    print(f"Tasks: {len(workflow.tasks)}\n")
-
-    for i, task in enumerate(workflow.tasks, 1):
-        print(f"{i}. {task.role.value}: {task.description}")
-
-    print("\nExecuting workflow...\n")
-
-    result = await client.execute_workflow(workflow.workflow_id)
-
-    print(f"Workflow status: {result.status.value}")
-    print(f"Completed tasks: {sum(1 for t in result.tasks if t.status.value == 'completed')}")
-
-    if result.status.value == "completed":
-        print("\n=== Results ===")
-        for task in result.tasks:
-            if task.result:
-                print(f"\n{task.role.value}:")
-                print(f"  {task.result}")
+def test_main():
+    asyncio.run(main())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    test_main()

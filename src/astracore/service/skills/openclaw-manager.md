@@ -28,13 +28,16 @@ order: 70
 - `openclaw gateway status --json` — 结构化输出（脚本用）
 
 ### 生命周期
-- `openclaw gateway start / stop / restart`
-- `openclaw gateway install / uninstall`
+- `openclaw gateway start` — 启动后台服务
+- `openclaw gateway stop` — 停止后台服务
+- `openclaw gateway restart` — 重启服务，等价于 stop + start
+- `openclaw gateway install` — 注册为系统服务（开机自启）
+- `openclaw gateway uninstall` — 移除系统服务注册
 
 ### 运行 / 日志 / 排障
-- `openclaw gateway run [--port 18789] [--verbose] [--allow-unconfigured]`
-- `openclaw logs --follow`
-- `openclaw doctor`
+- `openclaw gateway run [--port 18789] [--verbose] [--allow-unconfigured]` — 前台运行（调试用）
+- `openclaw logs --follow` — 实时跟日志
+- `openclaw doctor` — 全面诊断，连续故障或状态异常时跑
 
 ### `--force` 使用条件
 **仅在以下情况才用**：{{owner_name}} 明确要求，或 `openclaw doctor` 诊断确认是 stuck 状态。日常启停禁用。

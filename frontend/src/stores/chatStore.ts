@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { normalizeError } from '../services/apiClient';
+import type { ConversationUpdate } from '../services/chatService';
 import {
   cancelChatRun,
   createChatRun,
@@ -773,7 +774,24 @@ export const useChatStore = create<ChatStore>()(
                   thinkingBlocks[thinkingBlocks.length - 1] += delta;
                   updateAssistant({ thinkingBlocks: getUpdatedBlocks(), status: 'streaming' });
                 },
-                onDone: () => {
+                onDone: (conv?: ConversationUpdate) => {
+                  if (conv) {
+                    set((s) => ({
+                      conversations: sortConversations(
+                        s.conversations.map((c) =>
+                          c.id !== activeConversationId
+                            ? c
+                            : {
+                                ...c,
+                                title: conv.title,
+                                lastMessagePreview: conv.last_message_preview,
+                                messageCount: conv.message_count,
+                                updatedAt: conv.updated_at,
+                              },
+                        ),
+                      ),
+                    }));
+                  }
                   const currentMsg = (get().messagesByConversation[activeConversationId] ?? [])
                     .find((m) => m.id === assistantId);
                   finishStreaming(run.run_id, {
@@ -826,15 +844,6 @@ export const useChatStore = create<ChatStore>()(
                 ...(sid && msgs ? { messagesByConversation: { ...s.messagesByConversation, [sid]: msgs } } : {}),
               };
             });
-            // 同步本轮对话元数据到后端（标题、预览、消息数）
-            const updatedConv = get().conversations.find((c) => c.id === activeConversationId);
-            if (updatedConv) {
-              void patchConversationApi(activeConversationId, {
-                title: updatedConv.title,
-                last_message_preview: updatedConv.lastMessagePreview,
-                message_count: updatedConv.messageCount,
-              }).catch(() => undefined);
-            }
           }
         }
       },
