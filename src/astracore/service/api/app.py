@@ -9,6 +9,9 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import FileResponse
+from starlette.types import Scope
 
 from astracore.runtime.observability.logger import get_logger, setup_logging
 from astracore.service.api import chat, conversations, health, rag, settings, skills, system
@@ -17,6 +20,26 @@ from astracore.service.seeds import seed_builtin_skills, seed_documents
 
 setup_logging()
 logger = get_logger(__name__)
+
+
+class SPAStaticFiles(StaticFiles):
+    """Serve frontend routes from index.html while preserving backend 404s."""
+
+    _BACKEND_PREFIXES = ("api/", "health", "docs", "redoc", "openapi.json")
+
+    async def get_response(self, path: str, scope: Scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            normalized_path = path.lstrip("/")
+            is_backend_path = normalized_path == "api" or any(
+                normalized_path == prefix.rstrip("/") or normalized_path.startswith(prefix)
+                for prefix in self._BACKEND_PREFIXES
+            )
+            is_asset_path = "." in Path(normalized_path).name
+            if exc.status_code != 404 or scope["method"] != "GET" or is_backend_path or is_asset_path:
+                raise
+            return FileResponse(Path(str(self.directory)) / "index.html")
 
 
 @asynccontextmanager
@@ -105,6 +128,6 @@ def create_app() -> FastAPI:
 
     dist_dir = Path(__file__).parent.parent.parent.parent.parent / "frontend" / "dist"
     if dist_dir.exists():
-        app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="static")
+        app.mount("/", SPAStaticFiles(directory=str(dist_dir), html=True), name="static")
 
     return app
