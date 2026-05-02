@@ -1,12 +1,12 @@
 llm:
-  default_profile: deepseek-chat
+  default_profile: deepseek-v4-flash
   profiles:
-    - id: deepseek-chat
+    - id: deepseek-v4-flash
       label: DeepSeek Chat
       provider: anthropic
       base_url: https://api.deepseek.com/anthropic
       api_key_env: DEEPSEEK_API_KEY
-      model: deepseek-chat
+      model: deepseek-v4-flash
       max_tokens: 8192
 
     - id: claude-sonnet

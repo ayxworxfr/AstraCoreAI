@@ -42,7 +42,7 @@ def infer_model_capabilities(
             anthropic_blocks=False,
         )
 
-    if normalized_model == "deepseek-chat":
+    if normalized_model == "deepseek-v4-flash":
         uses_anthropic_protocol = (
             normalized_provider == "anthropic" or "/anthropic" in normalized_base_url
         )

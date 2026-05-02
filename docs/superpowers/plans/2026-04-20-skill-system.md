@@ -277,7 +277,7 @@ ASTRACORE__RETRIEVAL__PERSIST_DIRECTORY=./chroma_db
 ASTRACORE__LLM__PROVIDER=deepseek
 ASTRACORE__LLM__BASE_URL=https://api.deepseek.com
 ASTRACORE__LLM__API_KEY=
-ASTRACORE__LLM__MODEL=deepseek-chat
+ASTRACORE__LLM__MODEL=deepseek-v4-flash
 
 # Memory Configuration
 ASTRACORE__MEMORY__REDIS_URL=redis://localhost:6379/0

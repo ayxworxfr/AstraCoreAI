@@ -9,12 +9,12 @@ llm:
       model: claude-sonnet-4-6
       max_tokens: 8192
 
-    - id: deepseek-chat
+    - id: deepseek-v4-flash
       label: DeepSeek Chat
       provider: deepseek
       base_url: https://api.deepseek.com
       api_key_env: DEEPSEEK_API_KEY
-      model: deepseek-chat
+      model: deepseek-v4-flash
       max_tokens: 8192
 
 agent:

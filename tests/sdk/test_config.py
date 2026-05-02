@@ -24,10 +24,10 @@ def test_llm_config_resolves_default_profile() -> None:
 
 def test_llm_config_rejects_missing_default_profile() -> None:
     profile = LLMProfileConfig(
-        id="deepseek-chat",
+        id="deepseek-v4-flash",
         provider="deepseek",
         api_key="test-key",
-        model="deepseek-chat",
+        model="deepseek-v4-flash",
     )
 
     with pytest.raises(ValidationError, match="default_profile"):
@@ -48,10 +48,10 @@ def test_llm_config_rejects_duplicate_profile_ids() -> None:
 
 def test_deepseek_profile_applies_default_base_url() -> None:
     profile = LLMProfileConfig(
-        id="deepseek-chat",
+        id="deepseek-v4-flash",
         provider="deepseek",
         api_key="test-key",
-        model="deepseek-chat",
+        model="deepseek-v4-flash",
     )
 
     assert profile.base_url == "https://api.deepseek.com"
@@ -73,11 +73,11 @@ def test_llm_profile_infers_claude_opus_capabilities() -> None:
 
 def test_llm_profile_infers_deepseek_anthropic_capabilities() -> None:
     profile = LLMProfileConfig(
-        id="deepseek-chat",
+        id="deepseek-v4-flash",
         provider="anthropic",
         base_url="https://api.deepseek.com/anthropic",
         api_key="test-key",
-        model="deepseek-chat",
+        model="deepseek-v4-flash",
     )
 
     assert profile.capabilities.tools is True

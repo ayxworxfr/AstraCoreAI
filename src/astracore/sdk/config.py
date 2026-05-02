@@ -12,7 +12,7 @@ import yaml
 from astracore.sdk.model_capabilities import LLMCapabilities, infer_model_capabilities
 
 _DEFAULT_MODELS: dict[str, str] = {
-    "deepseek": "deepseek-chat",
+    "deepseek": "deepseek-v4-flash",
     "anthropic": "claude-sonnet-4-6",
 }
 
