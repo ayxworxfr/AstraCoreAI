@@ -21,6 +21,8 @@ memory:
 retrieval:
   collection_name: astracore
   persist_directory: /app/data/chroma_db
+  # embedding_model: all-MiniLM-L6-v2          # 默认，英文场景
+  # embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言场景
 
 mcp:
   servers: []

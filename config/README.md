@@ -63,6 +63,72 @@ capabilities:
 
 只需要写需要覆盖的字段，未写字段会继续使用内置推导值。
 
+## Retrieval / RAG 配置
+
+`retrieval` 控制向量检索行为：
+
+```yaml
+retrieval:
+  collection_name: astracore       # ChromaDB collection 名称
+  persist_directory: ./chroma_db   # 持久化目录；不填则使用内存模式（重启丢失）
+  embedding_model: all-MiniLM-L6-v2  # sentence-transformers 模型名
+```
+
+`embedding_model` 同时用于 RAG 文档向量化和技能路由（vector 模式）。两者共享同一个模型，保证语义空间一致。
+
+可选模型：
+
+| 模型 | 大小 | 适用场景 |
+|------|------|---------|
+| `all-MiniLM-L6-v2`（默认） | ~90MB | 英文 |
+| `paraphrase-multilingual-MiniLM-L12-v2` | ~420MB | 中文 / 多语言 |
+
+> ⚠️ 切换模型后，已有的向量数据与新模型不兼容，需要清空 ChromaDB 并重新索引：
+> ```bash
+> make clean-rag
+> ```
+
+## Skills 目录扩展
+
+`skills.extra_dirs` 支持在内置 `service/skills/` 之外扫描额外的 skill 目录：
+
+```yaml
+skills:
+  extra_dirs:
+    - D:/my-skills          # 绝对路径
+    - ~/shared-skills       # 支持 ~ 展开
+```
+
+- 每个目录下的 `.md` 文件按相同规则解析（frontmatter `name/description/order/default` + 正文 system_prompt）
+- 同名 `source_key`（文件名 stem）时，后配置的目录覆盖先配置的目录，并输出警告日志
+- 可用于引入团队共享 skill 库或业务专属 skill，无需修改内置目录
+
+## 技能路由配置
+
+`skill_routing` 控制如何将用户消息自动匹配到合适的 Skill：
+
+```yaml
+skill_routing:
+  mode: llm          # off | vector | llm
+  threshold: 0.45    # vector 模式：主技能最低相似度（0~1）
+  secondary_threshold: 0.35  # vector 模式：副技能最低相似度
+  max_skills: 3      # 最多同时加载的技能数
+  # llm_profile: claude-sonnet  # llm 模式专用；不填则使用 llm.default_profile
+```
+
+三种模式：
+
+- `off`：禁用自动路由，用户手动选择 Skill。
+- `vector`：通过余弦相似度匹配，速度快、无额外 API 消耗。需要安装 `sentence-transformers`，使用 `retrieval.embedding_model` 指定的模型。
+- `llm`：调用轻量 LLM 判断匹配技能，准确度更高，会消耗少量 token。
+
+路由结果在对话框以标签形式展示：
+
+- `📌 管理员`（geekblue）：anchor 主技能（用户指定或默认）
+- `⚡ 故事大师`（blue）：routing 自动追加的副技能
+
+anchor 技能注入完整 system_prompt；副技能只追加 `name + description` 简短声明，节省 token。
+
 ## MCP 配置
 
 `mcp.servers` 配置 Agent 可用的 MCP 工具服务器：

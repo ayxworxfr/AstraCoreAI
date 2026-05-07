@@ -20,6 +20,7 @@ from astracore.runtime.policy.engine import PolicyEngine
 from astracore.sdk.config import AstraCoreConfig
 from astracore.service.chat_orchestrator import ChatOrchestrator
 from astracore.service.seeds import seed_builtin_skills
+from astracore.service.skill_router import SkillRouter
 
 logger = get_logger(__name__)
 
@@ -64,11 +65,17 @@ class AstraCoreClient:
         self._rag_pipeline = rag_pipeline
         self._tool_adapter: ToolAdapter = self._new_native_adapter()
         self._mcp_adapter: Any = None
+        self._skill_router: SkillRouter | None = (
+            SkillRouter(config=cfg, db_url=cfg.memory.db_url)
+            if cfg.skill_routing.mode != "off"
+            else None
+        )
         self._orchestrator = ChatOrchestrator(
             config=cfg,
             memory=memory,
             rag_pipeline=rag_pipeline,
             policy=PolicyEngine(),
+            skill_router=self._skill_router,
         )
 
     def _new_native_adapter(self) -> ToolAdapter:
@@ -90,9 +97,15 @@ class AstraCoreClient:
     async def _start(self) -> None:
         await init_db(self.config.memory.db_url)
         try:
-            await seed_builtin_skills(self.config.memory.db_url)
+            await seed_builtin_skills(self.config.memory.db_url, extra_skill_dirs=self.config.skills.extra_dirs)
         except Exception:
             logger.warning("内置 Skill 种子写入失败，继续启动")
+
+        if self._skill_router is not None:
+            try:
+                await self._skill_router.precompute()
+            except Exception:
+                logger.warning("SkillRouter precompute 失败，继续启动")
 
         if self.config.mcp.servers:
             try:
@@ -146,7 +159,7 @@ class AstraCoreClient:
         if (use_tools or enable_web) and not profile.capabilities.tools:
             raise ValueError(f"LLM profile '{profile.id}' does not support tool calling")
 
-        inject_system = await self._orchestrator.build_system_prompt(
+        inject_system, _, _ = await self._orchestrator.build_system_prompt(
             skill_id, disable_skill, enable_rag, message
         )
         temperature_val = await self._orchestrator.resolve_temperature(temperature, profile)

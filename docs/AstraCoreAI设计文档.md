@@ -168,10 +168,39 @@ Service 层将一次前端对话发送抽象为 `ChatRunRow`，避免浏览器�
 ### 5.7 Skill 系统
 
 - **Skill 提示词库**：内置 Skill + 用户自定义 Skill，CRUD 全量管理，支持标记内置不可删除
+- **多目录扫描**：`skills.extra_dirs` 配置额外 skill 目录（绝对路径或 `~/xxx`），同名 `source_key` 后加载覆盖先加载并发出警告
 - **三层系统提示**：Skill 专属提示 → 全局指令 → RAG 上下文，按顺序拼接注入
 - **用户设置**：默认 Skill（对话自动激活）+ 全局指令（所有对话追加）
 - **运行时参数**：Temperature、RAG top_k、对话上下文长度（context_max_messages）— 存储在 `UserSettingsRow` 键值表，按请求读取，无需重启
 - **系统信息 API**：`GET /api/v1/system/` 返回 LLM profiles、模型能力、MCP server 与 Tavily 状态，供前端只读展示
+
+### 5.8 Skill 自动路由（SkillRouter）
+
+`SkillRouter` 根据用户消息内容自动匹配并追加相关副技能，实现"主技能全量注入 + 副技能能力声明追加"的分层效果。
+
+**工作模式**
+
+| 模式 | 原理 | 依赖 |
+|------|------|------|
+| `off` | 禁用，返回空列表 | 无 |
+| `vector` | 对 skill `name+description` 预计算嵌入，查询时余弦相似度排序，按 threshold/secondary_threshold 过滤 | sentence-transformers + numpy（可选）|
+| `llm` | 构造 skill 列表作为上下文，由 LLM 返回 `{"skill_ids": [...]}` JSON | 配置的 LLM profile |
+
+**分层加载语义**
+
+- **Anchor 技能（主技能）**：用户在请求中显式指定的 `skill_id`，或 `default_skill_id` 设置项；注入完整 `system_prompt`，在对话框显示 `📌` 标签
+- **Routed 技能（副技能）**：路由自动追加，仅追加 `name + description` 简短声明（不注入完整提示词，节省 token）；对话框显示 `⚡` 标签
+- Anchor 在路由结果中自动过滤，避免重复
+
+**`build_system_prompt` 返回值**
+
+`(system_prompt: str | None, anchor_name: str | None, routed_names: list[str])`
+- Service 层通过 `auto_skills` SSE 事件向前端广播：`{"anchor": "管理员", "routed": ["故事大师"]}`
+
+**路由 LLM Prompt 原则**
+- 只匹配用户**显式提出**的需求，禁止推断隐含场景
+- 多主题消息每个主题各匹配一个技能（上限 `max_skills`）
+- 有具体技能匹配时不选通用/兜底技能
 
 ### 5.8 LLM Profile 注册表
 

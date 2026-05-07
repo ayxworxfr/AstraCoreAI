@@ -28,6 +28,7 @@ type StreamHandlers = {
   onThinking?: (delta: string) => void;
   onToolStart?: (toolName: string, input: Record<string, unknown>) => void;
   onToolResult?: (toolName: string, input: Record<string, unknown>, result: string, isError: boolean, durationMs: number) => void;
+  onAutoSkills?: (data: { anchor: string | null; routed: string[] }) => void;
   onDone: (conversation?: ConversationUpdate) => void;
   onError: (msg: string) => void;
 };
@@ -123,6 +124,12 @@ function parseBlock(block: string, handlers: StreamHandlers): void {
       Number(d.duration_ms ?? 0),
     );
   }
+  else if (eventType === 'auto_skills') {
+    const d = safeJson();
+    const anchor: string | null = typeof d.anchor === 'string' ? d.anchor : null;
+    const routed: string[] = Array.isArray(d.routed) ? d.routed.map(String) : [];
+    handlers.onAutoSkills?.({ anchor, routed });
+  }
   else if (eventType === 'done') handlers.onDone(safeJson().conversation as ConversationUpdate | undefined);
   else if (eventType === 'error') handlers.onError(String(safeJson().message ?? data) || '流式请求失败');
 }
@@ -170,6 +177,7 @@ export async function sendChatStream(
     onThinking: (d) => { if (!isAborted()) handlers.onThinking?.(d); },
     onToolStart: (name, input) => { if (!isAborted()) handlers.onToolStart?.(name, input); },
     onToolResult: (name, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, input, result, isError, durationMs); },
+    onAutoSkills: (skills) => { if (!isAborted()) handlers.onAutoSkills?.(skills); },
     onDone: (conv) => {
       if (isAborted()) return;
       doneCalled = true;
@@ -241,6 +249,7 @@ export async function subscribeChatRun(
     onThinking: (d) => { if (!isAborted()) handlers.onThinking?.(d); },
     onToolStart: (name, input) => { if (!isAborted()) handlers.onToolStart?.(name, input); },
     onToolResult: (name, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, input, result, isError, durationMs); },
+    onAutoSkills: (skills) => { if (!isAborted()) handlers.onAutoSkills?.(skills); },
     onDone: (conv) => { if (!isAborted()) handlers.onDone(conv); },
     onError: (msg) => { if (!isAborted()) handlers.onError(msg); },
   };

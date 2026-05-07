@@ -14,9 +14,15 @@ class ChromaRetrieverAdapter(RetrieverAdapter):
     asyncio.get_event_loop().run_in_executor so the event loop is not blocked.
     """
 
-    def __init__(self, collection_name: str = "astracore", persist_directory: str | None = None):
+    def __init__(
+        self,
+        collection_name: str = "astracore",
+        persist_directory: str | None = None,
+        embedding_model: str = "all-MiniLM-L6-v2",
+    ):
         self.collection_name = collection_name
         self.persist_directory = persist_directory
+        self.embedding_model = embedding_model
         self._client: Any = None
         self._collection: Any = None
 
@@ -31,8 +37,14 @@ class ChromaRetrieverAdapter(RetrieverAdapter):
                 else:
                     self._client = chromadb.Client()
 
+                from chromadb.utils.embedding_functions import (  # noqa: PLC0415
+                    SentenceTransformerEmbeddingFunction,
+                )
+
+                ef = SentenceTransformerEmbeddingFunction(model_name=self.embedding_model)
                 self._collection = self._client.get_or_create_collection(
                     name=self.collection_name,
+                    embedding_function=ef,
                     metadata={"hnsw:space": "cosine"},
                 )
             except ImportError as e:

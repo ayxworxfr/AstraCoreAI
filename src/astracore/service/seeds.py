@@ -120,21 +120,45 @@ def _parse_skill_md(path: Path) -> dict:
     }
 
 
-def _load_builtin_skills() -> list[dict]:
-    """按 frontmatter order 加载 skills/ 目录下所有 .md 文件。"""
-    if not SKILLS_DIR.exists():
-        logger.warning("skills 目录不存在: %s，跳过内置 Skill 加载", SKILLS_DIR)
-        return []
+def _load_builtin_skills(extra_dirs: list[str] | None = None) -> list[dict]:
+    """按 frontmatter order 加载 skills/ 目录及所有额外配置目录下的 .md 文件。
 
-    skills = []
-    for path in SKILLS_DIR.glob("*.md"):
-        if path.stem.upper() in {"README", "CHANGELOG", "LICENSE"}:
-            continue
-        try:
-            skills.append(_parse_skill_md(path))
-        except Exception:
-            logger.exception("解析 Skill 文件失败: %s", path)
+    extra_dirs 中的目录按顺序追加在内置目录之后；source_key 冲突时后加载的文件覆盖先加载的并记录警告。
+    """
+    dirs_to_scan: list[Path] = []
+    if SKILLS_DIR.exists():
+        dirs_to_scan.append(SKILLS_DIR)
+    else:
+        logger.warning("内置 skills 目录不存在: %s", SKILLS_DIR)
 
+    for raw in (extra_dirs or []):
+        p = Path(raw).expanduser().resolve()
+        if p.exists() and p.is_dir():
+            dirs_to_scan.append(p)
+        else:
+            logger.warning("配置的 skill 目录不存在，跳过: %s", p)
+
+    _RESERVED = {"README", "CHANGELOG", "LICENSE"}
+    seen: dict[str, Path] = {}  # source_key -> file path（用于冲突日志）
+    skills_by_key: dict[str, dict] = {}
+
+    for dir_path in dirs_to_scan:
+        for path in sorted(dir_path.glob("*.md")):
+            if path.stem.upper() in _RESERVED:
+                continue
+            source_key = path.stem
+            if source_key in seen:
+                logger.warning(
+                    "Skill source_key 冲突: '%s' 出现在 %s 和 %s，后者覆盖",
+                    source_key, seen[source_key], path,
+                )
+            seen[source_key] = path
+            try:
+                skills_by_key[source_key] = _parse_skill_md(path)
+            except Exception:
+                logger.exception("解析 Skill 文件失败: %s", path)
+
+    skills = list(skills_by_key.values())
     return sorted(skills, key=lambda skill: (skill["order"], skill["source_key"]))
 
 
@@ -158,7 +182,7 @@ async def _ensure_skill_columns(db_url: str) -> None:
                 pass  # 列已存在，忽略
 
 
-async def seed_builtin_skills(db_url: str) -> None:
+async def seed_builtin_skills(db_url: str, extra_skill_dirs: list[str] | None = None) -> None:
     """写入并同步内置 Skill，首次启动时设置默认 Skill。
 
     - 匹配键：source_key（MD 文件名），与 Skill 显示名称解耦
@@ -177,7 +201,7 @@ async def seed_builtin_skills(db_url: str) -> None:
 
     await _ensure_skill_columns(db_url)
 
-    builtin_skills = _load_builtin_skills()
+    builtin_skills = _load_builtin_skills(extra_dirs=extra_skill_dirs)
     active_keys = {s["source_key"] for s in builtin_skills}
 
     async with get_session(db_url) as db:

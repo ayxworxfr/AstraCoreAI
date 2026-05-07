@@ -28,6 +28,7 @@ from astracore.sdk.config import AstraCoreConfig, LLMProfileConfig
 from astracore.service.api import rag as rag_api
 from astracore.service.builtin_tools import build_tool_adapter
 from astracore.service.chat_orchestrator import ChatOrchestrator
+from astracore.service.skill_router import SkillRouter
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -53,6 +54,8 @@ class _ActiveRun:
             "created_at": row.created_at.isoformat(),
             "updated_at": row.updated_at.isoformat(),
             "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            "anchor_skill": None,
+            "routed_skills": [],
         }
 
     def update(self, **patch: Any) -> None:
@@ -124,12 +127,19 @@ def _get_memory_adapter() -> HybridMemoryAdapter:
 
 
 @lru_cache(maxsize=1)
+def _get_skill_router() -> SkillRouter:
+    cfg = _get_settings()
+    return SkillRouter(config=cfg, db_url=cfg.memory.db_url)
+
+
+@lru_cache(maxsize=1)
 def _get_chat_orchestrator() -> ChatOrchestrator:
     return ChatOrchestrator(
         config=_get_settings(),
         memory=_get_memory_adapter(),
         rag_pipeline=rag_api._get_rag_pipeline(),
         policy=PolicyEngine(),
+        skill_router=_get_skill_router() if _get_settings().skill_routing.mode != "off" else None,
     )
 
 
@@ -545,12 +555,16 @@ async def _run_chat_in_background(
         orchestrator = _get_chat_orchestrator()
         profile = _get_llm_profile(request.model_profile)
         _ensure_tool_capability(request, profile)
-        inject_system = await orchestrator.build_system_prompt(
+        inject_system, anchor_name, routed_names = await orchestrator.build_system_prompt(
             skill_id=request.skill_id,
             disable_skill=request.disable_skill,
             enable_rag=request.enable_rag,
             message=request.message,
         )
+        if anchor_name or routed_names:
+            logger.info("active skills for run %s: anchor=%s routed=%s", run_id, anchor_name, routed_names)
+            _update_active_run_state(run_id, anchor_skill=anchor_name, routed_skills=routed_names)
+            _broadcast_run_event(run_id, "auto_skills", {"anchor": anchor_name, "routed": routed_names})
         temperature = await orchestrator.resolve_temperature(request.temperature, profile)
         context_max = int(await orchestrator.get_setting("context_max_messages") or "20")
         llm_kwargs = _build_llm_kwargs(request, profile)

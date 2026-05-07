@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from dotenv import load_dotenv
 import yaml
 
@@ -102,6 +102,9 @@ class RetrievalConfig(BaseModel):
 
     collection_name: str = "astracore"
     persist_directory: str | None = None
+    embedding_model: str = "all-MiniLM-L6-v2"
+    """sentence-transformers 模型名，同时用于 RAG 向量化和技能路由。
+    中文场景推荐 paraphrase-multilingual-MiniLM-L12-v2。"""
 
 
 class FilesystemServerConfig(BaseModel):
@@ -143,6 +146,45 @@ class AgentConfig(BaseModel):
     max_tool_result_chars: int = Field(default=20_000, ge=100)
     max_tool_iterations: int = Field(default=10, ge=0)  # 0 = 不限轮次
     tool_timeout_s: float = Field(default=120.0, ge=1.0)
+
+
+class SkillRoutingConfig(BaseModel):
+    """Automatic skill routing configuration.
+
+    mode:
+      off    — disabled (default); manual skill selection only.
+      vector — cosine similarity between message and skill embeddings.
+               Requires the vector stack (sentence-transformers + numpy).
+      llm    — a lightweight LLM call classifies which skills apply.
+
+    threshold          — minimum cosine similarity for the primary skill (vector mode).
+    secondary_threshold — minimum similarity for additional skills (vector mode).
+    max_skills         — cap on the number of skills loaded simultaneously.
+    llm_profile        — which LLM profile to use for routing (llm mode);
+                         defaults to llm.default_profile when None.
+    """
+
+    mode: Literal["off", "vector", "llm"] = "off"
+    threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    secondary_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
+    max_skills: int = Field(default=3, ge=1, le=5)
+    llm_profile: str | None = None
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _coerce_yaml_bool(cls, v: object) -> object:
+        # YAML 1.1 parses bare `off`/`no`/`false` as Python False.
+        # Map False → "off" so users can write `mode: off` without quotes.
+        if v is False:
+            return "off"
+        return v
+
+
+class SkillsConfig(BaseModel):
+    """Skills directory configuration."""
+
+    extra_dirs: list[str] = []
+    """Additional directories to scan for skill .md files (appended after the built-in dir)."""
 
 
 class MCPConfig(BaseModel):
@@ -210,6 +252,8 @@ class AstraCoreConfig(BaseModel):
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    skill_routing: SkillRoutingConfig = Field(default_factory=SkillRoutingConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
 
     def __init__(self, **data: object) -> None:
         if not data:

@@ -15,7 +15,8 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 - **共享执行引擎**：`ChatOrchestrator` 作为 SDK 与 HTTP Service 的统一 chat 管道；system prompt 组装、LLM 路由、工具循环、session 持久化全部在此实现，两端功能完全一致
 - **记忆系统**：Redis 短期（TTL 淘汰）+ SQLite 短期持久化（重启恢复）+ PostgreSQL 长期存储，Redis 不可用时自动降级到 SQLite
 - **RAG 管道**：ChromaDB 向量搜索（幂等 upsert）、文档分块、引用支持
-- **Skill 系统**：Skill 提示词管理（CRUD + 内置/自定义）、全局指令编辑、对话时动态切换激活 Skill
+- **Skill 系统**：Skill 提示词管理（CRUD + 内置/自定义）、全局指令编辑、对话时动态切换激活 Skill；支持多目录扫描（`skills.extra_dirs`）
+- **Skill 自动路由**：三种模式（`off` / `vector` / `llm`）；vector 模式用 sentence-transformers 余弦相似度匹配，llm 模式用轻量 LLM 调用判断；主技能（anchor，📌）+ routing 自动追加副技能（⚡）分层显示
 - **多 Agent 编排**：Planner/Executor/Reviewer 协作 + Workflow checkpoint 持久化
 - **策略引擎**：tenacity retry + asyncio timeout 实际生效，Token 预算 O(n) 截断
 - **双形态交付**：SDK 嵌入 + FastAPI 服务 HTTP 访问，两者共享同一 ChatOrchestrator 执行引擎
@@ -206,6 +207,12 @@ llm:
       api_key_env: ANTHROPIC_API_KEY
       model: claude-sonnet-4-6
 
+retrieval:
+  collection_name: astracore
+  persist_directory: ./chroma_db
+  # embedding_model: all-MiniLM-L6-v2          # 默认，英文场景
+  # embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言场景
+
 mcp:
   servers:
     - type: filesystem
@@ -214,6 +221,15 @@ mcp:
     - type: shell
       allow_dirs:
         - D:/project
+
+skills:
+  extra_dirs: []             # 额外的 skill 目录，支持绝对路径或 ~/xxx
+
+skill_routing:
+  mode: off                  # off | vector | llm
+  threshold: 0.45            # vector 模式：主技能最低相似度（使用 retrieval.embedding_model）
+  secondary_threshold: 0.35  # vector 模式：副技能最低相似度
+  max_skills: 3              # 同时加载的最大技能数
 ```
 
 ```bash
@@ -288,7 +304,7 @@ make clean-rag    # 清空 ChromaDB 数据
 - [x] M2：记忆、预算、策略、可观测性
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
-- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatOrchestrator）✅ SDK 全功能对齐 ✅
+- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatOrchestrator）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅
 - [ ] M6：可靠性与安全 — 熔断器、API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档

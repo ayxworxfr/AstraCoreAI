@@ -14,6 +14,7 @@ from uuid import UUID
 
 from astracore.adapters.db.models import SkillRow, UserSettingsRow
 from astracore.adapters.db.session import get_session
+from astracore.service.skill_router import SkillRouter
 from astracore.adapters.llm.anthropic import AnthropicAdapter
 from astracore.adapters.llm.openai import OpenAIAdapter
 from astracore.adapters.memory.hybrid import HybridMemoryAdapter
@@ -33,6 +34,21 @@ logger = get_logger(__name__)
 _ANTHROPIC_BLOCKS_KEY = "anthropic_content_blocks"
 
 
+def _compose_skill_section(skills: list[SkillRow], ai_name: str, owner_name: str) -> str:
+    """Build a system-prompt section for one or more matched skills.
+
+    Primary skill (index 0): full rendered system_prompt.
+    Secondary skills (index 1+): name + description only, appended as a brief
+    capability list to keep token usage bounded.
+    """
+    primary = render_skill_prompt(skills[0].system_prompt, ai_name, owner_name)
+    if len(skills) == 1:
+        return primary
+    sec_lines = [f"- **{s.name}**：{s.description}" for s in skills[1:]]
+    secondary = "## 你同时具备以下辅助能力\n\n" + "\n".join(sec_lines)
+    return primary + "\n\n---\n\n" + secondary
+
+
 class ChatOrchestrator:
     """Shared chat execution engine.
 
@@ -48,12 +64,14 @@ class ChatOrchestrator:
         memory: HybridMemoryAdapter,
         rag_pipeline: RAGPipeline,
         policy: PolicyEngine,
+        skill_router: SkillRouter | None = None,
     ) -> None:
         self._config = config
         self._memory = memory
         self._rag_pipeline = rag_pipeline
         self._policy = policy
         self._llm_adapters: dict[str, LLMAdapter] = {}
+        self._skill_router = skill_router
 
     # ------------------------------------------------------------------
     # LLM / tool-loop factories
@@ -133,20 +151,48 @@ class ChatOrchestrator:
         disable_skill: bool,
         enable_rag: bool,
         message: str,
-    ) -> str | None:
-        """Compose the three-layer system prompt: skill → global instruction → RAG context."""
+    ) -> tuple[str | None, str | None, list[str]]:
+        """Compose the three-layer system prompt: skill → global instruction → RAG context.
+
+        Returns ``(system_prompt, anchor_name, routed_names)``.
+        - ``anchor_name``: the primary/default skill name, or None if no skill is active.
+        - ``routed_names``: names of additional skills added automatically by routing.
+        """
         parts: list[str] = []
+        anchor_name: str | None = None
+        routed_names: list[str] = []
 
         if not disable_skill:
-            resolved_id = (
-                str(skill_id) if skill_id else await self.get_setting("default_skill_id")
-            )
-            if resolved_id:
-                skill = await self.load_skill(resolved_id)
-                if skill and skill.system_prompt:
-                    ai_name = await self.get_setting("ai_name") or "小卡"
-                    owner_name = await self.get_setting("owner_name")
-                    parts.append(render_skill_prompt(skill.system_prompt, ai_name, owner_name))
+            ai_name = await self.get_setting("ai_name") or "小卡"
+            owner_name = await self.get_setting("owner_name")
+
+            # Step 1: resolve anchor skill (user-selected or default).
+            anchor: SkillRow | None = None
+            if skill_id is not None:
+                anchor = await self.load_skill(str(skill_id))
+            if anchor is None:
+                default_id = await self.get_setting("default_skill_id")
+                if default_id:
+                    anchor = await self.load_skill(default_id)
+
+            # Step 2: run routing when enabled — regardless of whether anchor is set.
+            routed: list[SkillRow] = []
+            if self._skill_router is not None:
+                routed = await self._skill_router.route(message)
+                # Remove anchor from routing results to avoid duplication.
+                if anchor:
+                    routed = [s for s in routed if s.id != anchor.id]
+
+            if anchor:
+                anchor_name = anchor.name
+            routed_names = [s.name for s in routed]
+
+            # Step 3: build skill section.
+            if anchor and anchor.system_prompt:
+                parts.append(_compose_skill_section([anchor, *routed], ai_name, owner_name))
+            elif routed:
+                # No anchor at all but routing found something.
+                parts.append(_compose_skill_section(routed, ai_name, owner_name))
 
         instruction = await self.get_setting("global_instruction")
         if instruction:
@@ -157,7 +203,7 @@ class ChatOrchestrator:
             if rag_ctx:
                 parts.append(rag_ctx)
 
-        return "\n\n---\n\n".join(parts) or None
+        return "\n\n---\n\n".join(parts) or None, anchor_name, routed_names
 
     async def resolve_temperature(
         self, temperature: float | None, profile: LLMProfileConfig

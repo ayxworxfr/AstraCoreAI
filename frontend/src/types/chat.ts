@@ -36,4 +36,8 @@ export type ChatMessage = {
   toolActivity?: ToolActivity[];
   status: MessageStatus;
   createdAt: string;    // ISO string，避免 Date 序列化问题
+  /** 当前激活的主技能名称（用户指定或默认 skill） */
+  anchorSkill?: string | null;
+  /** routing 自动追加的副技能名称列表 */
+  autoSkills?: string[];
 };

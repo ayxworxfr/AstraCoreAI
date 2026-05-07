@@ -51,6 +51,7 @@ def _get_rag_pipeline() -> RAGPipeline:
     retriever = ChromaRetrieverAdapter(
         collection_name=cfg.collection_name,
         persist_directory=cfg.persist_directory,
+        embedding_model=cfg.embedding_model,
     )
     return RAGPipeline(retriever=retriever)
 

@@ -14,7 +14,7 @@ import {
   GlobalOutlined,
   DownCircleOutlined,
 } from '@ant-design/icons';
-import { Flex, Typography, Alert, Avatar, Button, Collapse, Tooltip, Popover, theme } from 'antd';
+import { Flex, Typography, Alert, Avatar, Button, Collapse, Tooltip, Popover, Tag, theme } from 'antd';
 import { useChatStore } from '../../stores/chatStore';
 import MarkdownContent from './MarkdownContent';
 import ModelSelector from './ModelSelector';
@@ -307,6 +307,16 @@ function AssistantContent({ message }: { message: ChatMessage }) {
           mode={mode}
         />
       ))}
+      {(message.anchorSkill || (message.autoSkills && message.autoSkills.length > 0)) && (
+        <div style={{ marginBottom: 6 }}>
+          {message.anchorSkill && (
+            <Tag color="geekblue" style={{ fontSize: 11 }}>📌 {message.anchorSkill}</Tag>
+          )}
+          {message.autoSkills?.map((s) => (
+            <Tag key={s} color="blue" style={{ fontSize: 11 }}>⚡ {s}</Tag>
+          ))}
+        </div>
+      )}
       {message.toolActivity && message.toolActivity.length > 0 && (
         <ToolActivityRow tools={message.toolActivity} />
       )}

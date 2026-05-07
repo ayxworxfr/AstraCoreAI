@@ -476,6 +476,8 @@ export const useChatStore = create<ChatStore>()(
               toolActivity: normalizeToolActivity(state.tool_activity),
               status: state.status === 'running' ? 'streaming' : 'done',
               createdAt: state.created_at,
+              anchorSkill: state.anchor_skill ?? null,
+              autoSkills: state.routed_skills ?? [],
             };
             const withoutRun = prev.filter((m) =>
               m.id !== assistantId
@@ -529,6 +531,14 @@ export const useChatStore = create<ChatStore>()(
                   blocks[blocks.length - 1] = `${blocks[blocks.length - 1]}${delta}`;
                   return { ...m, thinkingBlocks: blocks, status: 'streaming' as const };
                 });
+                return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
+              });
+            },
+            onAutoSkills: ({ anchor, routed }) => {
+              set((s) => {
+                const msgs = (s.messagesByConversation[conversationId] ?? []).map((m) =>
+                  m.id === assistantId ? { ...m, anchorSkill: anchor, autoSkills: routed } : m,
+                );
                 return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
               });
             },
@@ -673,7 +683,7 @@ export const useChatStore = create<ChatStore>()(
         });
 
         const updateAssistant = (
-          patch: Partial<Pick<ChatMessage, 'content' | 'thinkingBlocks' | 'status' | 'toolActivity'>>,
+          patch: Partial<Pick<ChatMessage, 'content' | 'thinkingBlocks' | 'status' | 'toolActivity' | 'anchorSkill' | 'autoSkills'>>,
         ) => {
           set((s) => {
             const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) =>
@@ -760,6 +770,8 @@ export const useChatStore = create<ChatStore>()(
                     thinkingBlocks: state.thinking_blocks.length ? state.thinking_blocks : undefined,
                     toolActivity: normalizeToolActivity(state.tool_activity),
                     status: state.status === 'running' ? 'streaming' : 'done',
+                    anchorSkill: state.anchor_skill ?? null,
+                    autoSkills: state.routed_skills ?? [],
                   });
                 },
                 onMessage: (delta) => {
@@ -795,6 +807,9 @@ export const useChatStore = create<ChatStore>()(
                     });
                     return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
                   });
+                },
+                onAutoSkills: ({ anchor, routed }) => {
+                  updateAssistant({ anchorSkill: anchor, autoSkills: routed });
                 },
                 onThinkingStart: () => {
                   thinkingBlocks.push('');

@@ -73,6 +73,8 @@ export type ChatRunState = {
   created_at: string;
   updated_at: string;
   completed_at?: string | null;
+  anchor_skill?: string | null;
+  routed_skills?: string[];
 };
 
 export type RagRetrieveRequest = {

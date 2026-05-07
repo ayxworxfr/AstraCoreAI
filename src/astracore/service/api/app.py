@@ -56,9 +56,17 @@ async def lifespan(app: FastAPI) -> Any:
         logger.exception("数据库初始化失败，不影响服务启动")
 
     try:
-        await seed_builtin_skills(cfg.memory.db_url)
+        await seed_builtin_skills(cfg.memory.db_url, extra_skill_dirs=cfg.skills.extra_dirs)
     except Exception:
         logger.exception("内置 Skill 种子写入失败，不影响服务启动")
+
+    if cfg.skill_routing.mode != "off":
+        try:
+            from astracore.service.api.chat import _get_skill_router  # noqa: PLC0415
+
+            asyncio.create_task(_get_skill_router().precompute())
+        except Exception:
+            logger.exception("SkillRouter precompute 启动失败，不影响服务启动")
 
     try:
         pipeline = rag._get_rag_pipeline()

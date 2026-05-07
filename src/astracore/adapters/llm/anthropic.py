@@ -241,6 +241,12 @@ class AnthropicAdapter(LLMAdapter):
             request_params["tools"] = kwargs["tools"]
 
         if enable_thinking:
+            # Anthropic: max_tokens is the *total* budget (thinking + text output).
+            # If thinking_budget is close to max_tokens, almost no tokens remain for
+            # the visible response. Ensure at least 8192 tokens for text output.
+            min_total = thinking_budget + 8192
+            if request_params["max_tokens"] < min_total:
+                request_params["max_tokens"] = min_total
             request_params["thinking"] = {
                 "type": "enabled",
                 "budget_tokens": thinking_budget,
