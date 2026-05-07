@@ -5,7 +5,7 @@ import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request
@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
 
-from astracore.adapters.db.models import ChatRunRow, ConversationRow
+from astracore.adapters.db.models import ChatRunRow, ChatSessionRow, ConversationRow
+from sqlalchemy.orm.attributes import flag_modified as _flag_modified
 from astracore.adapters.db.session import get_session
 from astracore.adapters.memory.hybrid import HybridMemoryAdapter
 from astracore.core.application.chat import ChatUseCase
@@ -660,6 +661,71 @@ async def delete_session(session_id: UUID) -> None:
     await _get_memory_adapter().delete_session_memory(session_id)
 
 
+class DeleteMessageRequest(BaseModel):
+    role: Literal["user", "assistant"]
+    user_message: str  # 该轮次的 USER 消息内容，用于定位轮次（比 ASSISTANT 内容更可靠）
+
+
+@router.delete("/sessions/{session_id}/messages", status_code=204)
+async def delete_session_message(session_id: UUID, req: DeleteMessageRequest) -> None:
+    """从会话历史中按轮次删除消息。
+
+    通过 user_message 定位该 Q&A 轮次的 USER 消息，
+    USER role：删除整个轮次（USER + 其后所有 ASSISTANT/TOOL，直到下一条 USER）。
+    ASSISTANT role：仅删除该轮次的 ASSISTANT/TOOL 消息，保留 USER。
+    """
+    memory = _get_memory_adapter()
+    messages = await memory.load_short_term(session_id)
+    # 找到该轮次的 USER 消息
+    idx = next(
+        (i for i, m in enumerate(messages) if m.role == MessageRole.USER and m.content == req.user_message),
+        None,
+    )
+    if idx is None:
+        raise HTTPException(status_code=404, detail="消息未找到")
+    # 该轮次的结束位置（下一条 USER 或列表末尾）
+    end = idx + 1
+    while end < len(messages) and messages[end].role != MessageRole.USER:
+        end += 1
+    new_messages = list(messages)
+    if req.role == "user":
+        # 删除整个轮次
+        new_messages = new_messages[:idx] + new_messages[end:]
+    else:
+        # 只删除 ASSISTANT/TOOL 部分，保留 USER
+        new_messages = new_messages[: idx + 1] + new_messages[end:]
+    messages_data = [m.model_dump(mode="json") for m in new_messages]
+    # 原子性地持久化到 DB：更新 ChatSessionRow + 删除 ChatRunRow 在同一事务中
+    async with get_session(_get_settings().memory.db_url) as db:
+        session_row = await db.get(ChatSessionRow, str(session_id))
+        if session_row:
+            session_row.messages = messages_data
+            _flag_modified(session_row, "messages")
+            session_row.updated_at = datetime.now(UTC)
+        else:
+            db.add(
+                ChatSessionRow(
+                    session_id=str(session_id),
+                    messages=messages_data,
+                    updated_at=datetime.now(UTC),
+                )
+            )
+        result = await db.execute(
+            select(ChatRunRow).where(
+                ChatRunRow.session_id == str(session_id),
+                ChatRunRow.user_message == req.user_message,
+            )
+        )
+        for run_row in result.scalars().all():
+            await db.delete(run_row)
+        await db.commit()
+    # DB 事务提交成功后 best-effort 更新 Redis（失败不影响已持久化的 DB 状态）
+    try:
+        await memory.save_short_term(session_id, new_messages)
+    except Exception:
+        pass
+
+
 @router.get("/sessions/{session_id}/messages", response_model=SessionMessagesResponse)
 async def get_session_messages(
     session_id: UUID,
@@ -719,7 +785,7 @@ async def get_session_messages(
         index = next_user_index
 
     total = len(folded)
-    end = total - offset
+    end = max(0, total - offset)
     start = max(0, end - limit)
     page = folded[start:end]
 

@@ -810,7 +810,7 @@ export default function ChatMain(): JSX.Element {
               </Button>
             </Tooltip>
 
-            <Tooltip title={enableWeb ? '关闭联网搜索' : '开启联网搜索（需配置 TAVILY_API_KEY）'}>
+            <Tooltip title={enableWeb ? '关闭联网搜索' : '开启联网搜索'}>
               <Button
                 size="small"
                 type={enableWeb ? 'primary' : 'default'}

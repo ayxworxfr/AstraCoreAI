@@ -6,6 +6,7 @@ import {
   cancelChatRun,
   createChatRun,
   deleteSession,
+  deleteSessionMessage,
   fetchActiveChatRun,
   fetchSessionMessages,
   sendChatMessage,
@@ -343,12 +344,45 @@ export const useChatStore = create<ChatStore>()(
       setSessionError: (msg) => set({ sessionError: msg }),
 
       deleteMessage: (conversationId, messageId) => {
+        const allMsgs = get().messagesByConversation[conversationId] ?? [];
+        const msgIndex = allMsgs.findIndex((m) => m.id === messageId);
+        if (msgIndex === -1) return;
+        const msg = allMsgs[msgIndex];
+
+        // 找到该轮次对应的 USER 消息（用于标识后端轮次）
+        let userMessage: string;
+        let removeIds: Set<string>;
+        if (msg.role === 'user') {
+          userMessage = msg.content;
+          // 删除 USER 本身及其后所有消息，直到下一条 USER
+          removeIds = new Set([messageId]);
+          for (let i = msgIndex + 1; i < allMsgs.length; i++) {
+            if (allMsgs[i].role === 'user') break;
+            removeIds.add(allMsgs[i].id);
+          }
+        } else if (msg.role === 'assistant') {
+          // 找前面最近的 USER 消息
+          const prevUser = allMsgs.slice(0, msgIndex).reverse().find((m) => m.role === 'user');
+          if (!prevUser) return;
+          userMessage = prevUser.content;
+          removeIds = new Set([messageId]);
+        } else {
+          return;
+        }
+
+        // 乐观更新（同时修正 messagesOffset，避免后续分页 offset 越界）
         set((s) => {
           const msgs = (s.messagesByConversation[conversationId] ?? []).filter(
-            (m) => m.id !== messageId,
+            (m) => !removeIds.has(m.id),
           );
+          const removedCount = removeIds.size;
+          const currentOffset = s.messagesOffset[conversationId] ?? 0;
           return {
             messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs },
+            messagesOffset: {
+              ...s.messagesOffset,
+              [conversationId]: Math.max(0, currentOffset - removedCount),
+            },
             conversations: sortConversations(
               s.conversations.map((c) =>
                 c.id !== conversationId
@@ -362,6 +396,10 @@ export const useChatStore = create<ChatStore>()(
               ),
             ),
           };
+        });
+        // 持久化到后端，失败时从服务端重新加载回滚本地状态
+        void deleteSessionMessage(conversationId, msg.role, userMessage).catch(() => {
+          void get().loadMessages(conversationId);
         });
       },
 
@@ -441,7 +479,6 @@ export const useChatStore = create<ChatStore>()(
             };
             const withoutRun = prev.filter((m) =>
               m.id !== assistantId
-              && m.id !== userMsg.id
               && !(m.role === 'assistant' && m.status === 'streaming'),
             );
             const next = [...withoutRun, ...(hasUser ? [] : [userMsg]), assistantMsg];

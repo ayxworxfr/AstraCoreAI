@@ -76,29 +76,31 @@ class HybridMemoryAdapter(MemoryAdapter):
     async def _save_short_term_to_db(
         self, session_id: UUID, messages_data: list[dict[str, Any]]
     ) -> None:
-        """Upsert short-term messages to the DB for restart persistence."""
-        try:
-            from sqlalchemy.ext.asyncio import AsyncSession
+        """Upsert short-term messages to the DB for restart persistence.
 
-            from astracore.adapters.db.models import ChatSessionRow
+        Raises on failure — callers decide whether to swallow or propagate.
+        """
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from sqlalchemy.orm.attributes import flag_modified
 
-            engine = self._get_db()
-            async with AsyncSession(engine) as db:
-                existing = await db.get(ChatSessionRow, str(session_id))
-                if existing:
-                    existing.messages = messages_data
-                    existing.updated_at = datetime.now(UTC)
-                else:
-                    db.add(
-                        ChatSessionRow(
-                            session_id=str(session_id),
-                            messages=messages_data,
-                            updated_at=datetime.now(UTC),
-                        )
+        from astracore.adapters.db.models import ChatSessionRow
+
+        engine = self._get_db()
+        async with AsyncSession(engine) as db:
+            existing = await db.get(ChatSessionRow, str(session_id))
+            if existing:
+                existing.messages = messages_data
+                flag_modified(existing, "messages")
+                existing.updated_at = datetime.now(UTC)
+            else:
+                db.add(
+                    ChatSessionRow(
+                        session_id=str(session_id),
+                        messages=messages_data,
+                        updated_at=datetime.now(UTC),
                     )
-                await db.commit()
-        except Exception:
-            logger.exception("Failed to save short-term memory to DB for session %s", session_id)
+                )
+            await db.commit()
 
     async def _load_short_term_from_db(
         self, session_id: UUID

@@ -37,6 +37,7 @@ dependencies = [
     "aiofiles>=23.0.0",
     "python-dotenv>=1.0.1",
     "PyYAML>=6.0.2",
+    "ddgs>=0.1.0",
 ]
 
 [project.optional-dependencies]

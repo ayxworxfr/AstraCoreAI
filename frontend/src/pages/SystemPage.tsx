@@ -184,12 +184,12 @@ function LLMInfoTab(): JSX.Element {
               )
             ) : '—'}
           </Descriptions.Item>
-          <Descriptions.Item label="Tavily 联网搜索">
+          <Descriptions.Item label="联网搜索">
             {info ? (
               info.tavily_configured ? (
-                <Badge status="success" text="已配置 TAVILY_API_KEY" />
+                <Badge status="success" text="Tavily（已配置 TAVILY_API_KEY）" />
               ) : (
-                <Badge status="warning" text="未配置，联网搜索不可用" />
+                <Badge status="processing" text="DuckDuckGo（未配置 TAVILY_API_KEY）" />
               )
             ) : '—'}
           </Descriptions.Item>

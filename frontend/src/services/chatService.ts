@@ -36,6 +36,16 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await apiClient.delete(`/api/v1/chat/sessions/${sessionId}`);
 }
 
+export async function deleteSessionMessage(
+  sessionId: string,
+  role: 'user' | 'assistant',
+  userMessage: string,
+): Promise<void> {
+  await apiClient.delete(`/api/v1/chat/sessions/${sessionId}/messages`, {
+    data: { role, user_message: userMessage },
+  });
+}
+
 export async function fetchSessionMessages(
   sessionId: string,
   limit = 30,

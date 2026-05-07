@@ -1,6 +1,7 @@
 """内置工具集合，注册到 NativeToolAdapter 供工具循环使用。"""
 
 import ast
+import asyncio
 import math
 import os
 from datetime import datetime, timezone
@@ -34,6 +35,61 @@ def _calculate(expression: str) -> str:
         return f"{expression} = {result}"
     except Exception as e:
         return f"计算失败：{e}"
+
+
+async def _tavily_search(query: str, max_results: int, api_key: str) -> str:
+    import httpx  # noqa: PLC0415
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": api_key,
+                "query": query,
+                "search_depth": "basic",
+                "max_results": max_results,
+                "include_answer": True,
+            },
+        )
+        data = resp.json()
+    parts: list[str] = []
+    if data.get("answer"):
+        parts.append(f"摘要：{data['answer']}")
+    for r in data.get("results", []):
+        parts.append(
+            f"标题：{r.get('title', '无标题')}\n"
+            f"内容：{r.get('content', '')}\n"
+            f"URL：{r.get('url', '')}"
+        )
+    return "\n\n---\n\n".join(parts) if parts else "未找到相关搜索结果"
+
+
+async def _duckduckgo_search(query: str, max_results: int) -> str:
+    from ddgs import DDGS  # noqa: PLC0415
+
+    def _sync() -> list[dict]:
+        return list(DDGS().text(query, max_results=max_results))
+
+    results = await asyncio.to_thread(_sync)
+    if not results:
+        return "未找到相关搜索结果"
+    parts = [
+        f"标题：{r.get('title', '无标题')}\n"
+        f"内容：{r.get('body', '')}\n"
+        f"URL：{r.get('href', '')}"
+        for r in results
+    ]
+    return "\n\n---\n\n".join(parts)
+
+
+async def _web_search(query: str, max_results: int = 5) -> str:
+    api_key = os.getenv("TAVILY_API_KEY", "").strip()
+    try:
+        if api_key:
+            return await _tavily_search(query, max_results, api_key)
+        return await _duckduckgo_search(query, max_results)
+    except Exception as e:
+        return f"搜索失败：{e}"
 
 
 def build_tool_adapter() -> NativeToolAdapter:
@@ -110,41 +166,6 @@ def build_tool_adapter() -> NativeToolAdapter:
             ),
         ],
     )
-
-    # --- 工具 4: 联网搜索（Tavily）---
-    async def _web_search(query: str, max_results: int = 5) -> str:
-        api_key = os.getenv("TAVILY_API_KEY", "").strip()
-        if not api_key:
-            return (
-                "未配置联网搜索 API Key。"
-                "请在 .env 文件中设置 TAVILY_API_KEY（免费注册：https://tavily.com）"
-            )
-        try:
-            import httpx  # noqa: PLC0415
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    "https://api.tavily.com/search",
-                    json={
-                        "api_key": api_key,
-                        "query": query,
-                        "search_depth": "basic",
-                        "max_results": max_results,
-                        "include_answer": True,
-                    },
-                )
-                data = resp.json()
-            parts: list[str] = []
-            if data.get("answer"):
-                parts.append(f"摘要：{data['answer']}")
-            for r in data.get("results", []):
-                parts.append(
-                    f"标题：{r.get('title', '无标题')}\n"
-                    f"内容：{r.get('content', '')}\n"
-                    f"URL：{r.get('url', '')}"
-                )
-            return "\n\n---\n\n".join(parts) if parts else "未找到相关搜索结果"
-        except Exception as e:
-            return f"搜索失败：{e}"
 
     adapter.register_tool(
         name="web_search",
