@@ -233,10 +233,27 @@ domain ← application ← adapters ← service/sdk
 | `message` | `{"text"}` |
 | `done` | `{"conversation": {"title", "last_message_preview", "message_count", "updated_at"}}` |
 | `error` | `{"message"}` |
+| `auto_skills` | `{"anchor": "skill_name_or_null", "routed": ["name1"]}` |
+| `agent_start` | `{"agent_id", "task", "model"}` |
+| `agent_text` | `{"agent_id", "text"}` |
+| `agent_tool` | `{"agent_id", "tool", "input"}` |
+| `agent_result` | `{"agent_id", "tool", "input", "result", "is_error", "duration_ms"}` |
+| `agent_done` | `{"agent_id", "duration_ms", "error"}` |
 
 `done` 事件的 `conversation` 字段携带后端更新后的会话元数据，前端收到后直接同步本地状态，无需再发 PATCH 请求。如果会话行不存在（如纯 SDK 调用未创建 ConversationRow），该字段可能为 `null`。
 
 前端统一通过 `chatService.ts` 中的 `safeJson()` 解析，新增事件类型须同步更新 `parseBlock` 和 `StreamHandlers` 类型定义。
+
+### 并行多 Agent（spawn_agents）
+
+`ParallelAgentTool`（`adapters/tools/parallel_agent.py`）实现 `spawn_agents` 工具，通过 `asyncio.Queue` 并发驱动最多 5 个 Worker Agent。
+
+**关键设计约定：**
+
+- **`is_timeout_managed` 协议**：`ParallelAgentTool.is_timeout_managed("spawn_agents")` 返回 `True`，`ToolLoopUseCase` 因此用 `contextlib.nullcontext()` 替代 `asyncio.timeout()`，避免外层超时误杀长时间运行的并行任务。所有自行管理超时的工具须遵循此协议。
+- **`profile_id` 透传**：`ToolLoopUseCase` 通过 `context={"profile_id": self.profile_id}` 把当前用户选择的模型 profile 传给工具，`ParallelAgentTool` 据此为每个 Worker 创建同 profile 的 `LLMAdapter`（按 profile_id 缓存）。
+- **取消传播**：外层 generator 收到 `CancelledError` 时，立即 cancel 所有 Worker asyncio.Task，再 `await asyncio.gather(return_exceptions=True)` 确保清理完成后再重新 raise。
+- **开关控制**：`config.agent.enable_spawn_agents`，`False` 时 `builtin_tools.py` 不注册 `ParallelAgentTool`，LLM 不可见该工具。
 
 ### 工具结果截断
 

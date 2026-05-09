@@ -73,7 +73,7 @@ function toChatMessage(convId: string, index: number, item: SessionMessageItem):
   const thinkingBlocks = item.thinking_blocks.length ? item.thinking_blocks : undefined;
 
   return {
-    id: `hist-${convId}-${index}`,
+    id: item.id || `hist-${convId}-${index}`,
     role: item.role,
     content: item.content,
     thinkingBlocks,
@@ -349,11 +349,11 @@ export const useChatStore = create<ChatStore>()(
         if (msgIndex === -1) return;
         const msg = allMsgs[msgIndex];
 
-        // 找到该轮次对应的 USER 消息（用于标识后端轮次）
-        let userMessage: string;
+        // 找到该轮次对应的 USER 消息 UUID（用于标识后端轮次）
+        let userMsgId: string;
         let removeIds: Set<string>;
         if (msg.role === 'user') {
-          userMessage = msg.content;
+          userMsgId = msg.id;
           // 删除 USER 本身及其后所有消息，直到下一条 USER
           removeIds = new Set([messageId]);
           for (let i = msgIndex + 1; i < allMsgs.length; i++) {
@@ -364,7 +364,7 @@ export const useChatStore = create<ChatStore>()(
           // 找前面最近的 USER 消息
           const prevUser = allMsgs.slice(0, msgIndex).reverse().find((m) => m.role === 'user');
           if (!prevUser) return;
-          userMessage = prevUser.content;
+          userMsgId = prevUser.id;
           removeIds = new Set([messageId]);
         } else {
           return;
@@ -398,7 +398,7 @@ export const useChatStore = create<ChatStore>()(
           };
         });
         // 持久化到后端，失败时从服务端重新加载回滚本地状态
-        void deleteSessionMessage(conversationId, msg.role, userMessage).catch(() => {
+        void deleteSessionMessage(conversationId, msg.role, userMsgId).catch(() => {
           void get().loadMessages(conversationId);
         });
       },
@@ -542,32 +542,120 @@ export const useChatStore = create<ChatStore>()(
                 return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
               });
             },
-            onToolStart: (toolName, input) => {
+            onToolStart: (toolName, toolCallId, input) => {
               set((s) => {
                 const msgs = (s.messagesByConversation[conversationId] ?? []).map((m) =>
                   m.id === assistantId
                     ? {
                         ...m,
                         thinkingMode: 'tool' as const,
-                        toolActivity: [...(m.toolActivity ?? []), { name: toolName, done: false, input }],
+                        toolActivity: [...(m.toolActivity ?? []), { name: toolName, toolCallId, done: false, input }],
                       }
                     : m,
                 );
                 return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
               });
             },
-            onToolResult: (toolName, _input, result, isError, durationMs) => {
+            onToolResult: (_toolName, toolCallId, _input, result, isError, durationMs) => {
               set((s) => {
                 const msgs = (s.messagesByConversation[conversationId] ?? []).map((m) => {
                   if (m.id !== assistantId) return m;
                   const activity = [...(m.toolActivity ?? [])];
-                  for (let i = activity.length - 1; i >= 0; i--) {
-                    if (activity[i].name === toolName && !activity[i].done) {
+                  for (let i = 0; i < activity.length; i++) {
+                    if (activity[i].toolCallId === toolCallId && !activity[i].done) {
                       activity[i] = { ...activity[i], done: true, result, isError, durationMs };
                       break;
                     }
                   }
                   return { ...m, toolActivity: activity };
+                });
+                return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
+              });
+            },
+            onAgentStart: (agentId, task, model) => {
+              set((s) => {
+                const msgs = (s.messagesByConversation[conversationId] ?? []).map((m) =>
+                  m.id !== assistantId
+                    ? m
+                    : {
+                        ...m,
+                        subAgents: [
+                          ...(m.subAgents ?? []),
+                          { agentId, task, model, status: 'running' as const, text: '', thinking: '', toolActivity: [] },
+                        ],
+                      },
+                );
+                return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
+              });
+            },
+            onAgentMessage: (agentId, delta) => {
+              set((s) => {
+                const msgs = (s.messagesByConversation[conversationId] ?? []).map((m) => {
+                  if (m.id !== assistantId) return m;
+                  const subAgents = (m.subAgents ?? []).map((a) =>
+                    a.agentId === agentId ? { ...a, text: a.text + delta } : a,
+                  );
+                  return { ...m, subAgents };
+                });
+                return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
+              });
+            },
+            onAgentThinking: (agentId, delta) => {
+              set((s) => {
+                const msgs = (s.messagesByConversation[conversationId] ?? []).map((m) => {
+                  if (m.id !== assistantId) return m;
+                  const subAgents = (m.subAgents ?? []).map((a) =>
+                    a.agentId === agentId ? { ...a, thinking: a.thinking + delta } : a,
+                  );
+                  return { ...m, subAgents };
+                });
+                return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
+              });
+            },
+            onAgentToolStart: (agentId, toolName, toolCallId, input) => {
+              set((s) => {
+                const msgs = (s.messagesByConversation[conversationId] ?? []).map((m) => {
+                  if (m.id !== assistantId) return m;
+                  const subAgents = (m.subAgents ?? []).map((a) =>
+                    a.agentId === agentId
+                      ? { ...a, toolActivity: [...a.toolActivity, { name: toolName, toolCallId, done: false, input }] }
+                      : a,
+                  );
+                  return { ...m, subAgents };
+                });
+                return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
+              });
+            },
+            onAgentToolResult: (agentId, _toolName, toolCallId, result, isError, durationMs) => {
+              set((s) => {
+                const msgs = (s.messagesByConversation[conversationId] ?? []).map((m) => {
+                  if (m.id !== assistantId) return m;
+                  const subAgents = (m.subAgents ?? []).map((a) => {
+                    if (a.agentId !== agentId) return a;
+                    const toolActivity = [...a.toolActivity];
+                    for (let i = 0; i < toolActivity.length; i++) {
+                      if (toolActivity[i].toolCallId === toolCallId && !toolActivity[i].done) {
+                        toolActivity[i] = { ...toolActivity[i], done: true, result, isError, durationMs };
+                        break;
+                      }
+                    }
+                    return { ...a, toolActivity };
+                  });
+                  return { ...m, subAgents };
+                });
+                return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
+              });
+            },
+            onAgentDone: (agentId, durationMs, error) => {
+              set((s) => {
+                const msgs = (s.messagesByConversation[conversationId] ?? []).map((m) => {
+                  if (m.id !== assistantId) return m;
+                  const subAgents = (m.subAgents ?? []).map((a) =>
+                    a.agentId === agentId
+                      ? { ...a, status: error ? 'error' as const : 'done' as const, durationMs, error }
+                      : a,
+                  );
+                  return { ...m, subAgents };
                 });
                 return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
               });
@@ -614,6 +702,8 @@ export const useChatStore = create<ChatStore>()(
             activeRunId: null,
             subscribedRunIds: activeRunId ? Object.fromEntries(Object.entries(s.subscribedRunIds).filter(([id]) => id !== activeRunId)) : s.subscribedRunIds,
           }));
+          // 中断后同步后端真实 UUID，否则删除消息会 404
+          void get().loadMessages(streamingConversationId);
         } else {
           set((s) => ({
             isStreaming: false,
@@ -683,7 +773,7 @@ export const useChatStore = create<ChatStore>()(
         });
 
         const updateAssistant = (
-          patch: Partial<Pick<ChatMessage, 'content' | 'thinkingBlocks' | 'status' | 'toolActivity' | 'anchorSkill' | 'autoSkills'>>,
+          patch: Partial<Pick<ChatMessage, 'content' | 'thinkingBlocks' | 'status' | 'toolActivity' | 'anchorSkill' | 'autoSkills' | 'subAgents'>>,
         ) => {
           set((s) => {
             const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) =>
@@ -778,7 +868,7 @@ export const useChatStore = create<ChatStore>()(
                   textBuffer += delta;
                   updateAssistant({ content: textBuffer, status: 'streaming' });
                 },
-                onToolStart: (toolName, input) => {
+                onToolStart: (toolName, toolCallId, input) => {
                   set((s) => {
                     const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) =>
                       m.id !== assistantId
@@ -786,19 +876,19 @@ export const useChatStore = create<ChatStore>()(
                         : {
                             ...m,
                             thinkingMode: 'tool' as const,
-                            toolActivity: [...(m.toolActivity ?? []), { name: toolName, done: false, input }],
+                            toolActivity: [...(m.toolActivity ?? []), { name: toolName, toolCallId, done: false, input }],
                           },
                     );
                     return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
                   });
                 },
-                onToolResult: (toolName, _input, result, isError, durationMs) => {
+                onToolResult: (_toolName, toolCallId, _input, result, isError, durationMs) => {
                   set((s) => {
                     const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) => {
                       if (m.id !== assistantId) return m;
                       const activity = [...(m.toolActivity ?? [])];
-                      for (let i = activity.length - 1; i >= 0; i--) {
-                        if (activity[i].name === toolName && !activity[i].done) {
+                      for (let i = 0; i < activity.length; i++) {
+                        if (activity[i].toolCallId === toolCallId && !activity[i].done) {
                           activity[i] = { ...activity[i], done: true, result, isError, durationMs };
                           break;
                         }
@@ -810,6 +900,94 @@ export const useChatStore = create<ChatStore>()(
                 },
                 onAutoSkills: ({ anchor, routed }) => {
                   updateAssistant({ anchorSkill: anchor, autoSkills: routed });
+                },
+                onAgentStart: (agentId, task, model) => {
+                  set((s) => {
+                    const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) =>
+                      m.id !== assistantId
+                        ? m
+                        : {
+                            ...m,
+                            subAgents: [
+                              ...(m.subAgents ?? []),
+                              { agentId, task, model, status: 'running' as const, text: '', thinking: '', toolActivity: [] },
+                            ],
+                          },
+                    );
+                    return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
+                  });
+                },
+                onAgentMessage: (agentId, delta) => {
+                  set((s) => {
+                    const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) => {
+                      if (m.id !== assistantId) return m;
+                      const subAgents = (m.subAgents ?? []).map((a) =>
+                        a.agentId === agentId ? { ...a, text: a.text + delta } : a,
+                      );
+                      return { ...m, subAgents };
+                    });
+                    return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
+                  });
+                },
+                onAgentThinking: (agentId, delta) => {
+                  set((s) => {
+                    const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) => {
+                      if (m.id !== assistantId) return m;
+                      const subAgents = (m.subAgents ?? []).map((a) =>
+                        a.agentId === agentId ? { ...a, thinking: a.thinking + delta } : a,
+                      );
+                      return { ...m, subAgents };
+                    });
+                    return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
+                  });
+                },
+                onAgentToolStart: (agentId, toolName, toolCallId, input) => {
+                  set((s) => {
+                    const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) => {
+                      if (m.id !== assistantId) return m;
+                      const subAgents = (m.subAgents ?? []).map((a) =>
+                        a.agentId === agentId
+                          ? { ...a, toolActivity: [...a.toolActivity, { name: toolName, toolCallId, done: false, input }] }
+                          : a,
+                      );
+                      return { ...m, subAgents };
+                    });
+                    return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
+                  });
+                },
+                onAgentToolResult: (agentId, _toolName, toolCallId, result, isError, durationMs) => {
+                  set((s) => {
+                    const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) => {
+                      if (m.id !== assistantId) return m;
+                      const subAgents = (m.subAgents ?? []).map((a) => {
+                        if (a.agentId !== agentId) return a;
+                        const toolActivity = [...a.toolActivity];
+                        for (let i = 0; i < toolActivity.length; i++) {
+                          if (toolActivity[i].toolCallId === toolCallId && !toolActivity[i].done) {
+                            toolActivity[i] = { ...toolActivity[i], done: true, result, isError, durationMs };
+                            break;
+                          }
+                        }
+                        return { ...a, toolActivity };
+                      });
+                      return { ...m, subAgents };
+                    });
+                    return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
+                  });
+                },
+                onAgentDone: (agentId, durationMs, error) => {
+                  set((s) => {
+                    const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) => {
+                      if (m.id !== assistantId) return m;
+                      const subAgents = (m.subAgents ?? []).map((a) =>
+                        a.agentId === agentId
+                          ? { ...a, status: error ? 'error' as const : 'done' as const, durationMs, error }
+                          : a,
+                      );
+                      return { ...m, subAgents };
+                    });
+                    return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
+                  });
                 },
                 onThinkingStart: () => {
                   thinkingBlocks.push('');
@@ -850,6 +1028,8 @@ export const useChatStore = create<ChatStore>()(
                     content: textBuffer || ASSISTANT_FALLBACK_TEXT.empty,
                     toolActivity: currentMsg?.toolActivity?.map((t) => ({ ...t, done: true })),
                   });
+                  // 用后端真实 UUID 替换前端临时 ID，确保删除操作能定位正确消息
+                  void get().loadMessages(activeConversationId);
                 },
                 onError: (msg) => {
                   finishStreaming(run.run_id, { content: textBuffer || ASSISTANT_FALLBACK_TEXT.interrupted });

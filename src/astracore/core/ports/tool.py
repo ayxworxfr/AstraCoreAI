@@ -1,12 +1,18 @@
 """Tool adapter port interface."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from astracore.core.ports.llm import StreamEvent
 
 
 class ToolParameterType(StrEnum):
@@ -78,6 +84,28 @@ class ToolAdapter(ABC):
     def get_definitions(self) -> list[ToolDefinition]:
         """Get all tool definitions."""
         pass
+
+    async def execute_streaming(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamEvent | ToolExecutionResult]:
+        """Execute a tool, optionally yielding intermediate StreamEvents.
+
+        Default implementation wraps execute() — fully backward compatible.
+        Override (without abstractmethod) to emit AGENT_* events during execution.
+        """
+        yield await self.execute(tool_name, arguments, context)
+
+    def is_timeout_managed(self, tool_name: str) -> bool:
+        """Return True if this tool manages its own timeout internally.
+
+        When True, tool_loop skips the outer asyncio.timeout wrapper for this tool,
+        preventing double-timeout interference. Override in adapters like ParallelAgentTool
+        that have per-worker timeouts.
+        """
+        return False
 
 
 class MutableToolAdapter(ToolAdapter):

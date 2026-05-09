@@ -1,15 +1,18 @@
 """Tool loop use case implementation."""
 
 import asyncio
+import contextlib
 import time
 from collections.abc import AsyncIterator
 from typing import Any
 
-from astracore.core.domain.message import Message, MessageRole, ToolResult
+from astracore.core.domain.message import Message, MessageRole, ToolCall, ToolResult
 from astracore.core.domain.session import SessionState
 from astracore.core.ports.llm import LLMAdapter, StreamEvent, StreamEventType
-from astracore.core.ports.tool import ToolAdapter
+from astracore.core.ports.tool import ToolAdapter, ToolExecutionResult
 from astracore.runtime.policy.engine import PolicyEngine
+
+_TOOL_DONE = object()  # sentinel for parallel streaming tool execution
 
 
 class ToolLoopUseCase:
@@ -25,6 +28,7 @@ class ToolLoopUseCase:
         max_iterations: int = 10,
         max_tool_result_chars: int = 20_000,
         tool_timeout_s: float = 120.0,
+        profile_id: str | None = None,
     ):
         self.llm = llm_adapter
         self.tools = tool_adapter
@@ -32,6 +36,7 @@ class ToolLoopUseCase:
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
         self.tool_timeout_s = tool_timeout_s
+        self.profile_id = profile_id
 
     @property
     def unlimited(self) -> bool:
@@ -103,6 +108,146 @@ class ToolLoopUseCase:
             for t in self.tools.get_definitions()
         ]
 
+    async def _execute_one_tool(self, tool_call: ToolCall) -> ToolResult:
+        """Execute a single tool call (non-streaming). Used for parallel gather."""
+        if not self.policy.check_security_policy(tool_call.name, tool_call.arguments):
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+                content="Tool execution blocked by security policy",
+                is_error=True,
+            )
+        try:
+            exec_result = await asyncio.wait_for(
+                self.tools.execute(
+                    tool_name=tool_call.name,
+                    arguments=tool_call.arguments,
+                    context={"profile_id": self.profile_id},
+                ),
+                timeout=self.tool_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+                content=f"[超时] 工具 '{tool_call.name}' 执行超过 {self.tool_timeout_s:.0f}s，已中止。请换用更精确的参数重试。",
+                is_error=True,
+            )
+        return ToolResult(
+            tool_call_id=tool_call.id,
+            name=exec_result.tool_name,
+            content=self._truncate_tool_result(
+                exec_result.output or exec_result.error or "Tool execution failed"
+            ),
+            is_error=not exec_result.success,
+            metadata=exec_result.metadata,
+        )
+
+    async def _run_tool_to_queue(
+        self,
+        tool_call: ToolCall,
+        idx: int,
+        queue: asyncio.Queue[Any],
+    ) -> None:
+        """Execute a single streaming tool call, pushing events and a final sentinel to queue."""
+        if not self.policy.check_security_policy(tool_call.name, tool_call.arguments):
+            blocked = "Tool execution blocked by security policy"
+            await queue.put((
+                idx,
+                StreamEvent(
+                    event_type=StreamEventType.TOOL_RESULT,
+                    content=tool_call.name,
+                    metadata={"tool": tool_call.name, "tool_call_id": tool_call.id,
+                              "input": tool_call.arguments,
+                              "result": blocked, "is_error": True, "duration_ms": 0},
+                ),
+                None,
+            ))
+            await queue.put((
+                idx,
+                _TOOL_DONE,
+                ToolResult(tool_call_id=tool_call.id, name=tool_call.name, content=blocked, is_error=True),
+            ))
+            return
+
+        tool_start_time = time.monotonic()
+        exec_result: ToolExecutionResult | None = None
+        timeout_cm = (
+            contextlib.nullcontext()
+            if self.tools.is_timeout_managed(tool_call.name)
+            else asyncio.timeout(self.tool_timeout_s)
+        )
+        try:
+            async with timeout_cm:
+                async for item in self.tools.execute_streaming(
+                    tool_name=tool_call.name,
+                    arguments=tool_call.arguments,
+                    context={"profile_id": self.profile_id},
+                ):
+                    if isinstance(item, StreamEvent):
+                        await queue.put((idx, item, None))
+                    else:
+                        exec_result = item
+        except asyncio.TimeoutError:
+            duration_ms = int((time.monotonic() - tool_start_time) * 1000)
+            timeout_msg = (
+                f"[超时] 工具 '{tool_call.name}' 执行超过 {self.tool_timeout_s:.0f}s，"
+                "已中止。请换用更精确的参数重试。"
+            )
+            await queue.put((
+                idx,
+                StreamEvent(
+                    event_type=StreamEventType.TOOL_RESULT,
+                    content=tool_call.name,
+                    metadata={"tool": tool_call.name, "tool_call_id": tool_call.id,
+                              "input": tool_call.arguments,
+                              "result": timeout_msg, "is_error": True, "duration_ms": duration_ms},
+                ),
+                None,
+            ))
+            await queue.put((
+                idx,
+                _TOOL_DONE,
+                ToolResult(tool_call_id=tool_call.id, name=tool_call.name, content=timeout_msg, is_error=True),
+            ))
+            return
+
+        if exec_result is None:
+            exec_result = ToolExecutionResult(
+                tool_name=tool_call.name,
+                success=False,
+                output="",
+                error="Tool returned no result",
+                execution_time_ms=int((time.monotonic() - tool_start_time) * 1000),
+            )
+
+        duration_ms = int((time.monotonic() - tool_start_time) * 1000)
+        content = self._truncate_tool_result(
+            exec_result.output or exec_result.error or "Tool execution failed"
+        )
+        await queue.put((
+            idx,
+            StreamEvent(
+                event_type=StreamEventType.TOOL_RESULT,
+                content=exec_result.tool_name,
+                metadata={"tool": exec_result.tool_name, "tool_call_id": tool_call.id,
+                          "input": tool_call.arguments,
+                          "result": content, "is_error": not exec_result.success,
+                          "duration_ms": duration_ms},
+            ),
+            None,
+        ))
+        await queue.put((
+            idx,
+            _TOOL_DONE,
+            ToolResult(
+                tool_call_id=tool_call.id,
+                name=exec_result.tool_name,
+                content=content,
+                is_error=not exec_result.success,
+            ),
+        ))
+
     async def execute_with_tools(
         self,
         session: SessionState,
@@ -140,48 +285,12 @@ class ToolLoopUseCase:
             if not self.unlimited and iterations >= self.max_iterations:
                 break
 
-            tool_results = []
-            for tool_call in response.tool_calls:
-                if not self.policy.check_security_policy(tool_call.name, tool_call.arguments):
-                    tool_results.append(
-                        ToolResult(
-                            tool_call_id=tool_call.id,
-                            name=tool_call.name,
-                            content="Tool execution blocked by security policy",
-                            is_error=True,
-                        )
-                    )
-                    continue
-
-                try:
-                    exec_result = await asyncio.wait_for(
-                        self.tools.execute(
-                            tool_name=tool_call.name,
-                            arguments=tool_call.arguments,
-                        ),
-                        timeout=self.tool_timeout_s,
-                    )
-                except asyncio.TimeoutError:
-                    tool_results.append(
-                        ToolResult(
-                            tool_call_id=tool_call.id,
-                            name=tool_call.name,
-                            content=f"[超时] 工具 '{tool_call.name}' 执行超过 {self.tool_timeout_s:.0f}s，已中止。请换用更精确的参数重试。",
-                            is_error=True,
-                        )
-                    )
-                    continue
-                tool_results.append(
-                    ToolResult(
-                        tool_call_id=tool_call.id,
-                        name=exec_result.tool_name,
-                        content=self._truncate_tool_result(
-                            exec_result.output or exec_result.error or "Tool execution failed"
-                        ),
-                        is_error=not exec_result.success,
-                        metadata=exec_result.metadata,
-                    )
+            # Parallel execution: all tool calls in this round run concurrently
+            tool_results: list[ToolResult] = list(
+                await asyncio.gather(
+                    *[self._execute_one_tool(tc) for tc in response.tool_calls]
                 )
+            )
 
             session.add_message(
                 Message(role=MessageRole.TOOL, content="", tool_results=tool_results)
@@ -261,77 +370,29 @@ class ToolLoopUseCase:
             if not self.unlimited and iterations >= self.max_iterations:
                 break
 
-            tool_results = []
-            for tool_call in accumulated_tool_calls:
-                if not self.policy.check_security_policy(tool_call.name, tool_call.arguments):
-                    blocked = "Tool execution blocked by security policy"
-                    yield StreamEvent(
-                        event_type=StreamEventType.TOOL_RESULT,
-                        content=tool_call.name,
-                        metadata={"tool": tool_call.name, "input": tool_call.arguments,
-                                  "result": blocked, "is_error": True, "duration_ms": 0},
-                    )
-                    tool_results.append(
-                        ToolResult(
-                            tool_call_id=tool_call.id,
-                            name=tool_call.name,
-                            content=blocked,
-                            is_error=True,
-                        )
-                    )
-                    continue
-
-                tool_start_time = time.monotonic()
-                try:
-                    exec_result = await asyncio.wait_for(
-                        self.tools.execute(
-                            tool_name=tool_call.name,
-                            arguments=tool_call.arguments,
-                        ),
-                        timeout=self.tool_timeout_s,
-                    )
-                except asyncio.TimeoutError:
-                    timeout_duration_ms = int((time.monotonic() - tool_start_time) * 1000)
-                    timeout_msg = (
-                        f"[超时] 工具 '{tool_call.name}' 执行超过 {self.tool_timeout_s:.0f}s，"
-                        "已中止。请换用更精确的参数重试。"
-                    )
-                    yield StreamEvent(
-                        event_type=StreamEventType.TOOL_RESULT,
-                        content=tool_call.name,
-                        metadata={"tool": tool_call.name, "input": tool_call.arguments,
-                                  "result": timeout_msg, "is_error": True,
-                                  "duration_ms": timeout_duration_ms},
-                    )
-                    tool_results.append(
-                        ToolResult(
-                            tool_call_id=tool_call.id,
-                            name=tool_call.name,
-                            content=timeout_msg,
-                            is_error=True,
-                        )
-                    )
-                    continue
-
-                duration_ms = int((time.monotonic() - tool_start_time) * 1000)
-                content = self._truncate_tool_result(
-                    exec_result.output or exec_result.error or "Tool execution failed"
-                )
-                yield StreamEvent(
-                    event_type=StreamEventType.TOOL_RESULT,
-                    content=exec_result.tool_name,
-                    metadata={"tool": exec_result.tool_name, "input": tool_call.arguments,
-                              "result": content, "is_error": not exec_result.success,
-                              "duration_ms": duration_ms},
-                )
-                tool_results.append(
-                    ToolResult(
-                        tool_call_id=tool_call.id,
-                        name=exec_result.tool_name,
-                        content=content,
-                        is_error=not exec_result.success,
-                    )
-                )
+            # Parallel streaming: all tool calls in this round run as concurrent tasks,
+            # pushing events into a shared queue; outer generator drains and yields them.
+            queue: asyncio.Queue[Any] = asyncio.Queue()
+            tasks = [
+                asyncio.create_task(self._run_tool_to_queue(tc, i, queue))
+                for i, tc in enumerate(accumulated_tool_calls)
+            ]
+            results_by_idx: dict[int, ToolResult] = {}
+            done_count = 0
+            try:
+                while done_count < len(tasks):
+                    idx, item, result = await queue.get()
+                    if item is _TOOL_DONE:
+                        results_by_idx[idx] = result  # type: ignore[assignment]
+                        done_count += 1
+                    else:
+                        yield item  # type: ignore[misc]
+            except (asyncio.CancelledError, GeneratorExit):
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            tool_results = [results_by_idx[i] for i in range(len(accumulated_tool_calls))]
 
             session.add_message(
                 Message(role=MessageRole.TOOL, content="", tool_results=tool_results)

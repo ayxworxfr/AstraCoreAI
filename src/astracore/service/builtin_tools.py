@@ -6,8 +6,12 @@ import math
 import os
 from datetime import datetime, timezone
 
+from astracore.adapters.tools.composite import CompositeToolAdapter
 from astracore.adapters.tools.native import NativeToolAdapter
-from astracore.core.ports.tool import ToolParameter, ToolParameterType
+from astracore.adapters.tools.parallel_agent import ParallelAgentTool
+from astracore.core.ports.tool import ToolAdapter, ToolParameter, ToolParameterType
+from astracore.runtime.policy.engine import PolicyEngine
+from astracore.sdk.config import AstraCoreConfig
 
 # 安全数学求值白名单
 _SAFE_MATH: dict = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
@@ -92,10 +96,12 @@ async def _web_search(query: str, max_results: int = 5) -> str:
         return f"搜索失败：{e}"
 
 
-def build_tool_adapter() -> NativeToolAdapter:
-    """构造并注册所有内置工具，返回 NativeToolAdapter。
+def build_tool_adapter() -> ToolAdapter:
+    """构造并注册所有内置工具，返回 CompositeToolAdapter。
 
     新增工具时只需在此函数中追加 register_tool 调用即可。
+    spawn_agents 工具自动注入到 ParallelAgentTool；worker 工具集 = native 工具（不含 spawn_agents），
+    防止子 Agent 递归调用 spawn_agents（深度限制 = 1）。
     """
     # 延迟导入避免循环依赖（rag_api 依赖 chat_api 的 lru_cache 工厂）
     from astracore.service.api import rag as rag_api  # noqa: PLC0415
@@ -114,9 +120,9 @@ def build_tool_adapter() -> NativeToolAdapter:
         except Exception as e:
             return f"知识库搜索失败：{e}"
 
-    adapter = NativeToolAdapter()
+    native = NativeToolAdapter()
 
-    adapter.register_tool(
+    native.register_tool(
         name="get_current_time",
         func=_get_current_time,
         description="获取当前日期和时间。当用户询问现在几点、今天日期等问题时使用。",
@@ -130,7 +136,7 @@ def build_tool_adapter() -> NativeToolAdapter:
         ],
     )
 
-    adapter.register_tool(
+    native.register_tool(
         name="calculate",
         func=_calculate,
         description="对数学表达式求值，支持加减乘除、幂运算、取模等基本运算。",
@@ -144,7 +150,7 @@ def build_tool_adapter() -> NativeToolAdapter:
         ],
     )
 
-    adapter.register_tool(
+    native.register_tool(
         name="search_knowledge_base",
         func=_search_knowledge_base,
         description=(
@@ -167,7 +173,7 @@ def build_tool_adapter() -> NativeToolAdapter:
         ],
     )
 
-    adapter.register_tool(
+    native.register_tool(
         name="web_search",
         func=_web_search,
         description=(
@@ -190,4 +196,8 @@ def build_tool_adapter() -> NativeToolAdapter:
         ],
     )
 
-    return adapter
+    config = AstraCoreConfig()
+    if config.agent.enable_spawn_agents:
+        parallel = ParallelAgentTool(config=config, worker_tools=native, policy=PolicyEngine())
+        return CompositeToolAdapter([parallel, native])
+    return native

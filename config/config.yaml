@@ -35,8 +35,9 @@ llm:
 
 agent:
   max_tool_result_chars: 20000
-  max_tool_iterations: 0
+  max_tool_iterations: 7
   tool_timeout_s: 60
+  enable_spawn_agents: true
 
 memory:
   redis_url: redis://localhost:6379/0
@@ -61,8 +62,8 @@ mcp:
   servers:
     - type: filesystem
       paths:
-        - D:/project
+        - ~/develope
 
     - type: shell
       allow_dirs:
-        - D:/project
+        - ~/develope

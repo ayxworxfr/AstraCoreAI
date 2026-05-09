@@ -1,8 +1,10 @@
 """Composite tool adapter — merges tools from multiple ToolAdapter instances."""
 
 import asyncio
+from collections.abc import AsyncIterator
 from typing import Any
 
+from astracore.core.ports.llm import StreamEvent
 from astracore.core.ports.tool import (
     ToolAdapter,
     ToolDefinition,
@@ -63,6 +65,29 @@ class CompositeToolAdapter(ToolAdapter):
     ) -> list[ToolExecutionResult]:
         tasks = [self.execute(name, args, context) for name, args in tool_calls]
         return list(await asyncio.gather(*tasks))
+
+    async def execute_streaming(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamEvent | ToolExecutionResult]:
+        adapter = self._routing.get(tool_name)
+        if adapter is None:
+            yield ToolExecutionResult(
+                tool_name=tool_name,
+                success=False,
+                output="",
+                error=f"Tool '{tool_name}' not found in any registered adapter",
+                execution_time_ms=0.0,
+            )
+            return
+        async for item in adapter.execute_streaming(tool_name, arguments, context):
+            yield item
+
+    def is_timeout_managed(self, tool_name: str) -> bool:
+        adapter = self._routing.get(tool_name)
+        return adapter.is_timeout_managed(tool_name) if adapter is not None else False
 
     def get_definitions(self) -> list[ToolDefinition]:
         seen: set[str] = set()

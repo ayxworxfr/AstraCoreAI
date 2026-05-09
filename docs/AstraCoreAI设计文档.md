@@ -142,6 +142,7 @@ Service 层将一次前端对话发送抽象为 `ChatRunRow`，避免浏览器�
 - 对失败工具进行可配置重试或降级
 - 可插入人工确认节点（高风险工具执行前）
 - 支持按所选模型能力决定是否启用工具调用，避免不支持工具的 profile 进入 Tool Loop
+- **`spawn_agents` 并行 Agent**：`ParallelAgentTool` 将任务拆分为 2–5 个独立子任务，Worker Agent 通过 `asyncio.Queue` 并发执行；每个 Worker 拥有独立的 `LLMAdapter + ToolLoopUseCase + SessionState`，使用用户当前选择的 model profile；可通过 `agent.enable_spawn_agents` 配置开关控制是否暴露该工具；`is_timeout_managed` 协议确保外层工具循环不对 `spawn_agents` 再次套超时
 
 ### 5.4 Memory 系统
 
@@ -158,12 +159,14 @@ Service 层将一次前端对话发送抽象为 `ChatRunRow`，避免浏览器�
 - 引用返回：每段回答附带来源信息
 - 与 Chat/Agent 融合：根据任务场景自动切换检索策略
 
-### 5.6 多 Agent 协作
+### 5.6 并行多 Agent
 
-- 角色最小集：Planner、Executor、Reviewer
-- 协作协议：任务拆分、状态回写、交付验收
-- 人工审批：关键节点可暂停并等待人工确认
-- 故障恢复：保存工作流快照，支持断点续跑
+- **`spawn_agents` 工具**：LLM 可主动将任务分解为 2–5 个独立子任务，由 `ParallelAgentTool` 通过 `asyncio.Queue` 并发驱动 Worker Agent 执行
+- **Worker 隔离**：每个 Worker 拥有独立的 `LLMAdapter`、`ToolLoopUseCase`（最多 5 轮迭代）、`SessionState`，互不干扰
+- **用户模型对齐**：Worker 自动使用调用方当前选择的 model profile，通过 `context["profile_id"]` 传递，保证 Worker 与主 Agent 使用同一模型
+- **前端实时进度**：`AGENT_START`、`AGENT_TEXT_DELTA`、`AGENT_TOOL_CALL`、`AGENT_TOOL_RESULT`、`AGENT_DONE` 事件实时推送，前端以折叠卡片形式展示各 Worker 进度
+- **取消传播**：父任务取消时，所有 Worker asyncio.Task 立即取消，通过 `asyncio.gather(return_exceptions=True)` 确保所有 Worker 安全退出
+- **配置开关**：`agent.enable_spawn_agents: true/false`，`false` 时不暴露 `spawn_agents` 工具给 LLM
 
 ### 5.7 Skill 系统
 
@@ -254,7 +257,7 @@ python_ai_framework/
 ## 8. 配置模型
 
 - `llm`: 多模型 Profile 注册表，包含默认 profile、连接信息和可选能力覆盖。
-- `agent`: 工具循环最大轮次、工具结果截断、工具调用超时等 Agent 运行参数。
+- `agent`: 工具循环最大轮次、工具结果截断、工具调用超时、`enable_spawn_agents`（是否开启并行多 Agent）等 Agent 运行参数。
 - `memory`: Redis/SQLite/PostgreSQL 连接与保留策略。
 - `retrieval`: 向量库 collection、持久化路径与检索参数。
 - `mcp`: 内置 filesystem/shell 与自定义 MCP server 配置。

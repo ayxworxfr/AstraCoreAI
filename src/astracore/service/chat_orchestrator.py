@@ -108,6 +108,7 @@ class ChatOrchestrator:
             max_iterations=cfg.max_tool_iterations,
             max_tool_result_chars=cfg.max_tool_result_chars,
             tool_timeout_s=cfg.tool_timeout_s,
+            profile_id=profile.id,
         )
 
     # ------------------------------------------------------------------

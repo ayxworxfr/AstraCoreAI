@@ -51,6 +51,13 @@ def mock_tools():
     t = MagicMock()
     t.get_definitions.return_value = [_tool_def()]
     t.execute = AsyncMock(return_value=_exec_result())
+
+    async def _fake_execute_streaming(tool_name, arguments, context=None):
+        from astracore.core.ports.tool import ToolExecutionResult
+        yield ToolExecutionResult(tool_name=tool_name, success=True, output="results", execution_time_ms=10.0)
+
+    t.execute_streaming = _fake_execute_streaming
+    t.is_timeout_managed.return_value = False
     return t
 
 
@@ -84,7 +91,7 @@ async def test_execute_with_tools_calls_tool_and_continues(loop_uc, mock_llm, mo
     await loop_uc.execute_with_tools(session)
 
     mock_tools.execute.assert_called_once_with(
-        tool_name="search", arguments={"query": "Python"}
+        tool_name="search", arguments={"query": "Python"}, context={"profile_id": None}
     )
     assert mock_llm.generate.call_count == 2
 
@@ -172,6 +179,55 @@ async def test_execute_stream_with_tools_skips_tool_execution_on_final_iteration
     assert events[1].tool_call == tool_call
     assert events[2].event_type == StreamEventType.THINKING_STOP
     assert session.get_messages()[-1].role == MessageRole.ASSISTANT
+
+
+async def test_execute_with_tools_parallel_executes_multiple_tools(mock_llm, mock_tools):
+    """Both tool calls in one LLM response run concurrently (asyncio.gather)."""
+    tc1 = ToolCall(name="search", arguments={"query": "A"})
+    tc2 = ToolCall(name="search", arguments={"query": "B"})
+    mock_llm.generate.side_effect = [
+        LLMResponse(content="", tool_calls=[tc1, tc2], model="test"),
+        LLMResponse(content="Done", model="test"),
+    ]
+    session = SessionState()
+    result = await ToolLoopUseCase(mock_llm, mock_tools, PolicyEngine()).execute_with_tools(session)
+
+    assert mock_tools.execute.call_count == 2
+    tool_msgs = [m for m in result.get_messages() if m.role == MessageRole.TOOL]
+    assert len(tool_msgs) == 1
+    assert len(tool_msgs[0].tool_results) == 2
+
+
+async def test_execute_stream_with_tools_parallel_results_ordered(mock_tools):
+    """Streaming path: two parallel tools emit TOOL_RESULT events; results preserved in order."""
+    tc1 = ToolCall(name="search", arguments={"query": "A"})
+    tc2 = ToolCall(name="search", arguments={"query": "B"})
+
+    class FakeLLM:
+        _call = 0
+
+        async def generate_stream(self, **kwargs):
+            _ = kwargs
+            FakeLLM._call += 1
+            if FakeLLM._call == 1:
+                yield StreamEvent(event_type=StreamEventType.TOOL_CALL, tool_call=tc1)
+                yield StreamEvent(event_type=StreamEventType.TOOL_CALL, tool_call=tc2)
+            else:
+                yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content="Done")
+
+    session = SessionState()
+    uc = ToolLoopUseCase(FakeLLM(), mock_tools, PolicyEngine())
+    events = [e async for e in uc.execute_stream_with_tools(session)]
+
+    tool_result_events = [e for e in events if e.event_type == StreamEventType.TOOL_RESULT]
+    assert len(tool_result_events) == 2
+
+    tool_msgs = [m for m in session.get_messages() if m.role == MessageRole.TOOL]
+    assert len(tool_msgs) == 1
+    assert len(tool_msgs[0].tool_results) == 2
+    # Ordering must match original tool_call order
+    assert tool_msgs[0].tool_results[0].tool_call_id == tc1.id
+    assert tool_msgs[0].tool_results[1].tool_call_id == tc2.id
 
 
 # ---------- _build_tool_definitions ----------

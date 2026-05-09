@@ -24,6 +24,14 @@ class StreamEventType(StrEnum):
     ERROR = "error"
     DONE = "done"
 
+    # 子 Agent 事件（metadata 包含 agent_id 字段）
+    AGENT_START          = "agent_start"           # 子 Agent 启动
+    AGENT_TEXT_DELTA     = "agent_text_delta"       # 子 Agent 文本增量
+    AGENT_THINKING_DELTA = "agent_thinking_delta"   # 子 Agent 思考增量
+    AGENT_TOOL_CALL      = "agent_tool_call"        # 子 Agent 工具调用
+    AGENT_TOOL_RESULT    = "agent_tool_result"      # 子 Agent 工具结果
+    AGENT_DONE           = "agent_done"             # 子 Agent 完成
+
 
 class StreamEvent(BaseModel):
     """Streaming event from LLM."""

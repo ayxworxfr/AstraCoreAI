@@ -3,6 +3,7 @@ import { apiClient, normalizeError } from './apiClient';
 
 export type SessionMessagesResponse = {
   messages: Array<{
+    id: string;
     role: 'user' | 'assistant';
     content: string;
     thinking_blocks: string[];
@@ -26,9 +27,15 @@ type StreamHandlers = {
   onThinkingStart?: () => void;
   onThinkingStop?: (durationMs: number) => void;
   onThinking?: (delta: string) => void;
-  onToolStart?: (toolName: string, input: Record<string, unknown>) => void;
-  onToolResult?: (toolName: string, input: Record<string, unknown>, result: string, isError: boolean, durationMs: number) => void;
+  onToolStart?: (toolName: string, toolCallId: string, input: Record<string, unknown>) => void;
+  onToolResult?: (toolName: string, toolCallId: string, input: Record<string, unknown>, result: string, isError: boolean, durationMs: number) => void;
   onAutoSkills?: (data: { anchor: string | null; routed: string[] }) => void;
+  onAgentStart?: (agentId: string, task: string, model?: string) => void;
+  onAgentMessage?: (agentId: string, delta: string) => void;
+  onAgentThinking?: (agentId: string, delta: string) => void;
+  onAgentToolStart?: (agentId: string, toolName: string, toolCallId: string, input: Record<string, unknown>) => void;
+  onAgentToolResult?: (agentId: string, toolName: string, toolCallId: string, result: string, isError: boolean, durationMs: number) => void;
+  onAgentDone?: (agentId: string, durationMs: number, error?: string | null) => void;
   onDone: (conversation?: ConversationUpdate) => void;
   onError: (msg: string) => void;
 };
@@ -40,10 +47,10 @@ export async function deleteSession(sessionId: string): Promise<void> {
 export async function deleteSessionMessage(
   sessionId: string,
   role: 'user' | 'assistant',
-  userMessage: string,
+  messageId: string,
 ): Promise<void> {
   await apiClient.delete(`/api/v1/chat/sessions/${sessionId}/messages`, {
-    data: { role, user_message: userMessage },
+    params: { role, message_id: messageId },
   });
 }
 
@@ -112,12 +119,13 @@ function parseBlock(block: string, handlers: StreamHandlers): void {
   else if (eventType === 'thinking') handlers.onThinking?.(String(safeJson().text ?? data));
   else if (eventType === 'tool_start') {
     const d = safeJson();
-    handlers.onToolStart?.(String(d.tool ?? ''), (d.input as Record<string, unknown>) ?? {});
+    handlers.onToolStart?.(String(d.tool ?? ''), String(d.tool_call_id ?? ''), (d.input as Record<string, unknown>) ?? {});
   }
   else if (eventType === 'tool_result') {
     const d = safeJson();
     handlers.onToolResult?.(
       String(d.tool ?? ''),
+      String(d.tool_call_id ?? ''),
       (d.input as Record<string, unknown>) ?? {},
       String(d.result ?? ''),
       Boolean(d.is_error),
@@ -129,6 +137,30 @@ function parseBlock(block: string, handlers: StreamHandlers): void {
     const anchor: string | null = typeof d.anchor === 'string' ? d.anchor : null;
     const routed: string[] = Array.isArray(d.routed) ? d.routed.map(String) : [];
     handlers.onAutoSkills?.({ anchor, routed });
+  }
+  else if (eventType === 'agent_start') {
+    const d = safeJson();
+    handlers.onAgentStart?.(String(d.agent_id ?? ''), String(d.task ?? ''), d.model ? String(d.model) : undefined);
+  }
+  else if (eventType === 'agent_message') {
+    const d = safeJson();
+    handlers.onAgentMessage?.(String(d.agent_id ?? ''), String(d.text ?? ''));
+  }
+  else if (eventType === 'agent_thinking') {
+    const d = safeJson();
+    handlers.onAgentThinking?.(String(d.agent_id ?? ''), String(d.text ?? ''));
+  }
+  else if (eventType === 'agent_tool_start') {
+    const d = safeJson();
+    handlers.onAgentToolStart?.(String(d.agent_id ?? ''), String(d.tool ?? ''), String(d.tool_call_id ?? ''), (d.input as Record<string, unknown>) ?? {});
+  }
+  else if (eventType === 'agent_tool_result') {
+    const d = safeJson();
+    handlers.onAgentToolResult?.(String(d.agent_id ?? ''), String(d.tool ?? ''), String(d.tool_call_id ?? ''), String(d.result ?? ''), Boolean(d.is_error), Number(d.duration_ms ?? 0));
+  }
+  else if (eventType === 'agent_done') {
+    const d = safeJson();
+    handlers.onAgentDone?.(String(d.agent_id ?? ''), Number(d.duration_ms ?? 0), d.error ? String(d.error) : null);
   }
   else if (eventType === 'done') handlers.onDone(safeJson().conversation as ConversationUpdate | undefined);
   else if (eventType === 'error') handlers.onError(String(safeJson().message ?? data) || '流式请求失败');
@@ -175,9 +207,15 @@ export async function sendChatStream(
     onThinkingStart: () => { if (!isAborted()) handlers.onThinkingStart?.(); },
     onThinkingStop: (ms) => { if (!isAborted()) handlers.onThinkingStop?.(ms); },
     onThinking: (d) => { if (!isAborted()) handlers.onThinking?.(d); },
-    onToolStart: (name, input) => { if (!isAborted()) handlers.onToolStart?.(name, input); },
-    onToolResult: (name, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, input, result, isError, durationMs); },
+    onToolStart: (name, toolCallId, input) => { if (!isAborted()) handlers.onToolStart?.(name, toolCallId, input); },
+    onToolResult: (name, toolCallId, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, toolCallId, input, result, isError, durationMs); },
     onAutoSkills: (skills) => { if (!isAborted()) handlers.onAutoSkills?.(skills); },
+    onAgentStart: (agentId, task, model) => { if (!isAborted()) handlers.onAgentStart?.(agentId, task, model); },
+    onAgentMessage: (agentId, delta) => { if (!isAborted()) handlers.onAgentMessage?.(agentId, delta); },
+    onAgentThinking: (agentId, delta) => { if (!isAborted()) handlers.onAgentThinking?.(agentId, delta); },
+    onAgentToolStart: (agentId, toolName, toolCallId, input) => { if (!isAborted()) handlers.onAgentToolStart?.(agentId, toolName, toolCallId, input); },
+    onAgentToolResult: (agentId, toolName, toolCallId, result, isError, durationMs) => { if (!isAborted()) handlers.onAgentToolResult?.(agentId, toolName, toolCallId, result, isError, durationMs); },
+    onAgentDone: (agentId, durationMs, error) => { if (!isAborted()) handlers.onAgentDone?.(agentId, durationMs, error); },
     onDone: (conv) => {
       if (isAborted()) return;
       doneCalled = true;
@@ -247,9 +285,15 @@ export async function subscribeChatRun(
     onThinkingStart: () => { if (!isAborted()) handlers.onThinkingStart?.(); },
     onThinkingStop: (ms) => { if (!isAborted()) handlers.onThinkingStop?.(ms); },
     onThinking: (d) => { if (!isAborted()) handlers.onThinking?.(d); },
-    onToolStart: (name, input) => { if (!isAborted()) handlers.onToolStart?.(name, input); },
-    onToolResult: (name, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, input, result, isError, durationMs); },
+    onToolStart: (name, toolCallId, input) => { if (!isAborted()) handlers.onToolStart?.(name, toolCallId, input); },
+    onToolResult: (name, toolCallId, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, toolCallId, input, result, isError, durationMs); },
     onAutoSkills: (skills) => { if (!isAborted()) handlers.onAutoSkills?.(skills); },
+    onAgentStart: (agentId, task, model) => { if (!isAborted()) handlers.onAgentStart?.(agentId, task, model); },
+    onAgentMessage: (agentId, delta) => { if (!isAborted()) handlers.onAgentMessage?.(agentId, delta); },
+    onAgentThinking: (agentId, delta) => { if (!isAborted()) handlers.onAgentThinking?.(agentId, delta); },
+    onAgentToolStart: (agentId, toolName, toolCallId, input) => { if (!isAborted()) handlers.onAgentToolStart?.(agentId, toolName, toolCallId, input); },
+    onAgentToolResult: (agentId, toolName, toolCallId, result, isError, durationMs) => { if (!isAborted()) handlers.onAgentToolResult?.(agentId, toolName, toolCallId, result, isError, durationMs); },
+    onAgentDone: (agentId, durationMs, error) => { if (!isAborted()) handlers.onAgentDone?.(agentId, durationMs, error); },
     onDone: (conv) => { if (!isAborted()) handlers.onDone(conv); },
     onError: (msg) => { if (!isAborted()) handlers.onError(msg); },
   };

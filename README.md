@@ -17,7 +17,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 - **RAG 管道**：ChromaDB 向量搜索（幂等 upsert）、文档分块、引用支持
 - **Skill 系统**：Skill 提示词管理（CRUD + 内置/自定义）、全局指令编辑、对话时动态切换激活 Skill；支持多目录扫描（`skills.extra_dirs`）
 - **Skill 自动路由**：三种模式（`off` / `vector` / `llm`）；vector 模式用 sentence-transformers 余弦相似度匹配，llm 模式用轻量 LLM 调用判断；主技能（anchor，📌）+ routing 自动追加副技能（⚡）分层显示
-- **多 Agent 编排**：Planner/Executor/Reviewer 协作 + Workflow checkpoint 持久化
+- **并行多 Agent**：`spawn_agents` 工具将任务分解为 2–5 个独立子任务，Worker Agent 并发执行，前端实时展示各 Agent 进度；可通过 `agent.enable_spawn_agents` 配置开关；Worker 自动使用用户当前选择的模型 profile
 - **策略引擎**：tenacity retry + asyncio timeout 实际生效，Token 预算 O(n) 截断
 - **双形态交付**：SDK 嵌入 + FastAPI 服务 HTTP 访问，两者共享同一 ChatOrchestrator 执行引擎
 - **前端 SPA 控制台**：React + Vite + Zustand 会话式 Playground，含模型 Profile 切换、Skill 管理、RAG 调试、系统运行参数配置
@@ -207,6 +207,12 @@ llm:
       api_key_env: ANTHROPIC_API_KEY
       model: claude-sonnet-4-6
 
+agent:
+  max_tool_result_chars: 20000  # 单次工具返回最大字符数，超出自动截断并附分页提示
+  max_tool_iterations: 10       # 工具调用最大轮次，0 = 不限制
+  tool_timeout_s: 120           # 单次工具调用超时（秒）
+  enable_spawn_agents: true     # 是否开启并行多 Agent；false 则不暴露 spawn_agents 工具
+
 retrieval:
   collection_name: astracore
   persist_directory: ./chroma_db
@@ -304,7 +310,7 @@ make clean-rag    # 清空 ChromaDB 数据
 - [x] M2：记忆、预算、策略、可观测性
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
-- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatOrchestrator）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅
+- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatOrchestrator）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅ 并行多 Agent（spawn_agents）✅
 - [ ] M6：可靠性与安全 — 熔断器、API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档

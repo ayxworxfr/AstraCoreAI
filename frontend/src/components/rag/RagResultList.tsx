@@ -1,7 +1,6 @@
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
+import MDEditor from '@uiw/react-md-editor';
 import { Card, Tag, Empty, Typography, Flex } from 'antd';
+import { useSettingsStore } from '../../stores/settingsStore';
 import type { RagResult } from '../../types/api';
 
 type Props = { results: RagResult[] };
@@ -13,6 +12,8 @@ function scoreColor(score: number): string {
 }
 
 export default function RagResultList({ results }: Props): JSX.Element {
+  const theme = useSettingsStore((s) => s.theme);
+
   if (results.length === 0) {
     return <Empty description="暂无检索结果" style={{ padding: '40px 0' }} />;
   }
@@ -30,10 +31,8 @@ export default function RagResultList({ results }: Props): JSX.Element {
             </Tag>
           }
         >
-          <div className="rag-md-content">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-              {r.content}
-            </ReactMarkdown>
+          <div className="md-transparent" data-color-mode={theme}>
+            <MDEditor.Markdown source={r.content} />
           </div>
           {r.citation && (
             <Typography.Text

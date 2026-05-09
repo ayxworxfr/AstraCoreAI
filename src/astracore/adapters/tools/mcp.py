@@ -121,6 +121,11 @@ class MCPToolAdapter(ToolAdapter):
         self._definitions: list[ToolDefinition] = []
         self._background_tasks: list[asyncio.Task[None]] = []
         self._stop_events: dict[str, asyncio.Event] = {}
+        # Per-server locks: fastmcp's stdio Client is not safe for concurrent call_tool()
+        # on the same session — serialize calls per server to prevent response swaps.
+        self._locks: dict[str, asyncio.Lock] = {
+            cfg.name: asyncio.Lock() for cfg in server_configs
+        }
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -273,8 +278,10 @@ class MCPToolAdapter(ToolAdapter):
         start_time = time.time()
         logger.info("Calling MCP tool '%s' with arguments: %s", tool_name, arguments)
 
+        lock = self._locks.get(server_name)
         try:
-            raw_result = await client.call_tool(tool_name, arguments)
+            async with (lock if lock is not None else asyncio.Lock()):
+                raw_result = await client.call_tool(tool_name, arguments)
             execution_time = (time.time() - start_time) * 1000
 
             parts: list[str] = []

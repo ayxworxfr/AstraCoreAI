@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, type ComponentProps } from 'react';
 import { Bubble, Sender, Prompts } from '@ant-design/x';
 import type { BubbleProps } from '@ant-design/x';
 import {
@@ -13,13 +13,14 @@ import {
   DeleteOutlined,
   GlobalOutlined,
   DownCircleOutlined,
+  CloseCircleOutlined,
 } from '@ant-design/icons';
 import { Flex, Typography, Alert, Avatar, Button, Collapse, Tooltip, Popover, Tag, theme } from 'antd';
 import { useChatStore } from '../../stores/chatStore';
 import MarkdownContent from './MarkdownContent';
 import ModelSelector from './ModelSelector';
 import SkillSelector from '../skills/SkillSelector';
-import type { ChatMessage, ThinkingMode, ToolActivity } from '../../types/chat';
+import type { ChatMessage, SubAgentActivity, ThinkingMode, ToolActivity } from '../../types/chat';
 
 const SUGGESTED_PROMPTS = [
   { key: '1', label: '你能做什么？', icon: <ThunderboltOutlined /> },
@@ -182,17 +183,205 @@ function formatDuration(ms: number | undefined): string | null {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function SenderWithScrollbar(props: ComponentProps<typeof Sender>) {
+  const { token } = theme.useToken();
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [scrollProgress, setScrollProgress] = useState(0);
+  const [hasScrollable, setHasScrollable] = useState(false);
+  const [thumbMetrics, setThumbMetrics] = useState({ thumbHeight: 20, thumbTop: 0 });
+  const [overlay, setOverlay] = useState<{ top: number; right: number; height: number } | null>(null);
+
+  const measureScroll = useCallback(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    const maxScroll = Math.max(0, ta.scrollHeight - ta.clientHeight);
+    setHasScrollable(maxScroll > 4);
+    setScrollProgress(maxScroll > 0 ? ta.scrollTop / maxScroll : 0);
+  }, []);
+
+  const updateOverlay = useCallback(() => {
+    const wrapper = wrapperRef.current;
+    const ta = taRef.current;
+    if (!wrapper || !ta) return;
+    const wRect = wrapper.getBoundingClientRect();
+    const tRect = ta.getBoundingClientRect();
+    setOverlay({
+      top: tRect.top - wRect.top + 6,
+      right: wRect.right - tRect.right + 3,
+      height: Math.max(0, tRect.height - 12),
+    });
+  }, []);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const ta = wrapper.querySelector<HTMLTextAreaElement>('textarea');
+    if (!ta) return;
+    taRef.current = ta;
+    ta.addEventListener('scroll', measureScroll);
+    measureScroll();
+    updateOverlay();
+    const ro = new ResizeObserver(() => { measureScroll(); updateOverlay(); });
+    ro.observe(ta);
+    ro.observe(wrapper);
+    return () => {
+      ta.removeEventListener('scroll', measureScroll);
+      ro.disconnect();
+    };
+  }, [measureScroll, updateOverlay]);
+
+  useEffect(() => { measureScroll(); }, [measureScroll, props.value]);
+
+  useLayoutEffect(() => {
+    if (!hasScrollable || !overlay) return;
+    const track = trackRef.current;
+    const ta = taRef.current;
+    if (!track || !ta) return;
+    const trackH = overlay.height;
+    const ratio = ta.clientHeight / Math.max(ta.scrollHeight, 1);
+    const thumbH = Math.max(16, Math.min(trackH, Math.round(trackH * ratio)));
+    const maxThumbTop = Math.max(0, trackH - thumbH);
+    setThumbMetrics({ thumbHeight: thumbH, thumbTop: maxThumbTop * scrollProgress });
+  }, [hasScrollable, scrollProgress, overlay]);
+
+  const { thumbHeight, thumbTop } = thumbMetrics;
+
+  return (
+    <div ref={wrapperRef} style={{ position: 'relative' }}>
+      <Sender
+        {...props}
+        styles={{ ...props.styles, input: { scrollbarWidth: 'none', ...props.styles?.input } }}
+      />
+      {hasScrollable && overlay && (
+        <div
+          ref={trackRef}
+          style={{
+            position: 'absolute',
+            right: overlay.right,
+            top: overlay.top,
+            height: overlay.height,
+            width: 4,
+            borderRadius: 999,
+            background: token.colorFillTertiary,
+            pointerEvents: 'none',
+            zIndex: 1,
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              height: thumbHeight,
+              top: thumbTop,
+              borderRadius: 999,
+              background: token.colorPrimary,
+              opacity: 0.72,
+              transition: 'top 0.05s linear',
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScrollPane({
+  children,
+  maxHeight,
+  style,
+}: {
+  children: React.ReactNode;
+  maxHeight: number;
+  style?: React.CSSProperties;
+}) {
+  const { token } = theme.useToken();
+  const [scrollProgress, setScrollProgress] = useState(0);
+  const [hasScrollable, setHasScrollable] = useState(false);
+  const [thumbMetrics, setThumbMetrics] = useState({ thumbHeight: 20, thumbTop: 0 });
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+
+  const measureScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+    setHasScrollable(maxScroll > 4);
+    setScrollProgress(maxScroll > 0 ? el.scrollTop / maxScroll : 0);
+  }, []);
+
+  useEffect(() => {
+    measureScroll();
+  }, [measureScroll, children]);
+
+  // 在 DOM 更新后才读取 trackRef.clientHeight，避免首次渲染时 track 尚未挂载导致尺寸为 0
+  useLayoutEffect(() => {
+    if (!hasScrollable) return;
+    const track = trackRef.current;
+    const el = scrollRef.current;
+    if (!track || !el) return;
+    const trackH = track.clientHeight;
+    const ratio = el.clientHeight / Math.max(el.scrollHeight, 1);
+    const thumbH = Math.max(16, Math.min(trackH, Math.round(trackH * ratio)));
+    const maxThumbTop = Math.max(0, trackH - thumbH);
+    setThumbMetrics({ thumbHeight: thumbH, thumbTop: maxThumbTop * scrollProgress });
+  }, [hasScrollable, scrollProgress]);
+
+  const { thumbHeight, thumbTop } = thumbMetrics;
+
+  return (
+    <div style={{ position: 'relative', maxHeight, overflow: 'hidden', ...style }}>
+      <div
+        ref={scrollRef}
+        onScroll={measureScroll}
+        style={{ maxHeight, overflowY: 'auto', scrollbarWidth: 'none' }}
+      >
+        {children}
+      </div>
+      {hasScrollable && (
+        <div
+          ref={trackRef}
+          style={{
+            position: 'absolute',
+            right: 3,
+            top: 6,
+            bottom: 6,
+            width: 4,
+            borderRadius: 999,
+            background: token.colorFillTertiary,
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              height: thumbHeight,
+              top: thumbTop,
+              borderRadius: 999,
+              background: token.colorPrimary,
+              opacity: 0.72,
+              transition: 'top 0.05s linear',
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolDetailPopover({ tool }: { tool: ToolActivity }) {
   const { token } = theme.useToken();
-  const pre: React.CSSProperties = {
+  const preStyle: React.CSSProperties = {
     margin: 0,
     background: token.colorFillTertiary,
     padding: '6px 8px',
     borderRadius: 4,
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-all',
-    maxHeight: 160,
-    overflow: 'auto',
     fontSize: 11,
     fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace',
   };
@@ -202,7 +391,9 @@ function ToolDetailPopover({ tool }: { tool: ToolActivity }) {
       {hasInput && (
         <div style={{ marginBottom: tool.result !== undefined ? 10 : 0 }}>
           <div style={{ color: token.colorTextSecondary, marginBottom: 4, fontWeight: 500 }}>输入参数</div>
-          <pre style={pre}>{JSON.stringify(tool.input, null, 2)}</pre>
+          <ScrollPane maxHeight={160} style={{ borderRadius: 4 }}>
+            <pre style={preStyle}>{JSON.stringify(tool.input, null, 2)}</pre>
+          </ScrollPane>
         </div>
       )}
       {tool.result !== undefined && (
@@ -210,9 +401,11 @@ function ToolDetailPopover({ tool }: { tool: ToolActivity }) {
           <div style={{ color: tool.isError ? token.colorError : token.colorTextSecondary, marginBottom: 4, fontWeight: 500 }}>
             {tool.isError ? '错误信息' : '返回结果'}
           </div>
-          <pre style={{ ...pre, color: tool.isError ? token.colorError : undefined }}>
-            {tool.result.length > 600 ? tool.result.slice(0, 600) + '\n…（已截断）' : tool.result}
-          </pre>
+          <ScrollPane maxHeight={160} style={{ borderRadius: 4 }}>
+            <pre style={{ ...preStyle, color: tool.isError ? token.colorError : undefined }}>
+              {tool.result.length > 600 ? tool.result.slice(0, 600) + '\n…（已截断）' : tool.result}
+            </pre>
+          </ScrollPane>
         </div>
       )}
       {!hasInput && tool.result === undefined && (
@@ -280,6 +473,98 @@ function ToolActivityRow({ tools }: { tools: ToolActivity[] }) {
   );
 }
 
+function SubAgentCard({ agent }: { agent: SubAgentActivity }) {
+  const { token } = theme.useToken();
+  const running = agent.status === 'running';
+  const isError = agent.status === 'error';
+  const bg = running ? token.colorWarningBg : (isError ? token.colorErrorBg : token.colorSuccessBg);
+  const border = running ? token.colorWarningBorder : (isError ? token.colorErrorBorder : token.colorSuccessBorder);
+  const accentColor = running ? token.colorWarning : (isError ? token.colorError : token.colorSuccess);
+  const textColor = running ? token.colorWarningText : (isError ? token.colorErrorText : token.colorSuccessText);
+  const taskPreview = agent.task.length > 60 ? `${agent.task.slice(0, 60)}...` : agent.task;
+
+  return (
+    <Collapse
+      size="small"
+      defaultActiveKey={[]}
+      style={{
+        marginBottom: 6,
+        background: bg,
+        border: `1px solid ${border}`,
+        borderRadius: 8,
+        overflow: 'hidden',
+      }}
+      items={[
+        {
+          key: 'agent',
+          label: (
+            <Flex align="center" gap={6}>
+              {running ? (
+                <LoadingOutlined style={{ color: accentColor, fontSize: 11 }} spin />
+              ) : isError ? (
+                <CloseCircleOutlined style={{ color: accentColor, fontSize: 11 }} />
+              ) : (
+                <CheckOutlined style={{ color: accentColor, fontSize: 11 }} />
+              )}
+              <Typography.Text style={{ fontSize: 12, color: textColor, fontWeight: 600, flex: 1 }}>
+                {taskPreview}
+              </Typography.Text>
+              {agent.model && (
+                <Typography.Text type="secondary" style={{ fontSize: 11, marginRight: 4 }}>
+                  {agent.model}
+                </Typography.Text>
+              )}
+              {!running && agent.durationMs !== undefined && (
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  {formatDuration(agent.durationMs)}
+                </Typography.Text>
+              )}
+            </Flex>
+          ),
+          styles: {
+            header: { background: bg, padding: '5px 12px' },
+            body: {
+              background: token.colorBgContainer,
+              borderTop: `1px solid ${border}`,
+              padding: '10px 14px',
+            },
+          },
+          children: (
+            <div>
+              {agent.toolActivity.length > 0 && (
+                <ToolActivityRow tools={agent.toolActivity} />
+              )}
+              {agent.error && (
+                <Typography.Text type="danger" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
+                  {agent.error}
+                </Typography.Text>
+              )}
+              {agent.text ? (
+                <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {agent.text}
+                </div>
+              ) : running && agent.toolActivity.length === 0 && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>执行中...</Typography.Text>
+              )}
+            </div>
+          ),
+        },
+      ]}
+    />
+  );
+}
+
+function SubAgentPanel({ agents }: { agents: SubAgentActivity[] }) {
+  if (agents.length === 0) return null;
+  return (
+    <div style={{ marginBottom: 10 }}>
+      {agents.map((agent) => (
+        <SubAgentCard key={agent.agentId} agent={agent} />
+      ))}
+    </div>
+  );
+}
+
 function AssistantContent({ message }: { message: ChatMessage }) {
   const blocks = message.thinkingBlocks ?? [];
   const isStreaming = message.status === 'streaming';
@@ -319,6 +604,9 @@ function AssistantContent({ message }: { message: ChatMessage }) {
       )}
       {message.toolActivity && message.toolActivity.length > 0 && (
         <ToolActivityRow tools={message.toolActivity} />
+      )}
+      {message.subAgents && message.subAgents.length > 0 && (
+        <SubAgentPanel agents={message.subAgents} />
       )}
       <MarkdownContent content={message.content} />
     </div>
@@ -846,7 +1134,7 @@ export default function ChatMain(): JSX.Element {
             <ModelSelector disabled={isStreaming} />
           </Flex>
 
-          <Sender
+          <SenderWithScrollbar
             value={inputValue}
             onChange={setInputValue}
             loading={isStreaming}

@@ -15,11 +15,26 @@ export type MessageStatus = 'pending' | 'streaming' | 'done' | 'error';
 
 export type ToolActivity = {
   name: string;
+  toolCallId?: string;
   done: boolean;
   input?: Record<string, unknown>;
   result?: string;
   isError?: boolean;
   durationMs?: number;
+};
+
+export type SubAgentStatus = 'running' | 'done' | 'error';
+
+export type SubAgentActivity = {
+  agentId: string;
+  task: string;
+  model?: string;
+  status: SubAgentStatus;
+  text: string;
+  thinking: string;
+  toolActivity: ToolActivity[];
+  durationMs?: number;
+  error?: string | null;
 };
 
 export type ThinkingMode = 'normal' | 'deep' | 'tool';
@@ -40,4 +55,6 @@ export type ChatMessage = {
   anchorSkill?: string | null;
   /** routing 自动追加的副技能名称列表 */
   autoSkills?: string[];
+  /** 并行子 Agent 活动列表（spawn_agents 触发，仅前端追踪） */
+  subAgents?: SubAgentActivity[];
 };

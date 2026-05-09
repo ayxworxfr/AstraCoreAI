@@ -87,11 +87,21 @@ async def lifespan(app: FastAPI) -> Any:
 
             mcp_configs = build_server_configs(cfg.mcp.servers)
             mcp_adapter = MCPToolAdapter(mcp_configs)
-            await asyncio.wait_for(mcp_adapter.start(), timeout=30)
-            app.state.tool_adapter = CompositeToolAdapter([build_tool_adapter(), mcp_adapter])
-            logger.info("MCP tool adapter started with %d server(s)", len(mcp_configs))
+
+            # 先挂内置工具，MCP 在后台启动，不阻塞服务就绪
+            app.state.tool_adapter = build_tool_adapter()
+
+            async def _start_mcp() -> None:
+                try:
+                    await asyncio.wait_for(mcp_adapter.start(), timeout=30)
+                    app.state.tool_adapter = CompositeToolAdapter([build_tool_adapter(), mcp_adapter])
+                    logger.info("MCP tool adapter started with %d server(s)", len(mcp_configs))
+                except Exception:
+                    logger.exception("MCP 适配器后台启动失败，继续使用内置工具")
+
+            asyncio.create_task(_start_mcp())
         except Exception:
-            logger.exception("MCP 适配器启动失败，回退到内置工具")
+            logger.exception("MCP 适配器初始化失败，回退到内置工具")
 
     yield
 

@@ -181,6 +181,7 @@ def _build_llm_kwargs(request: "ChatRequest", profile: LLMProfileConfig) -> dict
 
 
 class MessageItem(BaseModel):
+    id: str = ""
     role: str
     content: str
     thinking_blocks: list[str] = Field(default_factory=list)
@@ -489,6 +490,7 @@ async def _execute_tool_run(
                 in_tool_round = True
             item: dict[str, Any] = {
                 "name": event.tool_call.name,
+                "tool_call_id": event.tool_call.id,
                 "done": False,
                 "input": event.tool_call.arguments,
             }
@@ -496,13 +498,15 @@ async def _execute_tool_run(
             _broadcast_run_event(
                 run_id,
                 "tool_start",
-                {"tool": event.tool_call.name, "input": event.tool_call.arguments},
+                {"tool": event.tool_call.name, "tool_call_id": event.tool_call.id,
+                 "input": event.tool_call.arguments},
             )
         elif event.event_type == StreamEventType.TOOL_RESULT:
             tool_name = str(event.metadata.get("tool", ""))
+            tool_call_id = str(event.metadata.get("tool_call_id", ""))
             result_text = str(event.metadata.get("result", ""))
-            for item in reversed(tool_activity):
-                if item.get("name") == tool_name and not item.get("done"):
+            for item in tool_activity:
+                if item.get("tool_call_id") == tool_call_id and not item.get("done"):
                     item.update(
                         {
                             "done": True,
@@ -517,10 +521,67 @@ async def _execute_tool_run(
                 "tool_result",
                 {
                     "tool": tool_name,
+                    "tool_call_id": tool_call_id,
                     "input": event.metadata.get("input", {}),
                     "result": result_text,
                     "is_error": event.metadata.get("is_error", False),
                     "duration_ms": event.metadata.get("duration_ms", 0),
+                },
+            )
+        elif event.event_type == StreamEventType.AGENT_START:
+            _broadcast_run_event(
+                run_id,
+                "agent_start",
+                {
+                    "agent_id": event.metadata.get("agent_id"),
+                    "task": event.metadata.get("task"),
+                    "model": event.metadata.get("model"),
+                },
+            )
+        elif event.event_type == StreamEventType.AGENT_TEXT_DELTA and event.content:
+            _broadcast_run_event(
+                run_id,
+                "agent_message",
+                {"agent_id": event.metadata.get("agent_id"), "text": event.content},
+            )
+        elif event.event_type == StreamEventType.AGENT_THINKING_DELTA and event.content:
+            _broadcast_run_event(
+                run_id,
+                "agent_thinking",
+                {"agent_id": event.metadata.get("agent_id"), "text": event.content},
+            )
+        elif event.event_type == StreamEventType.AGENT_TOOL_CALL and event.tool_call:
+            _broadcast_run_event(
+                run_id,
+                "agent_tool_start",
+                {
+                    "agent_id": event.metadata.get("agent_id"),
+                    "tool": event.tool_call.name,
+                    "tool_call_id": event.tool_call.id,
+                    "input": event.tool_call.arguments,
+                },
+            )
+        elif event.event_type == StreamEventType.AGENT_TOOL_RESULT:
+            _broadcast_run_event(
+                run_id,
+                "agent_tool_result",
+                {
+                    "agent_id": event.metadata.get("agent_id"),
+                    "tool": event.metadata.get("tool"),
+                    "tool_call_id": event.metadata.get("tool_call_id", ""),
+                    "result": event.metadata.get("result"),
+                    "is_error": event.metadata.get("is_error", False),
+                    "duration_ms": event.metadata.get("duration_ms", 0),
+                },
+            )
+        elif event.event_type == StreamEventType.AGENT_DONE:
+            _broadcast_run_event(
+                run_id,
+                "agent_done",
+                {
+                    "agent_id": event.metadata.get("agent_id"),
+                    "duration_ms": event.metadata.get("duration_ms", 0),
+                    "error": event.metadata.get("error"),
                 },
             )
 
@@ -675,41 +736,45 @@ async def delete_session(session_id: UUID) -> None:
     await _get_memory_adapter().delete_session_memory(session_id)
 
 
-class DeleteMessageRequest(BaseModel):
-    role: Literal["user", "assistant"]
-    user_message: str  # 该轮次的 USER 消息内容，用于定位轮次（比 ASSISTANT 内容更可靠）
-
-
 @router.delete("/sessions/{session_id}/messages", status_code=204)
-async def delete_session_message(session_id: UUID, req: DeleteMessageRequest) -> None:
+async def delete_session_message(
+    session_id: UUID,
+    role: Literal["user", "assistant"],
+    message_id: str,
+) -> None:
     """从会话历史中按轮次删除消息。
 
-    通过 user_message 定位该 Q&A 轮次的 USER 消息，
+    通过 message_id（USER 消息 UUID）精确定位轮次，避免重复内容时误删。
     USER role：删除整个轮次（USER + 其后所有 ASSISTANT/TOOL，直到下一条 USER）。
     ASSISTANT role：仅删除该轮次的 ASSISTANT/TOOL 消息，保留 USER。
     """
     memory = _get_memory_adapter()
     messages = await memory.load_short_term(session_id)
-    # 找到该轮次的 USER 消息
+    # 通过 UUID 精确定位轮次的 USER 消息
     idx = next(
-        (i for i, m in enumerate(messages) if m.role == MessageRole.USER and m.content == req.user_message),
+        (i for i, m in enumerate(messages) if m.role == MessageRole.USER and str(m.id) == message_id),
         None,
     )
     if idx is None:
         raise HTTPException(status_code=404, detail="消息未找到")
+
+    user_msg_content = messages[idx].content
+    # 该轮次在同内容 USER 消息中的出现次序（0-based），用于定位对应的 ChatRunRow
+    occurrence = sum(
+        1 for m in messages[:idx] if m.role == MessageRole.USER and m.content == user_msg_content
+    )
+
     # 该轮次的结束位置（下一条 USER 或列表末尾）
     end = idx + 1
     while end < len(messages) and messages[end].role != MessageRole.USER:
         end += 1
     new_messages = list(messages)
-    if req.role == "user":
-        # 删除整个轮次
+    if role == "user":
         new_messages = new_messages[:idx] + new_messages[end:]
     else:
-        # 只删除 ASSISTANT/TOOL 部分，保留 USER
         new_messages = new_messages[: idx + 1] + new_messages[end:]
     messages_data = [m.model_dump(mode="json") for m in new_messages]
-    # 原子性地持久化到 DB：更新 ChatSessionRow + 删除 ChatRunRow 在同一事务中
+    # 原子性地持久化到 DB：更新 ChatSessionRow + 删除对应 ChatRunRow 在同一事务中
     async with get_session(_get_settings().memory.db_url) as db:
         session_row = await db.get(ChatSessionRow, str(session_id))
         if session_row:
@@ -724,14 +789,18 @@ async def delete_session_message(session_id: UUID, req: DeleteMessageRequest) ->
                     updated_at=datetime.now(UTC),
                 )
             )
-        result = await db.execute(
-            select(ChatRunRow).where(
+        # 只删除第 occurrence 条同内容的 ChatRunRow（按创建时间排序）
+        run_result = await db.execute(
+            select(ChatRunRow)
+            .where(
                 ChatRunRow.session_id == str(session_id),
-                ChatRunRow.user_message == req.user_message,
+                ChatRunRow.user_message == user_msg_content,
             )
+            .order_by(ChatRunRow.created_at.asc())
         )
-        for run_row in result.scalars().all():
-            await db.delete(run_row)
+        matching_runs = run_result.scalars().all()
+        if occurrence < len(matching_runs):
+            await db.delete(matching_runs[occurrence])
         await db.commit()
     # DB 事务提交成功后 best-effort 更新 Redis（失败不影响已持久化的 DB 状态）
     try:
@@ -771,11 +840,11 @@ async def get_session_messages(
     while index < len(visible):
         current = visible[index]
         if current.role != MessageRole.USER:
-            folded.append(MessageItem(role=current.role.value, content=current.content))
+            folded.append(MessageItem(id=str(current.id), role=current.role.value, content=current.content))
             index += 1
             continue
 
-        folded.append(MessageItem(role=current.role.value, content=current.content))
+        folded.append(MessageItem(id=str(current.id), role=current.role.value, content=current.content))
         next_user_index = index + 1
         while next_user_index < len(visible) and visible[next_user_index].role != MessageRole.USER:
             next_user_index += 1
@@ -795,7 +864,7 @@ async def get_session_messages(
             continue
 
         for message in visible[index + 1:next_user_index]:
-            folded.append(MessageItem(role=message.role.value, content=message.content))
+            folded.append(MessageItem(id=str(message.id), role=message.role.value, content=message.content))
         index = next_user_index
 
     total = len(folded)

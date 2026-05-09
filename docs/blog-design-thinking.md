@@ -373,23 +373,32 @@ RAG 上下文、Skill 提示词、全局指令三者按优先级顺序拼接注�
 
 ---
 
-## 十、多 Agent 协作：最小角色集与断点恢复
+## 十、多 Agent 协作：并行 Worker 模型
 
-多 Agent 系统不需要一开始就设计很多角色。**Planner / Executor / Reviewer 三个角色就能覆盖大多数任务场景**：
+多 Agent 系统最实用的场景往往不是 Planner/Executor/Reviewer 的流水线，而是**可以并行的独立子任务**——比较多家公司财报、从多个数据源聚合信息、同时验证多个假设。
+
+AstraCore 实现了 `spawn_agents` 工具，让 LLM 主动将任务分解并发执行：
 
 ```
-用户请求
-  → Planner：理解需求，拆分子任务
-  → Executor：逐个执行子任务，使用工具
-  → Reviewer：检查结果质量，决定是否需要重试
-  → 输出最终结果
+主 Agent 决策 → spawn_agents(tasks=[
+    {"task": "分析 A"},
+    {"task": "分析 B"},
+    {"task": "查询行业数据"}
+])
+       ↓  asyncio.Queue 并发驱动
+Worker A     Worker B     Worker C   ← 各自独立 LLM + 工具循环
+       ↓
+   汇总结果 → 主 Agent 综合回答
 ```
 
-**工作流 checkpoint 持久化**：每个节点完成后保存快照到 Redis，进程崩溃或重启后可以从上次完成的节点续跑，不需要从头开始。这对长时间运行的任务（几分钟甚至几十分钟）至关重要。
+**设计要点**：
 
-**人工审批节点**：高风险操作（比如写入文件、发送消息）执行前可以暂停等待人工确认，通过 API 回调恢复执行。
+- **Worker 完全隔离**：每个 Worker 有独立的 `LLMAdapter`、`ToolLoopUseCase`（最多 5 轮）、`SessionState`，互不干扰
+- **模型对齐**：Worker 自动继承用户当前选择的 model profile，通过 `context["profile_id"]` 传递，不走配置默认值
+- **不引入双重超时**：`is_timeout_managed` 协议让外层工具循环跳过对 `spawn_agents` 的超时包裹，只有 Worker 内部的单个工具调用受超时约束
+- **取消安全**：父任务被取消时立即 cancel 所有 Worker Task，通过 `asyncio.gather(return_exceptions=True)` 确保清理完成
 
-**与 LangGraph 的兼容策略**：编排逻辑通过 `WorkflowOrchestrator` 接口抽象，默认实现是 Native Orchestrator，后续可以新增 LangGraph Orchestrator，Application 层不需要改动，通过配置开关切换。
+**与 LangGraph 的兼容策略**：顺序/依赖型工作流编排通过 `WorkflowOrchestrator` 接口抽象，默认实现是 Native Orchestrator，后续可接入 LangGraph，Application 层不动，通过配置开关切换。
 
 ---
 
@@ -504,19 +513,19 @@ ASTRACORE__AGENT__TOOL_TIMEOUT_S=120           # 单次工具超时
 
 ### 工具调用：从串行到并行
 
-当前的工具循环是串行的——一个工具执行完才开始下一个。如果 LLM 在一轮里决定调用三个相互独立的工具（比如同时搜索三个关键词），串行执行会浪费大量时间。
+**任务级并行（已实现）**：通过 `spawn_agents` 工具，LLM 可以将互相独立的子任务分配给多个 Worker Agent 并发执行，每个 Worker 拥有完整的工具调用能力和独立的推理链路。这适合"同时从多个来源收集信息"类场景。
 
-LLM 在一次响应里可以返回多个 `tool_use` 块，没有依赖关系的工具完全可以并发执行：
+**工具级并行（未来方向）**：当前同一轮 LLM 返回的多个工具调用仍是串行执行的——一个工具完成后才开始下一个。如果这些工具之间没有依赖（比如同时搜索三个关键词），串行执行会浪费时间：
 
 ```
 LLM 决策 → [tool_A, tool_B, tool_C]
-                ↓ asyncio.gather
+                ↓ asyncio.gather（未实现）
            并发执行三个工具
                 ↓
            汇总所有 ToolResult → 继续下一轮
 ```
 
-最保守的策略是：同一轮的工具全部并发，不同轮之间保持串行（后一轮依赖前一轮的结果）。这个改动不需要修改 Ports 接口，只改 `ToolLoopUseCase` 内部实现即可。
+这个改动不需要修改 Ports 接口，只改 `ToolLoopUseCase` 内部实现即可，是下一步可以低成本落地的优化。
 
 ### 记忆系统：从会话级到用户级
 
