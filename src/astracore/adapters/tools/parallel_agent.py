@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from astracore.adapters.llm.anthropic import AnthropicAdapter
+from astracore.adapters.tools._coerce import coerce_tool_arguments
 from astracore.adapters.llm.openai import OpenAIAdapter
 from astracore.core.application.tool_loop import ToolLoopUseCase
 from astracore.core.domain.message import Message, MessageRole
@@ -102,7 +103,7 @@ class ParallelAgentTool(ToolAdapter):
                             "context（string，可选，传给子 Agent 的背景信息）"
                         ),
                         required=True,
-                    )
+                    ),
                 ],
             )
         ]
@@ -140,7 +141,8 @@ class ParallelAgentTool(ToolAdapter):
     ) -> AsyncIterator[StreamEvent | ToolExecutionResult]:
         overall_start = time.monotonic()
 
-        raw_tasks = arguments.get("tasks", [])
+        coerced = coerce_tool_arguments(arguments, {"tasks": ToolParameterType.ARRAY})
+        raw_tasks = coerced.get("tasks", [])
         if not isinstance(raw_tasks, list) or not raw_tasks:
             yield ToolExecutionResult(
                 tool_name=tool_name,
@@ -170,7 +172,19 @@ class ParallelAgentTool(ToolAdapter):
             )
             return
 
-        profile_id: str | None = (context or {}).get("profile_id")
+        ctx = context or {}
+        profile_id: str | None = ctx.get("profile_id")
+        anchor_id: str | None = ctx.get("anchor_id")
+        db_url: str = ctx.get("db_url", "")
+        # 使用请求时的完整 tool_adapter（含 MCP），回退到初始化时的 worker_tools
+        full_adapter: ToolAdapter = ctx.get("tool_adapter") or self._worker_tools
+        allowed_tools_ctx = ctx.get("allowed_tools")
+        # 始终排除 spawn_agents，防止子 Agent 递归调用
+        if allowed_tools_ctx is not None:
+            worker_allowed: frozenset[str] | None = frozenset(allowed_tools_ctx) - {"spawn_agents"}
+        else:
+            all_tool_names = {d.name for d in full_adapter.get_definitions()}
+            worker_allowed = frozenset(all_tool_names - {"spawn_agents"}) if all_tool_names else None
         model_name = self._config.llm.get_profile(profile_id).model
 
         # 通知前端所有子 Agent 即将启动
@@ -190,13 +204,22 @@ class ParallelAgentTool(ToolAdapter):
             agent_start_times[task.agent_id] = time.monotonic()
             error: str | None = None
             try:
-                tool_loop = self._build_tool_loop(profile_id)
+                tool_loop = self._build_tool_loop(
+                    profile_id, anchor_id=anchor_id, db_url=db_url, worker_tool_adapter=full_adapter
+                )
                 session = SessionState()
+                # 默认自主执行提示：防止子 Agent 停下来询问用户确认
+                system_parts = [
+                    "你是一个自主执行任务的 Agent。"
+                    "请直接完成交给你的任务并输出最终结果，"
+                    "不要询问用户确认，不要停下来等待指示。"
+                ]
                 if task.context:
-                    session.add_message(Message(role=MessageRole.SYSTEM, content=task.context))
+                    system_parts.append(task.context)
+                session.add_message(Message(role=MessageRole.SYSTEM, content="\n\n".join(system_parts)))
                 session.add_message(Message(role=MessageRole.USER, content=task.task))
 
-                async for event in tool_loop.execute_stream_with_tools(session):
+                async for event in tool_loop.execute_stream_with_tools(session, allowed_tools=worker_allowed):
                     if event.event_type == StreamEventType.TEXT_DELTA and event.content:
                         worker_text[task.agent_id] += event.content
                     if event.event_type in _EVENT_TYPE_MAP:
@@ -245,17 +268,17 @@ class ParallelAgentTool(ToolAdapter):
         else:
             await asyncio.gather(*worker_asyncio_tasks, return_exceptions=True)
 
-        # 汇总所有子 Agent 结果，返回给 Orchestrator
-        parts: list[str] = []
+        total_ms = int((time.monotonic() - overall_start) * 1000)
+
+        sections: list[str] = []
         for task in tasks:
             text = worker_text[task.agent_id].strip() or "（无输出）"
-            parts.append(f"### Agent {task.agent_id}（任务: {task.task[:80]}）\n\n{text}")
+            sections.append(f"## 子任务: {task.task}\n\n{text}")
 
-        total_ms = int((time.monotonic() - overall_start) * 1000)
         yield ToolExecutionResult(
             tool_name=tool_name,
             success=True,
-            output="\n\n---\n\n".join(parts),
+            output="\n\n---\n\n".join(sections),
             execution_time_ms=total_ms,
         )
 
@@ -284,12 +307,31 @@ class ParallelAgentTool(ToolAdapter):
                 )
         return self._llm_adapters[profile_id]
 
-    def _build_tool_loop(self, profile_id: str | None = None) -> ToolLoopUseCase:
+    def _build_tool_loop(
+        self,
+        profile_id: str | None = None,
+        anchor_id: str | None = None,
+        db_url: str = "",
+        worker_tool_adapter: ToolAdapter | None = None,
+    ) -> ToolLoopUseCase:
+        base_adapter = worker_tool_adapter or self._worker_tools
+        if anchor_id is not None and db_url:
+            from astracore.adapters.tools.composite import CompositeToolAdapter  # noqa: PLC0415
+            from astracore.service.builtin_tools import build_skill_reference_adapter  # noqa: PLC0415
+            ref_adapter = build_skill_reference_adapter(anchor_id, db_url)
+            tool_adapter: ToolAdapter = CompositeToolAdapter([ref_adapter, base_adapter])
+        else:
+            tool_adapter = base_adapter
+        extra_context: dict[str, Any] = {}
+        if anchor_id is not None:
+            extra_context["anchor_id"] = anchor_id
+            extra_context["db_url"] = db_url
         return ToolLoopUseCase(
             llm_adapter=self._get_llm_adapter(profile_id),
-            tool_adapter=self._worker_tools,
+            tool_adapter=tool_adapter,
             policy_engine=self._policy,
             max_iterations=_WORKER_MAX_ITERATIONS,
             max_tool_result_chars=self._config.agent.max_tool_result_chars,
             tool_timeout_s=self._config.agent.tool_timeout_s,
+            extra_context=extra_context or None,
         )

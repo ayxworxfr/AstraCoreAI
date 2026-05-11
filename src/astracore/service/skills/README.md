@@ -18,21 +18,22 @@
 
 ## 二、当前 skill 清单
 
-| Order | 文件 | 名称 | 主场 |
+| Order | 目录 | 名称 | 主场 |
 |---|---|---|---|
-| 10 | `assistant.md` | 通用助手（default） | 人格兜底、杂项任务 |
-| 20 | `programmer.md` | 代码助手 | 写/改/读代码、调试、技术选型、测试 |
-| 30 | `analyst.md` | 数据分析师 | 统计分析、业务解读、可视化方案 |
-| 40 | `writer.md` | 写作助手 | 从零创作、润色、改写、摘要、结构优化 |
-| 50 | `translator.md` | 翻译官 | 中英互译 |
-| 60 | `storyteller.md` | 故事大师 | 虚构叙事、历史深挖、人物、反事实、思想实验、概念拆解 |
-| 70 | `openclaw-manager.md` | OpenClaw 管理员 | OpenClaw Gateway 运维 |
+| 10 | `assistant/` | 通用助手（default） | 人格兜底、杂项任务 |
+| 20 | `programmer/` | 代码助手 | 写/改/读代码、调试、技术选型、测试 |
+| 25 | `financial-advisor/` | 理财顾问 | 行情分析、资产配置、宏观经济解读 |
+| 30 | `analyst/` | 数据分析师 | 统计分析、业务解读、可视化方案 |
+| 40 | `writer/` | 写作助手 | 从零创作、润色、改写、摘要、结构优化 |
+| 50 | `translator/` | 翻译官 | 中英互译 |
+| 60 | `storyteller/` | 故事大师 | 虚构叙事、历史深挖、人物、反事实、思想实验、概念拆解 |
+| 70 | `openclaw-manager/` | OpenClaw 管理员 | OpenClaw Gateway 运维 |
 
 ### Order 分段约定
 
 ```
 10        通用兜底
-20-30     开发类
+20-30     开发 / 专业分析
 40-50     文字工具
 60        创作
 70+       专属工具 / 运维
@@ -80,7 +81,41 @@
 
 ---
 
-## 四、标准结构模板
+## 四、目录结构
+
+每个 skill 是一个子目录，目录名即 `source_key`（跨重启的稳定标识符）：
+
+```
+skills/
+  <skill-name>/
+    SKILL.md          ← 必须存在；frontmatter + system_prompt 正文
+    <ref-name>.md     ← 可选；附属参考文档，LLM 按需加载
+```
+
+### SKILL.md frontmatter 字段
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `name` | ✅ | 显示名称 |
+| `description` | 否 | 简短描述，用于触发匹配 |
+| `order` | 否 | 排序值（整数），越小越靠前，默认 1000 |
+| `default` | 否 | `true` 表示首次启动时设为默认 Skill |
+| `references` | 否 | YAML 列表，声明附属参考文档 |
+
+### references 声明格式
+
+```yaml
+references:
+  - title: 文档标题        # LLM 调用时传入的精确标题
+    description: 一句话说明用途
+    file: ref-name.md     # 相对于 skill 目录的文件名
+```
+
+声明后，系统提示会自动注入参考文档目录，LLM 可通过 `get_skill_reference` 工具按标题按需加载。
+
+---
+
+## 五、标准结构模板
 
 推荐按以下骨架组织 skill，可按需增删小节：
 
@@ -90,6 +125,10 @@ name: 名称
 description: 一句话说清触发场景
 order: 数字
 default: true   # 仅通用助手用
+references:     # 可选
+  - title: 参考文档标题
+    description: 用途说明
+    file: ref.md
 ---
 # 角色
 

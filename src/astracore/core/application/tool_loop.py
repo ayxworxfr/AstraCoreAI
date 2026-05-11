@@ -10,9 +10,12 @@ from astracore.core.domain.message import Message, MessageRole, ToolCall, ToolRe
 from astracore.core.domain.session import SessionState
 from astracore.core.ports.llm import LLMAdapter, StreamEvent, StreamEventType
 from astracore.core.ports.tool import ToolAdapter, ToolExecutionResult
+from astracore.runtime.observability.logger import get_logger
 from astracore.runtime.policy.engine import PolicyEngine
 
 _TOOL_DONE = object()  # sentinel for parallel streaming tool execution
+_logger = get_logger(__name__)
+_LLM_RETRY_MAX = 2
 
 
 class ToolLoopUseCase:
@@ -29,6 +32,7 @@ class ToolLoopUseCase:
         max_tool_result_chars: int = 20_000,
         tool_timeout_s: float = 120.0,
         profile_id: str | None = None,
+        extra_context: dict[str, Any] | None = None,
     ):
         self.llm = llm_adapter
         self.tools = tool_adapter
@@ -37,11 +41,32 @@ class ToolLoopUseCase:
         self.max_tool_result_chars = max_tool_result_chars
         self.tool_timeout_s = tool_timeout_s
         self.profile_id = profile_id
+        self._extra_context: dict[str, Any] = extra_context or {}
 
     @property
     def unlimited(self) -> bool:
         """max_iterations == 0 时不限制工具调用轮次。"""
         return self.max_iterations == 0
+
+    async def _collect_llm_stream(self, **kwargs: Any) -> list[StreamEvent]:
+        """缓冲 generate_stream 的所有事件，遇到 tool-call JSON 截断时自动重试。"""
+        for attempt in range(_LLM_RETRY_MAX + 1):
+            buffer: list[StreamEvent] = []
+            try:
+                async for event in self.llm.generate_stream(**kwargs):
+                    buffer.append(event)
+                return buffer
+            except ValueError as exc:
+                if attempt < _LLM_RETRY_MAX:
+                    _logger.warning(
+                        "LLM stream ValueError (attempt %d/%d), retrying: %s",
+                        attempt + 1,
+                        _LLM_RETRY_MAX,
+                        exc,
+                    )
+                    continue
+                raise
+        return []  # unreachable
 
     def _build_tool_guidance(self, iteration: int) -> str:
         """每轮注入给 LLM 的工具使用进度提示（不存入 session）。"""
@@ -122,7 +147,7 @@ class ToolLoopUseCase:
                 self.tools.execute(
                     tool_name=tool_call.name,
                     arguments=tool_call.arguments,
-                    context={"profile_id": self.profile_id},
+                    context={**self._extra_context, "profile_id": self.profile_id},
                 ),
                 timeout=self.tool_timeout_s,
             )
@@ -182,7 +207,7 @@ class ToolLoopUseCase:
                 async for item in self.tools.execute_streaming(
                     tool_name=tool_call.name,
                     arguments=tool_call.arguments,
-                    context={"profile_id": self.profile_id},
+                    context={**self._extra_context, "profile_id": self.profile_id},
                 ):
                     if isinstance(item, StreamEvent):
                         await queue.put((idx, item, None))
@@ -333,12 +358,13 @@ class ToolLoopUseCase:
             accumulated_tool_calls = []
             assistant_metadata: dict[str, Any] = {}
 
-            async for event in self.llm.generate_stream(
+            buffered_events = await self._collect_llm_stream(
                 messages=self._inject_guidance(session.get_messages(), iterations),
                 model=model,
                 tools=tools_for_llm,
                 **llm_kwargs,
-            ):
+            )
+            for event in buffered_events:
                 # 只累积文本，不要把 thinking 内容混入
                 if event.event_type == StreamEventType.TEXT_DELTA and event.content:
                     accumulated_content += event.content

@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from astracore.adapters.db.models import SkillRow
+from astracore.adapters.db.models import SkillReferenceRow, SkillRow
 from astracore.adapters.db.session import get_session
 from astracore.sdk.config import AstraCoreConfig
 
@@ -27,6 +27,7 @@ class SkillResponse(BaseModel):
     system_prompt: str
     is_builtin: bool
     order: int
+    has_references: bool
     created_at: datetime
     updated_at: datetime
 
@@ -43,7 +44,7 @@ class SkillUpdate(BaseModel):
     system_prompt: str | None = None
 
 
-def _to_response(row: SkillRow) -> SkillResponse:
+def _to_response(row: SkillRow, *, has_references: bool = False) -> SkillResponse:
     return SkillResponse(
         id=row.id,
         name=row.name,
@@ -51,6 +52,7 @@ def _to_response(row: SkillRow) -> SkillResponse:
         system_prompt=row.system_prompt,
         is_builtin=row.is_builtin,
         order=row.sort_order,
+        has_references=has_references,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -60,14 +62,19 @@ def _to_response(row: SkillRow) -> SkillResponse:
 async def list_skills() -> list[SkillResponse]:
     """Return all skills ordered: built-ins first, then user-created by creation time."""
     async with get_session(_db_url()) as db:
-        result = await db.execute(
+        rows_result = await db.execute(
             select(SkillRow).order_by(
                 SkillRow.is_builtin.desc(),
                 SkillRow.sort_order,
                 SkillRow.created_at,
             )
         )
-        return [_to_response(row) for row in result.scalars().all()]
+        rows = rows_result.scalars().all()
+        refs_result = await db.execute(
+            select(SkillReferenceRow.skill_id).distinct()
+        )
+        skills_with_refs: set[str] = set(refs_result.scalars().all())
+        return [_to_response(row, has_references=row.id in skills_with_refs) for row in rows]
 
 
 @router.post("/", response_model=SkillResponse, status_code=201)
@@ -106,7 +113,13 @@ async def update_skill(skill_id: str, body: SkillUpdate) -> SkillResponse:
         row.updated_at = datetime.now(UTC)
         await db.commit()
         await db.refresh(row)
-        return _to_response(row)
+        refs_result = await db.execute(
+            select(SkillReferenceRow.skill_id)
+            .where(SkillReferenceRow.skill_id == row.id)
+            .limit(1)
+        )
+        has_references = refs_result.first() is not None
+        return _to_response(row, has_references=has_references)
 
 
 @router.delete("/{skill_id}", status_code=204)

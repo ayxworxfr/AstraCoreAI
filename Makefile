@@ -33,8 +33,7 @@ help: ## 显示此帮助信息
 
 install: ## 安装 Hatch（如果未安装）
 	@echo "$(GREEN)📦 检查并安装 Hatch...$(NC)"
-	@IN_VENV=$$($(PYTHON) -c "import sys; print(1 if (getattr(sys,'base_prefix',sys.prefix)!=sys.prefix or __import__('os').environ.get('VIRTUAL_ENV')) else 0)"); \
-	if [ "$$IN_VENV" = "1" ]; then $(PYTHON) -m pip install hatch; else $(PYTHON) -m pip install --user hatch; fi
+	@$(PYTHON) -m pip install --user hatch
 	@echo "$(GREEN)✅ Hatch 准备完成$(NC)"
 
 deps: ## 安装项目依赖（默认不含重型向量模型包）

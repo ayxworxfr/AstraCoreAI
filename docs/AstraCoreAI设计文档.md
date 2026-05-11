@@ -74,8 +74,7 @@ flowchart TD
 
 负责业务用例编排，是框架核心行为所在。
 
-- `ChatUseCase`：简单对话用例（非流式路径）
-- `ChatOrchestrator`：**SDK 与 HTTP Service 共享的 chat 执行引擎**；封装 system prompt 组装、LLM 路由、工具循环、summary fallback、session 持久化，两端行为完全一致
+- `ChatPipeline`：**SDK 与 HTTP Service 共享的 chat 执行引擎**，采用 Command + Pipeline 模式；`prepare()` 一次性批量完成所有 DB 查询与决策，返回不可变冻结数据类 `ChatContext`；`stream()` 纯执行，system prompt 始终注入，无分支歧义
 - `ChatRun`：Service 层后台生成任务，解耦浏览器 SSE 连接与实际 LLM 生成生命周期
 - `ToolLoopUseCase`：工具调用循环、失败恢复、回写上下文
 - `MemoryPipeline`：短期记忆与长期记忆融合
@@ -106,9 +105,9 @@ flowchart TD
 
 ### 4.5 Interfaces 层
 
-- **SDK 接口**（`sdk/client.py`）：`async with AstraCoreClient() as client` 异步上下文管理器，处理 MCP 生命周期，将 `chat_stream` / `chat` 委托给 `ChatOrchestrator`
-- **HTTP 接口**（`service/api/chat.py`）：FastAPI 路由，处理 SSE 广播与 run 追踪，将核心 chat 逻辑委托给 `ChatOrchestrator`
-- 两者共享同一个 `ChatOrchestrator` 执行引擎，功能完全一致，无重复逻辑
+- **SDK 接口**（`sdk/client.py`）：`async with AstraCoreClient() as client` 异步上下文管理器，处理 MCP 生命周期，将 `chat_stream` / `chat` 委托给 `ChatPipeline`
+- **HTTP 接口**（`service/api/chat.py`）：FastAPI 路由，处理 SSE 广播与 run 追踪，将核心 chat 逻辑委托给 `ChatPipeline`
+- 两者共享同一个 `ChatPipeline` 执行引擎，功能完全一致，无重复逻辑
 
 ## 5. 关键模块设计
 
@@ -197,7 +196,7 @@ Service 层将一次前端对话发送抽象为 `ChatRunRow`，避免浏览器�
 
 **`build_system_prompt` 返回值**
 
-`(system_prompt: str | None, anchor_name: str | None, routed_names: list[str])`
+`(system_prompt: str | None, anchor_name: str | None, routed_names: list[str], skill_has_refs: bool)`
 - Service 层通过 `auto_skills` SSE 事件向前端广播：`{"anchor": "管理员", "routed": ["故事大师"]}`
 
 **路由 LLM Prompt 原则**
@@ -209,7 +208,7 @@ Service 层将一次前端对话发送抽象为 `ChatRunRow`，避免浏览器�
 
 - **结构化配置**：`config/config.yaml` 保存 `llm.default_profile`、`llm.profiles`、`mcp.servers`、记忆与检索配置；`.env` 只保存密钥。
 - **Profile 路由**：Chat API 和 SDK 使用 `model_profile` 指定 profile id，不直接暴露上游模型名。
-- **适配器缓存**：`ChatOrchestrator` 按 profile id 缓存 `LLMAdapter`，`ToolLoopUseCase` 每次调用时按需创建（轻量）；Service 通过 `lru_cache` 单例持有 orchestrator 实例，SDK 在 `__init__` 中直接构建。
+- **适配器缓存**：`ChatPipeline` 按 profile id 缓存 `LLMAdapter`，`ToolLoopUseCase` 每次调用时按需创建（轻量）；Service 通过 `lru_cache` 单例持有 pipeline 实例，SDK 在 `__init__` 中直接构建，MCP 启动后通过 `_build_pipeline()` 原子重建。
 - **能力推导**：`model_capabilities.py` 按 `provider`、`model`、`base_url` 内置推导 `tools`、`thinking`、`temperature`、`anthropic_blocks`。
 - **能力覆盖**：只有代理或新模型行为与内置表不一致时，才在 YAML 的 `capabilities` 写局部覆盖。
 

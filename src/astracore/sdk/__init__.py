@@ -4,9 +4,9 @@
 from astracore.sdk.config import AstraCoreConfig
 
 # AstraCoreClient and ChatResult are loaded lazily to avoid a circular import:
-#   chat_orchestrator  →  sdk.config  →  sdk.__init__  →  sdk.client  →  chat_orchestrator
+#   chat_pipeline  →  sdk.config  →  sdk.__init__  →  sdk.client  →  chat_pipeline
 # With __getattr__, importing the package itself does not trigger client.py until it is
-# actually accessed, by which time chat_orchestrator is fully initialised.
+# actually accessed, by which time chat_pipeline is fully initialised.
 
 
 def __getattr__(name: str) -> object:

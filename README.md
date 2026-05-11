@@ -12,7 +12,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 - **MCP 工具集成**：通过 fastmcp 接入任意 MCP 服务器（内置 filesystem、shell，支持自定义）
 - **健壮工具循环**：悬空 tool_use 清理、总结收尾兜底、空响应引导续接、单次工具超时隔离、中间轮旁白与最终答案自动分流
 - **后台 Chat Run**：流式回答由后端后台任务驱动，SSE 仅负责订阅输出；刷新页面不会中断生成，重连后可恢复当前 run
-- **共享执行引擎**：`ChatOrchestrator` 作为 SDK 与 HTTP Service 的统一 chat 管道；system prompt 组装、LLM 路由、工具循环、session 持久化全部在此实现，两端功能完全一致
+- **Command + Pipeline 执行引擎**：`ChatPipeline` 作为 SDK 与 HTTP Service 的统一 chat 管道；`prepare()` 一次性完成所有 DB 查询与决策，返回不可变 `ChatContext`；`stream()` 纯执行，system prompt 始终注入，无分支歧义
 - **记忆系统**：Redis 短期（TTL 淘汰）+ SQLite 短期持久化（重启恢复）+ PostgreSQL 长期存储，Redis 不可用时自动降级到 SQLite
 - **RAG 管道**：ChromaDB 向量搜索（幂等 upsert）、文档分块、引用支持
 - **Skill 系统**：Skill 提示词管理（CRUD + 内置/自定义）、全局指令编辑、对话时动态切换激活 Skill；支持多目录扫描（`skills.extra_dirs`）
@@ -30,7 +30,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 ruff: 0 errors             ✅
 ```
 
-覆盖核心链路：SessionState、PolicyEngine、SecurityValidator、RAGPipeline、ChatUseCase、ToolLoopUseCase、LLM 适配器、HybridMemoryAdapter、MCP、Skill、流式会话安全等
+覆盖核心链路：SessionState、PolicyEngine、SecurityValidator、RAGPipeline、ToolLoopUseCase、LLM 适配器、HybridMemoryAdapter、MCP、Skill、流式会话安全等
 
 ## 架构
 
@@ -172,7 +172,8 @@ src/astracore/
 ├── service/
 │   ├── api/             # FastAPI 路由（Chat Run、RAG、Skills、Settings、System）
 │   ├── middleware/      # HTTP 中间件
-│   ├── chat_orchestrator.py   # 共享 chat 执行引擎（SDK 与 Service 共用）
+│   ├── chat_pipeline.py       # 共享 chat 执行引擎（Command + Pipeline 模式）
+│   ├── chat_context.py        # 不可变 ChatContext 冻结数据类
 │   └── prompt_utils.py        # 系统提示工具函数
 └── sdk/
     ├── client.py              # 主 SDK 客户端（async context manager）
@@ -310,7 +311,7 @@ make clean-rag    # 清空 ChromaDB 数据
 - [x] M2：记忆、预算、策略、可观测性
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
-- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatOrchestrator）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅ 并行多 Agent（spawn_agents）✅
+- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatOrchestrator）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅ 并行多 Agent（spawn_agents）✅ Command + Pipeline 模式重构（ChatPipeline 替换 ChatOrchestrator）✅
 - [ ] M6：可靠性与安全 — 熔断器、API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档
@@ -320,7 +321,7 @@ make clean-rag    # 清空 ChromaDB 数据
 - **69 个 Python 源模块**：覆盖 Domain / Application / Ports / Adapters / Runtime / Service / SDK 全栈
 - **测试覆盖**：120 个单元测试，覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略等核心链路
 - **6 个完整示例**：可直接通过 SDK 运行，无需 HTTP 服务
-- **双形态交付**：SDK + Service 共享同一 ChatOrchestrator 执行引擎
+- **双形态交付**：SDK + Service 共享同一 ChatPipeline 执行引擎
 
 ## 许可证
 

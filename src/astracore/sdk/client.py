@@ -13,12 +13,12 @@ from astracore.adapters.db.session import get_session, init_db
 from astracore.adapters.memory.hybrid import HybridMemoryAdapter
 from astracore.adapters.retrieval.chroma import ChromaRetrieverAdapter
 from astracore.core.application.rag import RAGPipeline
-from astracore.core.ports.llm import StreamEvent, StreamEventType
+from astracore.core.ports.llm import StreamEvent
 from astracore.core.ports.tool import ToolAdapter, ToolParameter
 from astracore.runtime.observability.logger import get_logger
 from astracore.runtime.policy.engine import PolicyEngine
 from astracore.sdk.config import AstraCoreConfig
-from astracore.service.chat_orchestrator import ChatOrchestrator
+from astracore.service.chat_pipeline import ChatPipeline
 from astracore.service.seeds import seed_builtin_skills
 from astracore.service.skill_router import SkillRouter
 
@@ -70,18 +70,23 @@ class AstraCoreClient:
             if cfg.skill_routing.mode != "off"
             else None
         )
-        self._orchestrator = ChatOrchestrator(
-            config=cfg,
-            memory=memory,
-            rag_pipeline=rag_pipeline,
-            policy=PolicyEngine(),
-            skill_router=self._skill_router,
-        )
+        self._pipeline = self._build_pipeline()
 
     def _new_native_adapter(self) -> ToolAdapter:
         from astracore.service.builtin_tools import build_tool_adapter  # noqa: PLC0415
 
         return build_tool_adapter()
+
+    def _build_pipeline(self) -> ChatPipeline:
+        cfg = self.config
+        return ChatPipeline(
+            config=cfg,
+            memory=self._memory,
+            rag_pipeline=self._rag_pipeline,
+            policy=PolicyEngine(),
+            tool_adapter=self._tool_adapter,
+            skill_router=self._skill_router,
+        )
 
     # ------------------------------------------------------------------
     # Async context manager lifecycle
@@ -97,7 +102,9 @@ class AstraCoreClient:
     async def _start(self) -> None:
         await init_db(self.config.memory.db_url)
         try:
-            await seed_builtin_skills(self.config.memory.db_url, extra_skill_dirs=self.config.skills.extra_dirs)
+            await seed_builtin_skills(
+                self.config.memory.db_url, extra_skill_dirs=self.config.skills.extra_dirs
+            )
         except Exception:
             logger.warning("内置 Skill 种子写入失败，继续启动")
 
@@ -122,6 +129,8 @@ class AstraCoreClient:
                     [self._new_native_adapter(), self._mcp_adapter]
                 )
                 logger.info("MCP tool adapter started with %d server(s)", len(mcp_configs))
+                # Rebuild pipeline with updated composite tool adapter.
+                self._pipeline = self._build_pipeline()
             except Exception:
                 logger.warning("MCP 适配器启动失败，回退到内置工具")
                 self._mcp_adapter = None
@@ -154,47 +163,21 @@ class AstraCoreClient:
     ) -> AsyncIterator[StreamEvent]:
         """Stream a chat response. Use ``async for event in client.chat_stream(...)``."""
         _session_id = session_id or uuid4()
-        profile = self.config.llm.get_profile(model_profile)
-
-        if (use_tools or enable_web) and not profile.capabilities.tools:
-            raise ValueError(f"LLM profile '{profile.id}' does not support tool calling")
-
-        inject_system, _, _ = await self._orchestrator.build_system_prompt(
-            skill_id, disable_skill, enable_rag, message
+        ctx = await self._pipeline.prepare(
+            message=message,
+            session_id=_session_id,
+            model_profile=model_profile,
+            temperature=temperature,
+            use_tools=use_tools,
+            enable_thinking=enable_thinking,
+            thinking_budget=thinking_budget,
+            enable_rag=enable_rag,
+            enable_web=enable_web,
+            skill_id=skill_id,
+            disable_skill=disable_skill,
         )
-        temperature_val = await self._orchestrator.resolve_temperature(temperature, profile)
-        context_max = int(await self._orchestrator.get_setting("context_max_messages") or "20")
-
-        llm_kwargs: dict[str, Any] = {}
-        if enable_thinking and profile.capabilities.thinking:
-            llm_kwargs["enable_thinking"] = True
-            llm_kwargs["thinking_budget"] = thinking_budget
-
-        if use_tools or enable_web:
-            async for event in self._orchestrator.stream_with_tools(
-                session_id=_session_id,
-                message=message,
-                profile=profile,
-                tool_adapter=self._tool_adapter,
-                inject_system=inject_system,
-                temperature=temperature_val,
-                context_max=context_max,
-                enable_rag=enable_rag,
-                enable_web=enable_web,
-                llm_kwargs=llm_kwargs,
-            ):
-                yield event
-        else:
-            async for event in self._orchestrator.stream_normal(
-                session_id=_session_id,
-                message=message,
-                profile=profile,
-                inject_system=inject_system,
-                temperature=temperature_val,
-                context_max=context_max,
-                llm_kwargs=llm_kwargs,
-            ):
-                yield event
+        async for event in self._pipeline.stream(ctx):
+            yield event
 
     async def chat(
         self,
@@ -213,11 +196,8 @@ class AstraCoreClient:
     ) -> ChatResult:
         """Send a message and return the complete response."""
         _session_id = session_id or uuid4()
-        profile = self.config.llm.get_profile(model_profile)
-        content_parts: list[str] = []
-
-        async for event in self.chat_stream(
-            message,
+        ctx = await self._pipeline.prepare(
+            message=message,
             session_id=_session_id,
             model_profile=model_profile,
             temperature=temperature,
@@ -228,15 +208,13 @@ class AstraCoreClient:
             enable_web=enable_web,
             skill_id=skill_id,
             disable_skill=disable_skill,
-        ):
-            if event.event_type == StreamEventType.TEXT_DELTA and event.content:
-                content_parts.append(event.content)
-
+        )
+        content = await self._pipeline.execute(ctx)
         return ChatResult(
-            content="".join(content_parts),
+            content=content,
             session_id=_session_id,
-            model_profile=profile.id,
-            model=profile.model,
+            model_profile=ctx.profile.id,
+            model=ctx.profile.model,
         )
 
     async def list_skills(self) -> list[dict[str, Any]]:

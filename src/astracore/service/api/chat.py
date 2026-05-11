@@ -17,17 +17,16 @@ from astracore.adapters.db.models import ChatRunRow, ChatSessionRow, Conversatio
 from sqlalchemy.orm.attributes import flag_modified as _flag_modified
 from astracore.adapters.db.session import get_session
 from astracore.adapters.memory.hybrid import HybridMemoryAdapter
-from astracore.core.application.chat import ChatUseCase
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.session import SessionState
+from astracore.core.domain.chat_context import ChatContext
+from astracore.core.domain.message import MessageRole
 from astracore.core.ports.llm import StreamEventType
 from astracore.core.ports.tool import ToolAdapter
 from astracore.runtime.observability.logger import get_logger
 from astracore.runtime.policy.engine import PolicyEngine
-from astracore.sdk.config import AstraCoreConfig, LLMProfileConfig
+from astracore.sdk.config import AstraCoreConfig
 from astracore.service.api import rag as rag_api
 from astracore.service.builtin_tools import build_tool_adapter
-from astracore.service.chat_orchestrator import ChatOrchestrator
+from astracore.service.chat_pipeline import ChatPipeline
 from astracore.service.skill_router import SkillRouter
 
 router = APIRouter()
@@ -116,10 +115,6 @@ def _get_settings() -> AstraCoreConfig:
     return AstraCoreConfig()
 
 
-def _get_llm_profile(profile_id: str | None = None) -> LLMProfileConfig:
-    return _get_settings().llm.get_profile(profile_id)
-
-
 @lru_cache(maxsize=1)
 def _get_memory_adapter() -> HybridMemoryAdapter:
     cfg = _get_settings().memory
@@ -133,23 +128,15 @@ def _get_skill_router() -> SkillRouter:
 
 
 @lru_cache(maxsize=1)
-def _get_chat_orchestrator() -> ChatOrchestrator:
-    return ChatOrchestrator(
-        config=_get_settings(),
+def _get_chat_pipeline() -> ChatPipeline:
+    cfg = _get_settings()
+    return ChatPipeline(
+        config=cfg,
         memory=_get_memory_adapter(),
         rag_pipeline=rag_api._get_rag_pipeline(),
         policy=PolicyEngine(),
-        skill_router=_get_skill_router() if _get_settings().skill_routing.mode != "off" else None,
-    )
-
-
-@lru_cache(maxsize=32)
-def _get_chat_use_case(profile_id: str) -> ChatUseCase:
-    profile = _get_llm_profile(profile_id)
-    return ChatUseCase(
-        llm_adapter=_get_chat_orchestrator().get_llm_adapter(profile),
-        memory_adapter=_get_memory_adapter(),
-        policy_engine=PolicyEngine(),
+        tool_adapter=build_tool_adapter(),
+        skill_router=_get_skill_router() if cfg.skill_routing.mode != "off" else None,
     )
 
 
@@ -157,22 +144,6 @@ def _resolve_tool_adapter(http_request: Request) -> ToolAdapter:
     """Get the tool adapter from app.state (set by lifespan) or fall back to builtins."""
     adapter = getattr(http_request.app.state, "tool_adapter", None)
     return adapter if adapter is not None else build_tool_adapter()
-
-
-def _ensure_tool_capability(request: "ChatRequest", profile: LLMProfileConfig) -> None:
-    if (request.use_tools or request.enable_web) and not profile.capabilities.tools:
-        raise ValueError(f"LLM profile '{profile.id}' does not support tool calling")
-
-
-def _build_llm_kwargs(request: "ChatRequest", profile: LLMProfileConfig) -> dict[str, Any]:
-    if not request.enable_thinking:
-        return {}
-    if not profile.capabilities.thinking:
-        logger.info(
-            "LLM profile '%s' does not support thinking; falling back to normal mode", profile.id
-        )
-        return {}
-    return {"enable_thinking": True, "thinking_budget": request.thinking_budget}
 
 
 # ------------------------------------------------------------------
@@ -343,110 +314,29 @@ async def _update_conversation_from_messages(session_id: UUID) -> dict[str, Any]
 # ------------------------------------------------------------------
 
 
-async def _execute_normal_run(
-    *,
-    run_id: str,
-    request: ChatRequest,
-    session_id: UUID,
-    profile: LLMProfileConfig,
-    inject_system: str | None,
-    temperature: float,
-    context_max: int,
-    llm_kwargs: dict[str, Any],
-) -> None:
-    orchestrator = _get_chat_orchestrator()
+async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
+    """Stream a fully-resolved ChatContext and broadcast SSE events for the run."""
     accumulated_content = ""
     thinking_blocks: list[str] = []
-
-    async for event in orchestrator.stream_normal(
-        session_id=session_id,
-        message=request.message,
-        profile=profile,
-        inject_system=inject_system,
-        temperature=temperature,
-        context_max=context_max,
-        llm_kwargs=llm_kwargs,
-    ):
-        if event.event_type == StreamEventType.TEXT_DELTA and event.content:
-            accumulated_content += event.content
-            _broadcast_run_event(run_id, "message", {"text": event.content})
-            _update_active_run_state(
-                run_id,
-                assistant_content=accumulated_content,
-                thinking_blocks=list(thinking_blocks),
-                tool_activity=[],
-            )
-        elif event.event_type == StreamEventType.THINKING_DELTA and event.content:
-            if not thinking_blocks:
-                thinking_blocks.append("")
-                _broadcast_run_event(run_id, "thinking_start", {"round": 1})
-            thinking_blocks[-1] += event.content
-            _broadcast_run_event(run_id, "thinking", {"text": event.content})
-            _update_active_run_state(
-                run_id,
-                assistant_content=accumulated_content,
-                thinking_blocks=list(thinking_blocks),
-                tool_activity=[],
-            )
-
-    conv_meta = await _update_conversation_from_messages(session_id)
-    row = await _update_run_row(
-        run_id,
-        assistant_content=accumulated_content,
-        thinking_blocks=thinking_blocks,
-        tool_activity=[],
-        status="done",
-    )
-    if row:
-        _broadcast_snapshot(run_id, row)
-    _broadcast_run_event(run_id, "done", {"conversation": conv_meta} if conv_meta else {})
-
-
-async def _execute_tool_run(
-    *,
-    run_id: str,
-    request: ChatRequest,
-    session_id: UUID,
-    profile: LLMProfileConfig,
-    tool_adapter: ToolAdapter,
-    inject_system: str | None,
-    temperature: float,
-    context_max: int,
-    llm_kwargs: dict[str, Any],
-) -> None:
-    orchestrator = _get_chat_orchestrator()
+    tool_activity: list[dict[str, Any]] = []
     round_count = 0
     round_text_buffer: list[str] = []
     in_tool_round = False
-    assistant_content = ""
-    thinking_blocks: list[str] = []
-    tool_activity: list[dict[str, Any]] = []
 
-    async for event in orchestrator.stream_with_tools(
-        session_id=session_id,
-        message=request.message,
-        profile=profile,
-        tool_adapter=tool_adapter,
-        inject_system=inject_system,
-        temperature=temperature,
-        context_max=context_max,
-        enable_rag=request.enable_rag,
-        enable_web=request.enable_web,
-        llm_kwargs=llm_kwargs,
-    ):
+    async for event in _get_chat_pipeline().stream(ctx):
         if event.event_type == StreamEventType.DONE:
             if event.metadata.get("source") == "tool_loop":
                 # Phase boundary: tool loop ended, summary phase begins.
                 # Flush any buffered intermediate text as final assistant content.
                 for text in round_text_buffer:
-                    assistant_content += text
+                    accumulated_content += text
                     _broadcast_run_event(run_id, "message", {"text": text})
                 round_text_buffer = []
                 in_tool_round = False
             else:
-                # Final DONE from orchestrator; flush remaining buffer and exit.
+                # Final DONE; flush remaining buffer and exit.
                 for text in round_text_buffer:
-                    assistant_content += text
+                    accumulated_content += text
                     _broadcast_run_event(run_id, "message", {"text": text})
                 break
         elif event.event_type == StreamEventType.ROUND_START:
@@ -466,11 +356,18 @@ async def _execute_tool_run(
                     thinking_blocks.append("")
                 thinking_blocks[-1] += event.content
                 _broadcast_run_event(run_id, "thinking", {"text": event.content})
+            elif ctx.mode == "normal":
+                # Normal mode: directly emit as message text.
+                accumulated_content += event.content
+                _broadcast_run_event(run_id, "message", {"text": event.content})
             else:
+                # Tool-loop mode, between tool rounds: buffer until flush point.
                 round_text_buffer.append(event.content)
         elif event.event_type == StreamEventType.THINKING_DELTA and event.content:
             if not thinking_blocks:
                 thinking_blocks.append("")
+                if ctx.mode == "normal":
+                    _broadcast_run_event(run_id, "thinking_start", {"round": 1})
             thinking_blocks[-1] += event.content
             _broadcast_run_event(run_id, "thinking", {"text": event.content})
         elif event.event_type == StreamEventType.THINKING_STOP:
@@ -498,8 +395,11 @@ async def _execute_tool_run(
             _broadcast_run_event(
                 run_id,
                 "tool_start",
-                {"tool": event.tool_call.name, "tool_call_id": event.tool_call.id,
-                 "input": event.tool_call.arguments},
+                {
+                    "tool": event.tool_call.name,
+                    "tool_call_id": event.tool_call.id,
+                    "input": event.tool_call.arguments,
+                },
             )
         elif event.event_type == StreamEventType.TOOL_RESULT:
             tool_name = str(event.metadata.get("tool", ""))
@@ -587,15 +487,15 @@ async def _execute_tool_run(
 
         _update_active_run_state(
             run_id,
-            assistant_content=assistant_content,
+            assistant_content=accumulated_content,
             thinking_blocks=list(thinking_blocks),
             tool_activity=list(tool_activity),
         )
 
-    conv_meta = await _update_conversation_from_messages(session_id)
+    conv_meta = await _update_conversation_from_messages(ctx.session_id)
     row = await _update_run_row(
         run_id,
-        assistant_content=assistant_content,
+        assistant_content=accumulated_content,
         thinking_blocks=thinking_blocks,
         tool_activity=[{**item, "done": True} for item in tool_activity],
         status="done",
@@ -613,46 +513,38 @@ async def _run_chat_in_background(
     tool_adapter: ToolAdapter,
 ) -> None:
     try:
-        orchestrator = _get_chat_orchestrator()
-        profile = _get_llm_profile(request.model_profile)
-        _ensure_tool_capability(request, profile)
-        inject_system, anchor_name, routed_names = await orchestrator.build_system_prompt(
+        ctx = await _get_chat_pipeline().prepare(
+            message=request.message,
+            session_id=session_id,
+            tool_adapter=tool_adapter,
+            model_profile=request.model_profile,
+            temperature=request.temperature,
+            use_tools=request.use_tools,
+            enable_thinking=request.enable_thinking,
+            thinking_budget=request.thinking_budget,
+            enable_rag=request.enable_rag,
+            enable_web=request.enable_web,
             skill_id=request.skill_id,
             disable_skill=request.disable_skill,
-            enable_rag=request.enable_rag,
-            message=request.message,
         )
-        if anchor_name or routed_names:
-            logger.info("active skills for run %s: anchor=%s routed=%s", run_id, anchor_name, routed_names)
-            _update_active_run_state(run_id, anchor_skill=anchor_name, routed_skills=routed_names)
-            _broadcast_run_event(run_id, "auto_skills", {"anchor": anchor_name, "routed": routed_names})
-        temperature = await orchestrator.resolve_temperature(request.temperature, profile)
-        context_max = int(await orchestrator.get_setting("context_max_messages") or "20")
-        llm_kwargs = _build_llm_kwargs(request, profile)
-
-        if request.use_tools or request.enable_web:
-            await _execute_tool_run(
-                run_id=run_id,
-                request=request,
-                session_id=session_id,
-                profile=profile,
-                tool_adapter=tool_adapter,
-                inject_system=inject_system,
-                temperature=temperature,
-                context_max=context_max,
-                llm_kwargs=llm_kwargs,
+        if ctx.anchor_skill or ctx.routed_skills:
+            logger.info(
+                "active skills for run %s: anchor=%s routed=%s",
+                run_id,
+                ctx.anchor_skill,
+                ctx.routed_skills,
             )
-        else:
-            await _execute_normal_run(
-                run_id=run_id,
-                request=request,
-                session_id=session_id,
-                profile=profile,
-                inject_system=inject_system,
-                temperature=temperature,
-                context_max=context_max,
-                llm_kwargs=llm_kwargs,
+            _update_active_run_state(
+                run_id,
+                anchor_skill=ctx.anchor_skill,
+                routed_skills=list(ctx.routed_skills),
             )
+            _broadcast_run_event(
+                run_id,
+                "auto_skills",
+                {"anchor": ctx.anchor_skill, "routed": list(ctx.routed_skills)},
+            )
+        await _execute_run(run_id=run_id, ctx=ctx)
     except asyncio.CancelledError:
         row = await _update_run_row(run_id, status="cancelled", error="用户已停止生成")
         if row:
@@ -667,62 +559,6 @@ async def _run_chat_in_background(
         _broadcast_run_event(run_id, "error", {"message": str(e)})
     finally:
         _ACTIVE_RUNS.pop(run_id, None)
-
-
-async def _run_with_tools(
-    request: "ChatRequest", session_id: UUID, tool_adapter: ToolAdapter
-) -> str:
-    """Execute a non-streaming chat turn through the tool loop (used by POST /)."""
-    orchestrator = _get_chat_orchestrator()
-    profile = _get_llm_profile(request.model_profile)
-    _ensure_tool_capability(request, profile)
-
-    tool_loop = orchestrator.make_tool_loop(profile, tool_adapter)
-    messages = await _get_memory_adapter().load_short_term(session_id)
-    session = SessionState(session_id=session_id)
-    if messages:
-        session.restore_messages(messages)
-
-    all_tools = {d.name for d in tool_adapter.get_definitions()}
-    allowed_tools = all_tools
-    if not request.enable_rag:
-        allowed_tools = allowed_tools - {"search_knowledge_base"}
-    if not request.enable_web:
-        allowed_tools = allowed_tools - {"web_search"}
-
-    session.add_message(Message(role=MessageRole.USER, content=request.message))
-    try:
-        session = await tool_loop.execute_with_tools(session, allowed_tools=allowed_tools)
-    except Exception:
-        await orchestrator.save_session_safe(session_id, session.get_messages())
-        raise
-
-    safe_messages = orchestrator.strip_dangling_tool_calls(session.get_messages())
-    if orchestrator.needs_summary_fallback(safe_messages):
-        temperature = await orchestrator.resolve_temperature(request.temperature, profile)
-        hit_limit = (
-            not tool_loop.unlimited
-            and bool(safe_messages)
-            and safe_messages[-1].role == MessageRole.TOOL
-        )
-        response = await orchestrator.get_llm_adapter(profile).generate(
-            messages=orchestrator.build_summary_fallback_messages(
-                safe_messages, hit_iteration_limit=hit_limit
-            ),
-            temperature=temperature,
-        )
-        if response.content.strip():
-            session.add_message(Message(role=MessageRole.ASSISTANT, content=response.content))
-        else:
-            hint = "信息量较大，本轮分析已暂停。会话已保存，请发送「继续」让 AI 继续完成分析。"
-            session.add_message(Message(role=MessageRole.ASSISTANT, content=hint))
-
-    await orchestrator.save_session_safe(session_id, session.get_messages())
-    last_assistant = next(
-        (m for m in reversed(session.get_messages()) if m.role == MessageRole.ASSISTANT),
-        None,
-    )
-    return last_assistant.content if last_assistant else ""
 
 
 # ------------------------------------------------------------------
@@ -980,38 +816,31 @@ async def cancel_chat_run(run_id: UUID) -> ChatRunStateResponse:
 
 @router.post("/", response_model=ChatResponse)
 async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
-    """Simple (non-streaming) chat. Set use_tools=true to route through the tool loop."""
+    """Simple (non-streaming) chat. Routing to tool loop is handled by pipeline.prepare()."""
     session_id = request.session_id or uuid4()
-    profile = _get_llm_profile(request.model_profile)
-
     try:
-        if request.use_tools:
-            tool_adapter = _resolve_tool_adapter(http_request)
-            content = await _run_with_tools(request, session_id, tool_adapter)
-            await _update_conversation_from_messages(session_id)
-            return ChatResponse(
-                session_id=session_id,
-                message=content,
-                model_profile=profile.id,
-                model=profile.model,
-            )
-
-        orchestrator = _get_chat_orchestrator()
-        temperature = await orchestrator.resolve_temperature(request.temperature, profile)
-        use_case = _get_chat_use_case(profile.id)
-        response_message = await use_case.execute(
+        ctx = await _get_chat_pipeline().prepare(
+            message=request.message,
             session_id=session_id,
-            user_message=request.message,
-            temperature=temperature,
+            tool_adapter=_resolve_tool_adapter(http_request),
+            model_profile=request.model_profile,
+            temperature=request.temperature,
+            use_tools=request.use_tools,
+            enable_thinking=request.enable_thinking,
+            thinking_budget=request.thinking_budget,
+            enable_rag=request.enable_rag,
+            enable_web=request.enable_web,
+            skill_id=request.skill_id,
+            disable_skill=request.disable_skill,
         )
+        content = await _get_chat_pipeline().execute(ctx)
         await _update_conversation_from_messages(session_id)
         return ChatResponse(
             session_id=session_id,
-            message=response_message.content,
-            model_profile=profile.id,
-            model=profile.model,
+            message=content,
+            model_profile=ctx.profile.id,
+            model=ctx.profile.model,
         )
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from astracore.adapters.tools._coerce import build_param_type_map, coerce_tool_arguments
 from astracore.core.ports.tool import (
     ToolAdapter,
     ToolDefinition,
@@ -119,6 +120,8 @@ class MCPToolAdapter(ToolAdapter):
         # tool_name -> server_name
         self._tool_server_map: dict[str, str] = {}
         self._definitions: list[ToolDefinition] = []
+        # tool_name -> {param_name -> expected ToolParameterType} for argument coercion
+        self._tool_params: dict[str, dict[str, ToolParameterType]] = {}
         self._background_tasks: list[asyncio.Task[None]] = []
         self._stop_events: dict[str, asyncio.Event] = {}
         # Per-server locks: fastmcp's stdio Client is not safe for concurrent call_tool()
@@ -187,13 +190,15 @@ class MCPToolAdapter(ToolAdapter):
                         if isinstance(raw_schema, dict):
                             schema = raw_schema
 
+                        params = _parse_parameters(schema)
                         definition = ToolDefinition(
                             name=tool.name,
                             description=str(tool.description or ""),
-                            parameters=_parse_parameters(schema),
+                            parameters=params,
                         )
                         self._definitions.append(definition)
                         self._tool_server_map[tool.name] = config.name
+                        self._tool_params[tool.name] = build_param_type_map(params)
 
                     self._clients[config.name] = client
                     logger.info(
@@ -244,6 +249,7 @@ class MCPToolAdapter(ToolAdapter):
         self._stop_events.clear()
         self._tool_server_map.clear()
         self._definitions.clear()
+        self._tool_params.clear()
 
     # ------------------------------------------------------------------
     # ToolAdapter interface
@@ -280,8 +286,9 @@ class MCPToolAdapter(ToolAdapter):
 
         lock = self._locks.get(server_name)
         try:
+            coerced = coerce_tool_arguments(arguments, self._tool_params.get(tool_name, {}))
             async with (lock if lock is not None else asyncio.Lock()):
-                raw_result = await client.call_tool(tool_name, arguments)
+                raw_result = await client.call_tool(tool_name, coerced)
             execution_time = (time.time() - start_time) * 1000
 
             parts: list[str] = []

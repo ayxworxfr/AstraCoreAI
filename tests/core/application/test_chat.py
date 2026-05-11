@@ -1,13 +1,14 @@
-"""Tests for ChatUseCase — session restore (no token double-count), LLM call, save."""
+"""Tests for ChatPipeline — session restore (no token double-count), LLM call, save."""
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from astracore.core.application.chat import ChatUseCase
+from astracore.core.domain.chat_context import ChatContext
 from astracore.core.domain.message import Message, MessageRole
-from astracore.core.ports.llm import LLMResponse
+from astracore.core.ports.llm import StreamEvent, StreamEventType
 from astracore.core.ports.memory import MemoryAdapter
 from astracore.runtime.policy.engine import PolicyEngine
+from astracore.service.chat_pipeline import ChatPipeline
 
 
 @pytest.fixture
@@ -24,90 +25,136 @@ def mock_memory():
 
 
 @pytest.fixture
+def mock_profile():
+    p = MagicMock()
+    p.id = "test-profile"
+    return p
+
+
+@pytest.fixture
 def mock_llm():
-    llm = AsyncMock()
-    llm.generate.return_value = LLMResponse(
-        content="Hello from assistant", model="claude-sonnet-4-6"
-    )
+    llm = MagicMock()
+
+    async def _stream(messages, temperature=None, **kwargs):
+        yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content="Hello from assistant")
+        yield StreamEvent(event_type=StreamEventType.DONE)
+
+    llm.generate_stream = _stream
     return llm
 
 
 @pytest.fixture
-def chat(mock_llm, mock_memory):
-    return ChatUseCase(
-        llm_adapter=mock_llm,
-        memory_adapter=mock_memory,
-        policy_engine=PolicyEngine(),
+def pipeline(mock_memory, mock_llm, mock_profile):
+    p = ChatPipeline(
+        config=MagicMock(),
+        memory=mock_memory,
+        rag_pipeline=AsyncMock(),
+        policy=PolicyEngine(),
+        tool_adapter=MagicMock(),
+    )
+    p._llm_adapters[mock_profile.id] = mock_llm
+    return p
+
+
+@pytest.fixture
+def ctx(session_id, mock_profile):
+    return ChatContext(
+        session_id=session_id,
+        message="Hi there",
+        profile=mock_profile,
+        temperature=0.7,
+        system_prompt=None,
+        context_max_messages=20,
+        mode="normal",
     )
 
 
 # ---------- execute ----------
 
-async def test_execute_returns_assistant_message(chat, session_id):
-    msg = await chat.execute(session_id, "Hi there")
-    assert msg.role == MessageRole.ASSISTANT
-    assert msg.content == "Hello from assistant"
+
+async def test_execute_returns_assistant_text(pipeline, ctx):
+    result = await pipeline.execute(ctx)
+    assert result == "Hello from assistant"
 
 
-async def test_execute_saves_session_after_response(chat, session_id, mock_memory):
-    await chat.execute(session_id, "Hi")
+async def test_execute_saves_session_after_response(pipeline, ctx, mock_memory):
+    await pipeline.execute(ctx)
     mock_memory.save_short_term.assert_called_once()
 
 
-async def test_execute_includes_user_message_in_llm_call(chat, session_id, mock_llm):
-    await chat.execute(session_id, "Tell me a joke")
-    call_args = mock_llm.generate.call_args
-    messages = call_args.kwargs.get("messages") or call_args.args[0]
-    assert any(m.content == "Tell me a joke" for m in messages)
+async def test_execute_includes_user_message_in_llm_call(pipeline, session_id, mock_llm, mock_profile):
+    captured: list[Message] = []
+
+    async def capturing_stream(messages, temperature=None, **kwargs):
+        captured.extend(messages)
+        yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content="ok")
+        yield StreamEvent(event_type=StreamEventType.DONE)
+
+    mock_llm.generate_stream = capturing_stream
+
+    ctx = ChatContext(
+        session_id=session_id,
+        message="Tell me a joke",
+        profile=mock_profile,
+        temperature=0.7,
+        system_prompt=None,
+        context_max_messages=20,
+        mode="normal",
+    )
+    await pipeline.execute(ctx)
+    assert any(m.content == "Tell me a joke" for m in captured)
 
 
 async def test_execute_does_not_double_count_tokens_on_existing_session(
-    session_id, mock_memory
+    session_id, mock_memory, mock_profile
 ):
-    """When session already has messages in Redis, restore_messages must be used
-    so token budget is recalculated, not accumulated on top of stored count."""
-    existing_msgs = [
+    """When session already has messages in memory, restore_messages must be used
+    so token budget is recalculated, not accumulated on top of the stored count."""
+    existing = [
         Message(role=MessageRole.USER, content="hello " * 10),
         Message(role=MessageRole.ASSISTANT, content="hi " * 10),
     ]
-    mock_memory.load_short_term.return_value = existing_msgs
+    mock_memory.load_short_term.return_value = existing
 
-    # Capture the messages list *at the moment generate is called* (before mutation).
     captured: list[Message] = []
 
-    async def capture_generate(messages, **kwargs):
-        captured.extend(list(messages))  # snapshot before assistant msg is appended
-        return LLMResponse(content="response", model="test")
+    mock_llm = MagicMock()
 
-    mock_llm = AsyncMock()
-    mock_llm.generate.side_effect = capture_generate
+    async def capturing_stream(messages, temperature=None, **kwargs):
+        captured.extend(messages)  # snapshot before assistant msg is appended
+        yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content="response")
+        yield StreamEvent(event_type=StreamEventType.DONE)
 
-    chat = ChatUseCase(
-        llm_adapter=mock_llm,
-        memory_adapter=mock_memory,
-        policy_engine=PolicyEngine(),
+    mock_llm.generate_stream = capturing_stream
+
+    p = ChatPipeline(
+        config=MagicMock(),
+        memory=mock_memory,
+        rag_pipeline=AsyncMock(),
+        policy=PolicyEngine(),
+        tool_adapter=MagicMock(),
     )
+    p._llm_adapters[mock_profile.id] = mock_llm
 
-    await chat.execute(session_id, "new question")
+    ctx = ChatContext(
+        session_id=session_id,
+        message="new question",
+        profile=mock_profile,
+        temperature=0.7,
+        system_prompt=None,
+        context_max_messages=20,
+        mode="normal",
+    )
+    await p.execute(ctx)
 
     # 2 restored messages + 1 new user message = exactly 3
     assert len(captured) == 3
     assert any(m.content == "new question" for m in captured)
 
 
-async def test_execute_saved_messages_include_both_user_and_assistant(
-    session_id, mock_llm, mock_memory
-):
-    chat = ChatUseCase(
-        llm_adapter=mock_llm,
-        memory_adapter=mock_memory,
-        policy_engine=PolicyEngine(),
-    )
-    await chat.execute(session_id, "question")
-    saved_messages = (
-        mock_memory.save_short_term.call_args.kwargs.get("messages")
-        or mock_memory.save_short_term.call_args.args[1]
-    )
-    roles = [m.role for m in saved_messages]
+async def test_execute_saved_messages_include_both_roles(pipeline, ctx, mock_memory):
+    await pipeline.execute(ctx)
+    saved = mock_memory.save_short_term.call_args.kwargs.get("messages")
+    roles = [m.role for m in saved]
     assert MessageRole.USER in roles
     assert MessageRole.ASSISTANT in roles

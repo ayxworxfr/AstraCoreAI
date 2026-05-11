@@ -9,27 +9,34 @@ from uuid import uuid4
 from sqlalchemy.pool import NullPool
 
 from astracore.adapters.db.session import get_engine
+from astracore.core.domain.chat_context import ChatContext
 from astracore.core.domain.message import Message, MessageRole, ToolCall, ToolResult
-from astracore.core.ports.llm import LLMResponse, StreamEvent, StreamEventType
+from astracore.core.domain.session import SessionState
+from astracore.core.ports.llm import StreamEvent, StreamEventType
+from astracore.core.ports.memory import MemoryAdapter
+from astracore.runtime.policy.engine import PolicyEngine
 from astracore.service.api.chat import (
     _ACTIVE_RUNS,
     _ActiveRun,
     _broadcast_run_event,
-    ChatRequest,
-    _execute_tool_run,
-    _run_with_tools,
-    _save_short_term_safe,
 )
+from astracore.service.chat_pipeline import ChatPipeline
 
 
-async def test_save_short_term_safe_swallows_cancelled_error(monkeypatch) -> None:
+async def test_save_session_safe_swallows_cancelled_error() -> None:
     """请求取消时，会话保存不应抛出取消异常污染日志。"""
-    mock_memory = AsyncMock()
+    mock_memory = AsyncMock(spec=MemoryAdapter)
     mock_memory.save_short_term.side_effect = asyncio.CancelledError()
 
-    monkeypatch.setattr("astracore.service.api.chat._get_memory_adapter", lambda: mock_memory)
+    pipeline = ChatPipeline(
+        config=MagicMock(),
+        memory=mock_memory,
+        rag_pipeline=AsyncMock(),
+        policy=PolicyEngine(),
+        tool_adapter=MagicMock(),
+    )
 
-    await _save_short_term_safe(
+    await pipeline._save_session_safe(
         session_id=uuid4(),
         messages=[Message(role=MessageRole.USER, content="hello")],
     )
@@ -83,79 +90,21 @@ def test_get_engine_uses_null_pool_for_sqlite() -> None:
         get_engine.cache_clear()
 
 
-async def test_run_with_tools_auto_summarizes_when_tool_loop_ends_without_final_text(
-    monkeypatch,
-) -> None:
-    """非流式工具模式在只留下工具结果时，应自动补一轮最终总结。"""
-
-    session_id = uuid4()
+async def test_stream_tool_loop_auto_summarizes_when_no_final_text() -> None:
+    """工具循环结束但没有最终助手文字时，pipeline 应自动发起总结 LLM 调用。"""
     tool_call = ToolCall(name="read_text_file", arguments={"path": "/tmp/demo"})
-    fake_memory = AsyncMock()
-    fake_memory.load_short_term.return_value = []
-
-    async def fake_execute_with_tools(session, **kwargs):
-        session.add_message(
-            Message(role=MessageRole.ASSISTANT, content="", tool_calls=[tool_call])
-        )
-        session.add_message(
-            Message(
-                role=MessageRole.TOOL,
-                content="",
-                tool_results=[
-                    ToolResult(
-                        tool_call_id=tool_call.id,
-                        name=tool_call.name,
-                        content="file content",
-                    )
-                ],
-            )
-        )
-        return session
-
-    fake_tool_loop = MagicMock(max_iterations=3)
-    fake_tool_loop.execute_with_tools = fake_execute_with_tools
-
-    fake_llm = AsyncMock()
-    fake_llm.generate.return_value = LLMResponse(content="这是自动补出来的总结", model="test")
-
-    monkeypatch.setattr("astracore.service.api.chat._get_memory_adapter", lambda: fake_memory)
-    monkeypatch.setattr("astracore.service.api.chat._get_tool_loop_use_case", lambda *_: fake_tool_loop)
-    monkeypatch.setattr("astracore.service.api.chat._get_llm_adapter", lambda *_: fake_llm)
-    monkeypatch.setattr("astracore.service.api.chat._get_setting_value", AsyncMock(return_value=""))
-
-    result = await _run_with_tools(
-        ChatRequest(message="帮我分析一下", use_tools=True),
-        session_id,
-        MagicMock(),
-    )
-
-    assert result == "这是自动补出来的总结"
-    assert fake_llm.generate.await_count == 1
-
-
-async def test_chat_stream_auto_summarizes_when_tool_loop_stops_at_tool_results(
-    monkeypatch,
-) -> None:
-    """后台流式工具 run 在没有最终正文时，应自动补发总结文本而不是空响应。"""
-
-    tool_call = ToolCall(name="read_text_file", arguments={"path": "/tmp/demo"})
-    fake_memory = AsyncMock()
-    fake_memory.load_short_term.return_value = []
-    emitted: list[tuple[str, dict]] = []
+    mock_memory = AsyncMock(spec=MemoryAdapter)
+    mock_memory.save_short_term.return_value = None
+    mock_profile = MagicMock()
+    mock_profile.id = "test-profile"
 
     class FakeToolLoop:
-        max_iterations = 1
+        max_iterations = 3
         unlimited = False
 
         async def execute_stream_with_tools(self, session, **kwargs):
-            yield StreamEvent(
-                event_type=StreamEventType.ROUND_START,
-                metadata={"round": 1},
-            )
-            yield StreamEvent(
-                event_type=StreamEventType.TOOL_CALL,
-                tool_call=tool_call,
-            )
+            yield StreamEvent(event_type=StreamEventType.ROUND_START, metadata={"round": 1})
+            yield StreamEvent(event_type=StreamEventType.TOOL_CALL, tool_call=tool_call)
             session.add_message(
                 Message(role=MessageRole.ASSISTANT, content="", tool_calls=[tool_call])
             )
@@ -179,43 +128,116 @@ async def test_chat_stream_auto_summarizes_when_tool_loop_stops_at_tool_results(
 
         async def generate_stream(self, messages, **kwargs):
             self.calls.append(messages)
-            yield StreamEvent(
-                event_type=StreamEventType.TEXT_DELTA,
-                content="基于工具结果的最终总结",
-            )
+            yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content="基于工具结果的总结")
             yield StreamEvent(event_type=StreamEventType.DONE)
 
     fake_llm = FakeSummaryLLM()
 
-    monkeypatch.setattr("astracore.service.api.chat._get_memory_adapter", lambda: fake_memory)
-    monkeypatch.setattr("astracore.service.api.chat._get_tool_loop_use_case", lambda *_: FakeToolLoop())
-    monkeypatch.setattr("astracore.service.api.chat._get_llm_adapter", lambda *_: fake_llm)
-    monkeypatch.setattr("astracore.service.api.chat._get_setting_value", AsyncMock(return_value=""))
-    monkeypatch.setattr("astracore.service.api.chat._save_short_term_safe", AsyncMock())
-    monkeypatch.setattr("astracore.service.api.chat._update_conversation_from_messages", AsyncMock())
-    monkeypatch.setattr("astracore.service.api.chat._update_run_row", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        "astracore.service.api.chat._broadcast_run_event",
-        lambda _run_id, event, data: emitted.append((event, data)),
-    )
-
-    await _execute_tool_run(
-        run_id="run-1",
-        request=ChatRequest(message="帮我分析一下", use_tools=True),
-        session_id=uuid4(),
-        profile=MagicMock(id="test-profile"),
+    pipeline = ChatPipeline(
+        config=MagicMock(),
+        memory=mock_memory,
+        rag_pipeline=AsyncMock(),
+        policy=PolicyEngine(),
         tool_adapter=MagicMock(),
-        inject_system=None,
-        temperature=0.7,
-        context_max=20,
-        llm_kwargs={},
     )
+    pipeline._llm_adapters[mock_profile.id] = fake_llm
+    pipeline._make_tool_loop = lambda *args, **kwargs: FakeToolLoop()
 
-    assert ("message", {"text": "基于工具结果的最终总结"}) in emitted
-    assert emitted[-1] == ("done", {})
+    ctx = ChatContext(
+        session_id=uuid4(),
+        message="帮我分析一下",
+        profile=mock_profile,
+        temperature=0.7,
+        system_prompt=None,
+        context_max_messages=20,
+        mode="tool_loop",
+        tool_adapter=MagicMock(),
+    )
+    session = SessionState(session_id=ctx.session_id)
+    session.add_message(Message(role=MessageRole.USER, content=ctx.message))
+
+    events: list[StreamEvent] = []
+    async for event in pipeline._stream_tool_loop(ctx, session):
+        events.append(event)
+
+    text_events = [e for e in events if e.event_type == StreamEventType.TEXT_DELTA]
+    assert any("总结" in (e.content or "") for e in text_events)
+    assert len(fake_llm.calls) == 1
+
+
+async def test_stream_tool_loop_auto_summarizes_at_iteration_limit() -> None:
+    """工具循环达到最大轮次时，总结提示应包含"已达到工具循环最大轮次"。"""
+    tool_call = ToolCall(name="read_text_file", arguments={"path": "/tmp/demo"})
+    mock_memory = AsyncMock(spec=MemoryAdapter)
+    mock_memory.save_short_term.return_value = None
+    mock_profile = MagicMock()
+    mock_profile.id = "test-profile"
+
+    class FakeToolLoopOneIteration:
+        max_iterations = 1
+        unlimited = False
+
+        async def execute_stream_with_tools(self, session, **kwargs):
+            yield StreamEvent(event_type=StreamEventType.ROUND_START, metadata={"round": 1})
+            yield StreamEvent(event_type=StreamEventType.TOOL_CALL, tool_call=tool_call)
+            session.add_message(
+                Message(role=MessageRole.ASSISTANT, content="", tool_calls=[tool_call])
+            )
+            session.add_message(
+                Message(
+                    role=MessageRole.TOOL,
+                    content="",
+                    tool_results=[
+                        ToolResult(
+                            tool_call_id=tool_call.id,
+                            name=tool_call.name,
+                            content="file content",
+                        )
+                    ],
+                )
+            )
+
+    class FakeSummaryLLM:
+        def __init__(self) -> None:
+            self.calls: list[list[Message]] = []
+
+        async def generate_stream(self, messages, **kwargs):
+            self.calls.append(messages)
+            yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content="已到达轮次上限的总结")
+            yield StreamEvent(event_type=StreamEventType.DONE)
+
+    fake_llm = FakeSummaryLLM()
+
+    pipeline = ChatPipeline(
+        config=MagicMock(),
+        memory=mock_memory,
+        rag_pipeline=AsyncMock(),
+        policy=PolicyEngine(),
+        tool_adapter=MagicMock(),
+    )
+    pipeline._llm_adapters[mock_profile.id] = fake_llm
+    pipeline._make_tool_loop = lambda *args, **kwargs: FakeToolLoopOneIteration()
+
+    ctx = ChatContext(
+        session_id=uuid4(),
+        message="帮我分析一下",
+        profile=mock_profile,
+        temperature=0.7,
+        system_prompt=None,
+        context_max_messages=20,
+        mode="tool_loop",
+        tool_adapter=MagicMock(),
+    )
+    session = SessionState(session_id=ctx.session_id)
+    session.add_message(Message(role=MessageRole.USER, content=ctx.message))
+
+    events: list[StreamEvent] = []
+    async for event in pipeline._stream_tool_loop(ctx, session):
+        events.append(event)
+
+    assert len(fake_llm.calls) == 1
     assert any(
         "已达到工具循环最大轮次" in message.content
         for message in fake_llm.calls[0]
         if message.role == MessageRole.SYSTEM
     )
-

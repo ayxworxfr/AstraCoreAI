@@ -96,6 +96,49 @@ async def _web_search(query: str, max_results: int = 5) -> str:
         return f"搜索失败：{e}"
 
 
+def build_skill_reference_adapter(skill_id: str, db_url: str) -> NativeToolAdapter:
+    """构造按需加载 Skill 附属参考文档的单工具 Adapter（每次请求独立实例）。
+
+    skill_id 通过闭包捕获，执行时直接按 (skill_id, title) 查询 skill_references 表。
+    """
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from astracore.adapters.db.models import SkillReferenceRow  # noqa: PLC0415
+    from astracore.adapters.db.session import get_session  # noqa: PLC0415
+
+    async def _get_skill_reference(title: str) -> str:
+        async with get_session(db_url) as db:
+            result = await db.execute(
+                select(SkillReferenceRow).where(
+                    SkillReferenceRow.skill_id == skill_id,
+                    SkillReferenceRow.title == title,
+                )
+            )
+            row = result.scalar_one_or_none()
+        if row is None:
+            return f"未找到标题为「{title}」的参考文档。"
+        return row.content
+
+    adapter = NativeToolAdapter()
+    adapter.register_tool(
+        name="get_skill_reference",
+        func=_get_skill_reference,
+        description=(
+            "按标题获取当前 Skill 的附属参考文档内容。"
+            "仅在系统提示「可用参考文档」列表中出现的文档可供查询。"
+        ),
+        parameters=[
+            ToolParameter(
+                name="title",
+                type=ToolParameterType.STRING,
+                description="参考文档标题，必须与系统提示「可用参考文档」列表中的标题完全匹配",
+                required=True,
+            )
+        ],
+    )
+    return adapter
+
+
 def build_tool_adapter() -> ToolAdapter:
     """构造并注册所有内置工具，返回 CompositeToolAdapter。
 
