@@ -37,7 +37,7 @@ agent:
   max_tool_result_chars: 20000
   max_tool_iterations: 0
   tool_timeout_s: 60
-  enable_spawn_agents: true
+  enable_spawn_agents: false
 
 memory:
   redis_url: redis://localhost:6379/0

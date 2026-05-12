@@ -27,7 +27,7 @@ from astracore.sdk.config import AstraCoreConfig
 
 logger = get_logger(__name__)
 
-_WORKER_MAX_ITERATIONS = 5
+_WORKER_MAX_ITERATIONS = 15
 
 # Worker events that get forwarded as AGENT_* events
 _EVENT_TYPE_MAP: dict[StreamEventType, StreamEventType] = {
@@ -210,9 +210,13 @@ class ParallelAgentTool(ToolAdapter):
                 session = SessionState()
                 # 默认自主执行提示：防止子 Agent 停下来询问用户确认
                 system_parts = [
-                    "你是一个自主执行任务的 Agent。"
-                    "请直接完成交给你的任务并输出最终结果，"
-                    "不要询问用户确认，不要停下来等待指示。"
+                    "你是一个自主执行任务的 Agent。\n"
+                    "执行规范：\n"
+                    "- 直接完成任务，不要询问用户确认，不要停下来等待指示\n"
+                    "- 减少不必要的探索步骤，先用最少的工具调用了解必要信息，再执行操作\n"
+                    "- 任务完成的唯一标志是你已通过工具完成了所有操作（例如写入文件、提交数据）；"
+                    "仅输出文字描述\"我将要做...\"不算完成\n"
+                    "- 如果任务要求写入文件，必须调用写文件工具并收到成功确认，才算任务结束"
                 ]
                 if task.context:
                     system_parts.append(task.context)
