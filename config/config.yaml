@@ -1,5 +1,5 @@
 llm:
-  default_profile: claude-opus
+  default_profile: deepseek-chat
   profiles:
     - id: claude-sonnet
       label: Claude Sonnet

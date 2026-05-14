@@ -74,6 +74,7 @@ references:
 4. **套路与钩子** — 体裁专属套路、读者期待、核心钩子
 5. **风格** — 如未来自分析：POV、时态、叙述语气、散文风格、节奏
 6. **命名** — 调用 `get_skill_reference("命名指南")`，确定书名、卷名、主要人物与地点名
+7. **简介** — 基于以上设计，撰写 `## Synopsis`（平台简介 50~150字 + 详细简介 200~300字），供发布时直接复制；故事走向有重大调整时同步更新
 
 将结果写入 `novel-framework.md`、`novel-characters.md`、`novel-style.md`，并初始化 `novel-state.md`，创建第一卷目录 `vol-01/`。字段格式参见 `get_skill_reference("状态文件规范")`。
 

@@ -15,6 +15,7 @@ NC     := \033[0m
 PYTHON := python3
 HATCH_ENV_VARS := HATCH_DATA_DIR="$(CURDIR)/.hatch/data" HATCH_CACHE_DIR="$(CURDIR)/.hatch/cache" HATCH_ENV_TYPE_VIRTUAL_PATH="$(CURDIR)/.hatch/venvs" PIP_CACHE_DIR="$(CURDIR)/.cache/pip"
 HATCH  := $(HATCH_ENV_VARS) $(PYTHON) -m hatch
+HF_OFFLINE_ENV_VARS := HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 ##@ 帮助信息
 
@@ -52,7 +53,7 @@ setup: install deps rag-deps ## 一键初始化环境（含 RAG 轻量依赖）
 
 api: ## 启动 FastAPI 服务（http://127.0.0.1:8000）
 	@echo "$(GREEN)🚀 启动 API 服务...$(NC)"
-	@$(HATCH) run python examples/run_service.py
+	@$(HF_OFFLINE_ENV_VARS) $(HATCH) run python examples/run_service.py
 
 dev: api ## api 的别名
 

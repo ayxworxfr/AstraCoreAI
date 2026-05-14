@@ -1142,7 +1142,7 @@ export default function ChatMain(): JSX.Element {
               setInputValue('');
               handleSendMessage(value);
             }}
-            onCancel={cancelStream}
+            onCancel={() => cancelStream(activeConversationId)}
             placeholder="输入问题，Enter 发送，Shift+Enter 换行"
           />
         </div>

@@ -102,6 +102,14 @@ Updated when the user revises world, plot, or story structure. Rarely changes af
 ```markdown
 # Framework
 
+## Synopsis
+
+### 平台简介
+<!-- 50~150字，三要素：主角处境 + 核心困境 + 独特钩子。供发布时直接复制 -->
+
+### 详细简介
+<!-- 200~300字，展开故事前提、主角背景、设定核心矛盾，可作宣传文案 -->
+
 ## World & Setting
 <!-- 世界观、时代背景、地理、规则体系、权力结构、独特元素 -->
 
@@ -113,6 +121,11 @@ Updated when the user revises world, plot, or story structure. Rarely changes af
      网文：起点爽点 → 成长线 → 中期高潮 → 危机 → 最终战
      文学：三幕式 / 英雄之旅 / 自定义
      类型：类型专属结构（见 genre-conventions.md）
+
+     时间轴设计（按题材）：
+     修仙/玄幻：卷结构以"境界跨度"为分割依据；凡人阶段可用年龄，高境界后改用相对时间（"某战后N年"），不必拘于主角绝对年龄，时间跨度随境界升高可大幅拉长
+     现代/都市/历史：正常年龄线，精确到年
+     地府/仙界/神话官场：以纪元/时代为单位，角色年龄意义低，用"在编X百年""第X任站长"等锚定时间感
 -->
 
 ## Key Turning Points

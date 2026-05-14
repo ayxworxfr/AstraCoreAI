@@ -94,8 +94,6 @@ type ChatStore = {
   messagesOffset: Record<string, number>;
   hasMoreMessages: Record<string, boolean>;
   isLoadingMessages: boolean;
-  isStreaming: boolean;
-  streamingConversationId: string | null;
   useStream: boolean;
   enableThinking: boolean;
   enableRag: boolean;
@@ -103,8 +101,10 @@ type ChatStore = {
   enableWeb: boolean;
   activeSkillId: string | null;  // null = use default, 'none' = explicitly disabled, uuid = specific skill
   activeModelId: string | null;  // null = use backend default model
-  abortController: AbortController | null;
-  activeRunId: string | null;
+  /** 每个 conversation 正在进行的 run_id（有值表示生成中） */
+  runIdByConversation: Record<string, string>;
+  /** 每个 conversation 的 AbortController，用于中止 SSE 订阅 */
+  abortControllerByConversation: Record<string, AbortController>;
   /** 已订阅的 run，避免 React StrictMode / 恢复流程重复订阅同一个 SSE */
   subscribedRunIds: Record<string, boolean>;
   sessionError: string | null;   // 当前会话错误，不持久化，刷新自动清除
@@ -127,7 +127,7 @@ type ChatStore = {
   setSessionError: (msg: string | null) => void;
   deleteMessage: (conversationId: string, messageId: string) => void;
   sendMessage: (prompt: string) => Promise<void>;
-  cancelStream: () => void;
+  cancelStream: (conversationId: string) => void;
   resumeActiveRun: (conversationId: string) => Promise<void>;
   /** 首次打开会话时加载最新 PAGE_SIZE 条消息 */
   loadMessages: (convId: string) => Promise<void>;
@@ -145,8 +145,6 @@ export const useChatStore = create<ChatStore>()(
       messagesOffset: {},
       hasMoreMessages: {},
       isLoadingMessages: false,
-      isStreaming: false,
-      streamingConversationId: null,
       useStream: true,
       enableThinking: false,
       enableRag: false,
@@ -154,8 +152,8 @@ export const useChatStore = create<ChatStore>()(
       enableWeb: false,
       activeSkillId: null,
       activeModelId: null,
-      abortController: null,
-      activeRunId: null,
+      runIdByConversation: {},
+      abortControllerByConversation: {},
       subscribedRunIds: {},
       sessionError: null,
 
@@ -456,6 +454,7 @@ export const useChatStore = create<ChatStore>()(
         if (get().subscribedRunIds[run.run_id]) return;
 
         const assistantId = `run-${run.run_id}`;
+
         const applyRunState = (state: ChatRunState) => {
           set((s) => {
             const prev = s.messagesByConversation[conversationId] ?? [];
@@ -484,11 +483,12 @@ export const useChatStore = create<ChatStore>()(
               && !(m.role === 'assistant' && m.status === 'streaming'),
             );
             const next = [...withoutRun, ...(hasUser ? [] : [userMsg]), assistantMsg];
+            const runIds = state.status === 'running'
+              ? { ...s.runIdByConversation, [conversationId]: state.run_id }
+              : (() => { const n = { ...s.runIdByConversation }; delete n[conversationId]; return n; })();
             return {
               messagesByConversation: { ...s.messagesByConversation, [conversationId]: next },
-              isStreaming: state.status === 'running',
-              streamingConversationId: state.status === 'running' ? conversationId : null,
-              activeRunId: state.status === 'running' ? state.run_id : null,
+              runIdByConversation: runIds,
             };
           });
         };
@@ -496,10 +496,22 @@ export const useChatStore = create<ChatStore>()(
         applyRunState(run);
         const controller = new AbortController();
         set((s) => ({
-          abortController: controller,
-          activeRunId: run.run_id,
+          abortControllerByConversation: { ...s.abortControllerByConversation, [conversationId]: controller },
+          runIdByConversation: { ...s.runIdByConversation, [conversationId]: run.run_id },
           subscribedRunIds: { ...s.subscribedRunIds, [run.run_id]: true },
         }));
+
+        const clearRunState = (extra?: Record<string, unknown>) => {
+          set((s) => {
+            const runIds = { ...s.subscribedRunIds };
+            delete runIds[run.run_id];
+            const convRunIds = { ...s.runIdByConversation };
+            delete convRunIds[conversationId];
+            const controllers = { ...s.abortControllerByConversation };
+            delete controllers[conversationId];
+            return { subscribedRunIds: runIds, runIdByConversation: convRunIds, abortControllerByConversation: controllers, ...extra };
+          });
+        };
 
         void subscribeChatRun(
           run.run_id,
@@ -660,19 +672,9 @@ export const useChatStore = create<ChatStore>()(
                 return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
               });
             },
-            onDone: () => {
-              set((s) => {
-                const next = { ...s.subscribedRunIds };
-                delete next[run.run_id];
-                return { isStreaming: false, streamingConversationId: null, abortController: null, activeRunId: null, subscribedRunIds: next };
-              });
-            },
+            onDone: () => clearRunState(),
             onError: (msg) => {
-              set((s) => {
-                const next = { ...s.subscribedRunIds };
-                delete next[run.run_id];
-                return { isStreaming: false, streamingConversationId: null, abortController: null, activeRunId: null, subscribedRunIds: next, sessionError: msg };
-              });
+              clearRunState({ sessionError: msg });
               void get().loadMessages(conversationId);
             },
           },
@@ -680,39 +682,33 @@ export const useChatStore = create<ChatStore>()(
         );
       },
 
-      cancelStream: () => {
-        const { streamingConversationId, messagesByConversation, abortController, activeRunId } = get();
-        abortController?.abort();
-        if (activeRunId) void cancelChatRun(activeRunId).catch(() => undefined);
-        if (streamingConversationId) {
-          const msgs = (messagesByConversation[streamingConversationId] ?? []).map((m) =>
-            m.status === 'streaming'
-              ? {
-                  ...m,
-                  status: 'done' as const,
-                  toolActivity: m.toolActivity?.map((t) => ({ ...t, done: true })),
-                }
-              : m,
-          );
-          set((s) => ({
-            messagesByConversation: { ...s.messagesByConversation, [streamingConversationId]: msgs },
-            isStreaming: false,
-            streamingConversationId: null,
-            abortController: null,
-            activeRunId: null,
-            subscribedRunIds: activeRunId ? Object.fromEntries(Object.entries(s.subscribedRunIds).filter(([id]) => id !== activeRunId)) : s.subscribedRunIds,
-          }));
-          // 中断后同步后端真实 UUID，否则删除消息会 404
-          void get().loadMessages(streamingConversationId);
-        } else {
-          set((s) => ({
-            isStreaming: false,
-            streamingConversationId: null,
-            abortController: null,
-            activeRunId: null,
-            subscribedRunIds: activeRunId ? Object.fromEntries(Object.entries(s.subscribedRunIds).filter(([id]) => id !== activeRunId)) : s.subscribedRunIds,
-          }));
-        }
+      cancelStream: (conversationId) => {
+        const { runIdByConversation, abortControllerByConversation, messagesByConversation } = get();
+        const runId = runIdByConversation[conversationId];
+        abortControllerByConversation[conversationId]?.abort();
+        if (runId) void cancelChatRun(runId).catch(() => undefined);
+
+        const msgs = (messagesByConversation[conversationId] ?? []).map((m) =>
+          m.status === 'streaming'
+            ? { ...m, status: 'done' as const, toolActivity: m.toolActivity?.map((t) => ({ ...t, done: true })) }
+            : m,
+        );
+        set((s) => {
+          const convRunIds = { ...s.runIdByConversation };
+          delete convRunIds[conversationId];
+          const controllers = { ...s.abortControllerByConversation };
+          delete controllers[conversationId];
+          const runIds = { ...s.subscribedRunIds };
+          if (runId) delete runIds[runId];
+          return {
+            messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs },
+            runIdByConversation: convRunIds,
+            abortControllerByConversation: controllers,
+            subscribedRunIds: runIds,
+          };
+        });
+        // 中断后同步后端真实 UUID，否则删除消息会 404
+        void get().loadMessages(conversationId);
       },
 
       sendMessage: async (prompt) => {
@@ -767,8 +763,6 @@ export const useChatStore = create<ChatStore>()(
                     },
               ),
             ),
-            isStreaming: true,
-            streamingConversationId: activeConversationId,
           };
         });
 
@@ -779,22 +773,7 @@ export const useChatStore = create<ChatStore>()(
             const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) =>
               m.id === assistantId ? { ...m, ...patch } : m,
             );
-            const last = msgs[msgs.length - 1];
-            return {
-              messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs },
-              conversations: sortConversations(
-                s.conversations.map((c) =>
-                  c.id !== activeConversationId
-                    ? c
-                    : {
-                        ...c,
-                        lastMessagePreview: last?.content.slice(0, 80) ?? c.lastMessagePreview,
-                        messageCount: msgs.length,
-                        updatedAt: nowIso(),
-                      },
-                ),
-              ),
-            };
+            return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
           });
         };
 
@@ -804,9 +783,13 @@ export const useChatStore = create<ChatStore>()(
         ) => {
           updateAssistant({ status: 'done', ...patch });
           set((s) => {
-            const next = { ...s.subscribedRunIds };
-            if (runId) delete next[runId];
-            return { isStreaming: false, streamingConversationId: null, abortController: null, activeRunId: null, subscribedRunIds: next };
+            const runIds = { ...s.subscribedRunIds };
+            if (runId) delete runIds[runId];
+            const convRunIds = { ...s.runIdByConversation };
+            delete convRunIds[activeConversationId];
+            const controllers = { ...s.abortControllerByConversation };
+            delete controllers[activeConversationId];
+            return { subscribedRunIds: runIds, runIdByConversation: convRunIds, abortControllerByConversation: controllers };
           });
         };
 
@@ -815,7 +798,6 @@ export const useChatStore = create<ChatStore>()(
         try {
           if (useStream) {
             const controller = new AbortController();
-            set({ abortController: controller });
             let textBuffer = '';
             const thinkingBlocks: string[] = [];
             const getUpdatedBlocks = () => (thinkingBlocks.length ? [...thinkingBlocks] : undefined);
@@ -831,6 +813,7 @@ export const useChatStore = create<ChatStore>()(
               skill_id: activeSkillId !== null && activeSkillId !== 'none' ? activeSkillId : undefined,
               disable_skill: activeSkillId === 'none',
             });
+
             if (get().subscribedRunIds[run.run_id]) {
               runHandledByExistingSubscription = true;
               set((s) => {
@@ -843,8 +826,10 @@ export const useChatStore = create<ChatStore>()(
               });
               return;
             }
+
             set((s) => ({
-              activeRunId: run.run_id,
+              runIdByConversation: { ...s.runIdByConversation, [activeConversationId]: run.run_id },
+              abortControllerByConversation: { ...s.abortControllerByConversation, [activeConversationId]: controller },
               subscribedRunIds: { ...s.subscribedRunIds, [run.run_id]: true },
             }));
 
@@ -1005,23 +990,27 @@ export const useChatStore = create<ChatStore>()(
                   updateAssistant({ thinkingBlocks: getUpdatedBlocks(), status: 'streaming' });
                 },
                 onDone: (conv?: ConversationUpdate) => {
-                  if (conv) {
-                    set((s) => ({
-                      conversations: sortConversations(
-                        s.conversations.map((c) =>
-                          c.id !== activeConversationId
-                            ? c
-                            : {
-                                ...c,
-                                title: conv.title,
-                                lastMessagePreview: conv.last_message_preview,
-                                messageCount: conv.message_count,
-                                updatedAt: conv.updated_at,
-                              },
-                        ),
-                      ),
-                    }));
-                  }
+                  set((s) => ({
+                    conversations: sortConversations(
+                      s.conversations.map((c) => {
+                        if (c.id !== activeConversationId) return c;
+                        if (conv) {
+                          return {
+                            ...c,
+                            title: conv.title,
+                            lastMessagePreview: conv.last_message_preview,
+                            messageCount: conv.message_count,
+                            updatedAt: conv.updated_at,
+                          };
+                        }
+                        return {
+                          ...c,
+                          lastMessagePreview: (textBuffer || ASSISTANT_FALLBACK_TEXT.empty).slice(0, 80),
+                          updatedAt: nowIso(),
+                        };
+                      }),
+                    ),
+                  }));
                   const currentMsg = (get().messagesByConversation[activeConversationId] ?? [])
                     .find((m) => m.id === assistantId);
                   finishStreaming(run.run_id, {
@@ -1058,22 +1047,24 @@ export const useChatStore = create<ChatStore>()(
         } finally {
           if (!runHandledByExistingSubscription) {
             set((s) => {
-              if (!s.isStreaming) return s;
-              const sid = s.streamingConversationId;
-              const msgs = sid
-                ? (s.messagesByConversation[sid] ?? []).map((m) =>
-                    m.status === 'streaming' ? { ...m, status: 'done' as const } : m,
-                  )
-                : null;
+              const runId = s.runIdByConversation[activeConversationId];
+              const hasController = activeConversationId in s.abortControllerByConversation;
+              // onDone / onError / cancelStream 已清理过则跳过
+              if (!runId && !hasController) return s;
+              const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) =>
+                m.status === 'streaming' ? { ...m, status: 'done' as const } : m,
+              );
+              const runIds = { ...s.subscribedRunIds };
+              if (runId) delete runIds[runId];
+              const convRunIds = { ...s.runIdByConversation };
+              delete convRunIds[activeConversationId];
+              const controllers = { ...s.abortControllerByConversation };
+              delete controllers[activeConversationId];
               return {
-                isStreaming: false,
-                streamingConversationId: null,
-                abortController: null,
-                activeRunId: null,
-                subscribedRunIds: s.activeRunId
-                  ? Object.fromEntries(Object.entries(s.subscribedRunIds).filter(([id]) => id !== s.activeRunId))
-                  : s.subscribedRunIds,
-                ...(sid && msgs ? { messagesByConversation: { ...s.messagesByConversation, [sid]: msgs } } : {}),
+                messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs },
+                subscribedRunIds: runIds,
+                runIdByConversation: convRunIds,
+                abortControllerByConversation: controllers,
               };
             });
           }
