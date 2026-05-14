@@ -72,16 +72,19 @@ async def seed_documents(pipeline: object) -> None:
     success_count = 0
     for path in md_files:
         document_id, title, content = _parse_doc_md(path)
-        result = await pipeline.index_document(
+        result = await pipeline.retriever.index_document(
             document_id=document_id,
             text=content,
             metadata={"title": title, "source": "seed"},
         )
-        if result:
+        if result.success:
             success_count += 1
             logger.debug("种子文档写入成功: %s (%s)", document_id, title)
         else:
-            logger.warning("种子文档写入失败: %s", document_id)
+            if result.error:
+                logger.warning("种子文档写入失败: %s - %s", document_id, result.error)
+            else:
+                logger.warning("种子文档写入失败: %s", document_id)
 
     logger.info("种子文档写入完成: %d/%d 成功", success_count, len(md_files))
 

@@ -48,9 +48,15 @@ class ChromaRetrieverAdapter(RetrieverAdapter):
                     metadata={"hnsw:space": "cosine"},
                 )
             except ImportError as e:
+                self._client = None
+                self._collection = None
                 raise ImportError(
                     "chromadb not installed. Install with: pip install chromadb"
                 ) from e
+            except Exception:
+                self._client = None
+                self._collection = None
+                raise
         return self._client
 
     def _chunk_text(self, text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
@@ -100,6 +106,35 @@ class ChromaRetrieverAdapter(RetrieverAdapter):
 
         return [c for c in chunks if c]
 
+    def _index_document_sync(
+        self,
+        document_id: str,
+        text: str,
+        metadata: dict[str, Any] | None,
+        chunk_size: int,
+        chunk_overlap: int,
+    ) -> IndexResult:
+        self._get_client()
+
+        chunks = self._chunk_text(text, chunk_size, chunk_overlap)
+        chunk_ids = [f"{document_id}_{i}" for i in range(len(chunks))]
+        chunk_metadata = [
+            {"document_id": document_id, "chunk_index": i, **(metadata or {})}
+            for i in range(len(chunks))
+        ]
+
+        self._collection.upsert(
+            documents=chunks,
+            ids=chunk_ids,
+            metadatas=chunk_metadata,
+        )
+
+        return IndexResult(
+            document_id=document_id,
+            chunks_indexed=len(chunks),
+            success=True,
+        )
+
     async def index_document(
         self,
         document_id: str,
@@ -110,29 +145,16 @@ class ChromaRetrieverAdapter(RetrieverAdapter):
     ) -> IndexResult:
         """Index a document into ChromaDB (non-blocking)."""
         try:
-            self._get_client()
-
-            chunks = self._chunk_text(text, chunk_size, chunk_overlap)
-            chunk_ids = [f"{document_id}_{i}" for i in range(len(chunks))]
-            chunk_metadata = [
-                {"document_id": document_id, "chunk_index": i, **(metadata or {})}
-                for i in range(len(chunks))
-            ]
-
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
+            return await loop.run_in_executor(
                 None,
-                lambda: self._collection.upsert(
-                    documents=chunks,
-                    ids=chunk_ids,
-                    metadatas=chunk_metadata,
+                lambda: self._index_document_sync(
+                    document_id=document_id,
+                    text=text,
+                    metadata=metadata,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
                 ),
-            )
-
-            return IndexResult(
-                document_id=document_id,
-                chunks_indexed=len(chunks),
-                success=True,
             )
 
         except Exception as e:
