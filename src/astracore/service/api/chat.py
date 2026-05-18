@@ -50,9 +50,9 @@ class _ActiveRun:
             "thinking_blocks": row.thinking_blocks or [],
             "tool_activity": row.tool_activity or [],
             "error": row.error,
-            "created_at": row.created_at.isoformat(),
-            "updated_at": row.updated_at.isoformat(),
-            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            "created_at": _utc_iso(row.created_at),
+            "updated_at": _utc_iso(row.updated_at),
+            "completed_at": _utc_iso(row.completed_at) if row.completed_at else None,
             "anchor_skill": None,
             "routed_skills": [],
         }
@@ -151,12 +151,24 @@ def _resolve_tool_adapter(http_request: Request) -> ToolAdapter:
 # ------------------------------------------------------------------
 
 
+def _utc_iso(dt: datetime) -> str:
+    """Return an ISO-8601 string with explicit UTC offset (+00:00).
+
+    SQLite may return naive datetimes even with timezone=True columns;
+    treat them as UTC so JavaScript always parses them correctly.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat()
+
+
 class MessageItem(BaseModel):
     id: str = ""
     role: str
     content: str
     thinking_blocks: list[str] = Field(default_factory=list)
     tool_activity: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: str = ""
 
 
 class SessionMessagesResponse(BaseModel):
@@ -222,9 +234,9 @@ def _run_row_to_state(row: ChatRunRow) -> ChatRunStateResponse:
         thinking_blocks=row.thinking_blocks or [],
         tool_activity=row.tool_activity or [],
         error=row.error,
-        created_at=row.created_at.isoformat(),
-        updated_at=row.updated_at.isoformat(),
-        completed_at=row.completed_at.isoformat() if row.completed_at else None,
+        created_at=_utc_iso(row.created_at),
+        updated_at=_utc_iso(row.updated_at),
+        completed_at=_utc_iso(row.completed_at) if row.completed_at else None,
     )
 
 
@@ -676,11 +688,11 @@ async def get_session_messages(
     while index < len(visible):
         current = visible[index]
         if current.role != MessageRole.USER:
-            folded.append(MessageItem(id=str(current.id), role=current.role.value, content=current.content))
+            folded.append(MessageItem(id=str(current.id), role=current.role.value, content=current.content, created_at=_utc_iso(current.created_at)))
             index += 1
             continue
 
-        folded.append(MessageItem(id=str(current.id), role=current.role.value, content=current.content))
+        folded.append(MessageItem(id=str(current.id), role=current.role.value, content=current.content, created_at=_utc_iso(current.created_at)))
         next_user_index = index + 1
         while next_user_index < len(visible) and visible[next_user_index].role != MessageRole.USER:
             next_user_index += 1
@@ -694,13 +706,14 @@ async def get_session_messages(
                     content=run.assistant_content,
                     thinking_blocks=run.thinking_blocks or [],
                     tool_activity=run.tool_activity or [],
+                    created_at=_utc_iso(run.completed_at or run.created_at),
                 )
             )
             index = next_user_index
             continue
 
         for message in visible[index + 1:next_user_index]:
-            folded.append(MessageItem(id=str(message.id), role=message.role.value, content=message.content))
+            folded.append(MessageItem(id=str(message.id), role=message.role.value, content=message.content, created_at=_utc_iso(message.created_at)))
         index = next_user_index
 
     total = len(folded)

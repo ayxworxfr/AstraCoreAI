@@ -13,7 +13,7 @@ from astracore.adapters.db.session import get_session, init_db
 from astracore.adapters.memory.hybrid import HybridMemoryAdapter
 from astracore.adapters.retrieval.chroma import ChromaRetrieverAdapter
 from astracore.core.application.rag import RAGPipeline
-from astracore.core.ports.llm import StreamEvent
+from astracore.core.ports.llm import StreamEvent, StreamEventType
 from astracore.core.ports.tool import ToolAdapter, ToolParameter
 from astracore.runtime.observability.logger import get_logger
 from astracore.runtime.policy.engine import PolicyEngine
@@ -33,6 +33,99 @@ class ChatResult:
     session_id: UUID
     model_profile: str
     model: str
+    anchor_skill: str | None = None
+    routed_skills: tuple[str, ...] = ()
+
+
+class Conversation:
+    """Multi-turn conversation facade.
+
+    Maintains session state across turns and stores per-conversation defaults
+    so callers do not need to pass ``session_id`` or repeated options on every call.
+
+    Create via :meth:`AstraCoreClient.conversation` — do not instantiate directly::
+
+        async with AstraCoreClient() as client:
+            conv = client.conversation(use_tools=True)
+            result = await conv.send("你好")
+            async for chunk in conv.stream("继续"):
+                ...
+    """
+
+    def __init__(
+        self,
+        client: "AstraCoreClient",
+        *,
+        skill_id: UUID | None = None,
+        use_tools: bool = False,
+        enable_rag: bool = False,
+        enable_web: bool = False,
+        enable_thinking: bool = False,
+        thinking_budget: int = 8000,
+        model_profile: str | None = None,
+        temperature: float | None = None,
+        disable_skill: bool = False,
+        session_id: UUID | None = None,
+    ) -> None:
+        self._client = client
+        self._session_id = session_id or uuid4()
+        self._defaults: dict[str, Any] = {
+            "skill_id": skill_id,
+            "use_tools": use_tools,
+            "enable_rag": enable_rag,
+            "enable_web": enable_web,
+            "enable_thinking": enable_thinking,
+            "thinking_budget": thinking_budget,
+            "model_profile": model_profile,
+            "temperature": temperature,
+            "disable_skill": disable_skill,
+        }
+
+    @property
+    def session_id(self) -> UUID:
+        """Stable session identifier for this conversation."""
+        return self._session_id
+
+    async def send(self, message: str, **overrides: Any) -> ChatResult:
+        """Send a message and return the complete response.
+
+        Keyword overrides temporarily replace the conversation defaults for this turn only.
+        """
+        return await self._client.chat(
+            message,
+            session_id=self._session_id,
+            **{**self._defaults, **overrides},
+        )
+
+    async def stream(self, message: str, **overrides: Any) -> AsyncIterator[str]:
+        """Stream text chunks from a chat response.
+
+        Yields only text content — tool calls, thinking blocks, and skill-match events
+        are filtered out. Use :meth:`stream_events` when raw event access is needed.
+        """
+        async for event in self._client.chat_stream(
+            message,
+            session_id=self._session_id,
+            **{**self._defaults, **overrides},
+        ):
+            if event.event_type == StreamEventType.TEXT_DELTA and event.content:
+                yield event.content
+
+    async def stream_events(self, message: str, **overrides: Any) -> AsyncIterator[StreamEvent]:
+        """Stream all raw :class:`StreamEvent` objects for this turn.
+
+        Use this when you need access to tool-call, thinking, or skill-match events.
+        """
+        async for event in self._client.chat_stream(
+            message,
+            session_id=self._session_id,
+            **{**self._defaults, **overrides},
+        ):
+            yield event
+
+    async def clear(self) -> None:
+        """Delete all memory for this conversation."""
+        await self._client.clear_session(self._session_id)
 
 
 class AstraCoreClient:
@@ -41,7 +134,8 @@ class AstraCoreClient:
     Must be used as an async context manager::
 
         async with AstraCoreClient() as client:
-            result = await client.chat("你好")
+            conv = client.conversation()
+            result = await conv.send("你好")
 
     Config is loaded from ``config/config.yaml`` by default (same source as the HTTP service).
     MCP tool adapters require async setup and are only available inside the context manager.
@@ -129,7 +223,6 @@ class AstraCoreClient:
                     [self._new_native_adapter(), self._mcp_adapter]
                 )
                 logger.info("MCP tool adapter started with %d server(s)", len(mcp_configs))
-                # Rebuild pipeline with updated composite tool adapter.
                 self._pipeline = self._build_pipeline()
             except Exception:
                 logger.warning("MCP 适配器启动失败，回退到内置工具")
@@ -143,7 +236,47 @@ class AstraCoreClient:
                 logger.warning("MCP 适配器停止时出错")
 
     # ------------------------------------------------------------------
-    # Public API
+    # Conversation facade
+    # ------------------------------------------------------------------
+
+    def conversation(
+        self,
+        *,
+        skill_id: UUID | None = None,
+        use_tools: bool = False,
+        enable_rag: bool = False,
+        enable_web: bool = False,
+        enable_thinking: bool = False,
+        thinking_budget: int = 8000,
+        model_profile: str | None = None,
+        temperature: float | None = None,
+        disable_skill: bool = False,
+        session_id: UUID | None = None,
+    ) -> Conversation:
+        """Create a :class:`Conversation` for multi-turn chat.
+
+        All parameters become per-conversation defaults and can be overridden
+        per-turn via keyword arguments to :meth:`Conversation.send` or
+        :meth:`Conversation.stream`.
+
+        Pass ``session_id`` to resume an existing session; omit to start a new one.
+        """
+        return Conversation(
+            self,
+            skill_id=skill_id,
+            use_tools=use_tools,
+            enable_rag=enable_rag,
+            enable_web=enable_web,
+            enable_thinking=enable_thinking,
+            thinking_budget=thinking_budget,
+            model_profile=model_profile,
+            temperature=temperature,
+            disable_skill=disable_skill,
+            session_id=session_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Low-level API (single-turn, session_id managed by caller)
     # ------------------------------------------------------------------
 
     async def chat_stream(
@@ -161,7 +294,11 @@ class AstraCoreClient:
         skill_id: UUID | None = None,
         disable_skill: bool = False,
     ) -> AsyncIterator[StreamEvent]:
-        """Stream a chat response. Use ``async for event in client.chat_stream(...)``."""
+        """Stream a single-turn chat response as raw :class:`StreamEvent` objects.
+
+        For multi-turn conversations prefer :meth:`conversation` which manages
+        ``session_id`` automatically.
+        """
         _session_id = session_id or uuid4()
         ctx = await self._pipeline.prepare(
             message=message,
@@ -176,6 +313,11 @@ class AstraCoreClient:
             skill_id=skill_id,
             disable_skill=disable_skill,
         )
+        if ctx.anchor_skill or ctx.routed_skills:
+            yield StreamEvent(
+                event_type=StreamEventType.SKILL_MATCH,
+                metadata={"anchor": ctx.anchor_skill, "routed": list(ctx.routed_skills)},
+            )
         async for event in self._pipeline.stream(ctx):
             yield event
 
@@ -194,7 +336,11 @@ class AstraCoreClient:
         skill_id: UUID | None = None,
         disable_skill: bool = False,
     ) -> ChatResult:
-        """Send a message and return the complete response."""
+        """Send a single-turn message and return the complete response.
+
+        For multi-turn conversations prefer :meth:`conversation` which manages
+        ``session_id`` automatically.
+        """
         _session_id = session_id or uuid4()
         ctx = await self._pipeline.prepare(
             message=message,
@@ -215,23 +361,13 @@ class AstraCoreClient:
             session_id=_session_id,
             model_profile=ctx.profile.id,
             model=ctx.profile.model,
+            anchor_skill=ctx.anchor_skill,
+            routed_skills=ctx.routed_skills,
         )
 
-    async def list_skills(self) -> list[dict[str, Any]]:
-        """Return all skills sorted by sort_order."""
-        async with get_session(self.config.memory.db_url) as db:
-            result = await db.execute(select(SkillRow).order_by(SkillRow.sort_order))
-            rows = result.scalars().all()
-        return [
-            {
-                "id": row.id,
-                "name": row.name,
-                "description": row.description,
-                "order": row.sort_order,
-                "is_builtin": row.is_builtin,
-            }
-            for row in rows
-        ]
+    # ------------------------------------------------------------------
+    # Knowledge base
+    # ------------------------------------------------------------------
 
     async def index_document(
         self,
@@ -250,6 +386,30 @@ class AstraCoreClient:
         """Retrieve relevant chunks from the knowledge base."""
         return await self._rag_pipeline.retrieve_with_citations(query=query, top_k=top_k)
 
+    # ------------------------------------------------------------------
+    # Skills
+    # ------------------------------------------------------------------
+
+    async def list_skills(self) -> list[dict[str, Any]]:
+        """Return all skills sorted by sort_order."""
+        async with get_session(self.config.memory.db_url) as db:
+            result = await db.execute(select(SkillRow).order_by(SkillRow.sort_order))
+            rows = result.scalars().all()
+        return [
+            {
+                "id": row.id,
+                "name": row.name,
+                "description": row.description,
+                "order": row.sort_order,
+                "is_builtin": row.is_builtin,
+            }
+            for row in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # Tools
+    # ------------------------------------------------------------------
+
     def register_tool(
         self,
         name: str,
@@ -264,6 +424,10 @@ class AstraCoreClient:
             description=description,
             parameters=parameters,
         )
+
+    # ------------------------------------------------------------------
+    # Session management
+    # ------------------------------------------------------------------
 
     async def clear_session(self, session_id: UUID) -> None:
         """Delete all memory for a session."""

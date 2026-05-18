@@ -53,10 +53,10 @@ make fe-dev   # 前端  http://127.0.0.1:5173
 ```
 src/astracore/
 ├── core/
-│   ├── domain/       # 纯领域模型 — 零外部依赖
-│   ├── application/  # 用例（Chat、ToolLoop、RAG、MultiAgent）
+│   ├── domain/       # 纯领域模型 — 零外部依赖（Session、Message、ChatContext、Agent）
+│   ├── application/  # 用例（ToolLoop、RAG、MultiAgent）
 │   └── ports/        # 抽象接口（LLM、Memory、Retriever、Tool、Workflow）
-├── adapters/         # 端口的具体实现（Anthropic、OpenAI 兼容接口、Redis、ChromaDB…）
+├── adapters/         # 端口的具体实现（Anthropic、OpenAI、Redis、ChromaDB、MCP…）
 ├── mcp_servers/      # 内置 MCP 服务器实现
 ├── runtime/
 │   ├── policy/       # PolicyEngine（retry / timeout）
@@ -64,8 +64,16 @@ src/astracore/
 │   └── security/     # SecurityValidator
 ├── service/
 │   ├── api/          # FastAPI 路由
-│   └── middleware/
-└── sdk/              # 对外 SDK 入口与 YAML 配置模型
+│   ├── middleware/
+│   ├── chat_pipeline.py   # 共享 chat 执行引擎（prepare + stream + execute）
+│   ├── builtin_tools.py   # 内置工具注册
+│   ├── skill_router.py    # Skill 自动路由
+│   ├── seeds.py           # 内置 Skill 种子同步
+│   └── prompt_utils.py    # 系统提示工具函数
+└── sdk/
+    ├── client.py          # AstraCoreClient + Conversation 门面
+    ├── config.py          # YAML 配置模型
+    └── model_capabilities.py
 
 config/
 ├── config.yaml       # 本地开发结构化配置
@@ -182,18 +190,17 @@ domain ← application ← adapters ← service/sdk
 
 ### SDK 与 Service 共享执行引擎
 
-`service/chat_orchestrator.py` 中的 `ChatOrchestrator` 是 SDK 与 HTTP Service 的统一 chat 执行引擎，包含：
+`service/chat_pipeline.py` 中的 `ChatPipeline` 是 SDK 与 HTTP Service 的统一 chat 执行引擎，采用 **Command + Pipeline** 模式：
 
-- **LLM / ToolLoop 工厂**：按 profile 创建并缓存 `LLMAdapter`，每次调用创建 `ToolLoopUseCase`
-- **提示词组装**：`build_system_prompt`（Skill + 全局指令 + RAG 三层）、`build_rag_context`
-- **消息工具方法**：`strip_dangling_tool_calls`、`prepare_for_save`、`needs_summary_fallback`、`build_summary_fallback_messages`
-- **核心流式方法**：`stream_normal`（普通对话）、`stream_with_tools`（工具循环）
+- **`prepare()`**：一次性完成所有 DB 查询与业务逻辑决策（Skill 解析、系统提示拼装、温度解析、工具白名单计算），返回不可变的 `ChatContext`（`core/domain/chat_context.py`）
+- **`stream(ctx)`**：纯执行阶段，消费 `ChatContext` 数据，零额外 DB 查询、零条件分支。内部路由到 `_stream_normal`（直接 LLM 调用）或 `_stream_tool_loop`（工具循环 + 总结兜底）
+- **`execute(ctx)`**：`stream()` 的非流式封装，收集所有 `TEXT_DELTA` 返回完整文本
 
-**HTTP Service**（`service/api/chat.py`）在 `_execute_normal_run` / `_execute_tool_run` 中消费 orchestrator 输出的 `StreamEvent`，叠加 SSE 广播、run 追踪等 HTTP 专属逻辑。
+**HTTP Service**（`service/api/chat.py`）调用 `prepare()` 后把 `ChatContext` 交给后台任务，`_execute_run` 消费 `stream()` 输出的 `StreamEvent`，叠加 SSE 广播、run 状态追踪等 HTTP 专属逻辑。
 
-**SDK**（`sdk/client.py`）在 `chat_stream` 中直接 yield orchestrator 的事件流，叠加 MCP 生命周期管理等 SDK 专属逻辑。
+**SDK**（`sdk/client.py`）在 `chat_stream()` 中调用 `prepare()` 后直接 yield `stream()` 的事件流，额外 yield `SKILL_MATCH` 事件（技能路由结果），MCP 生命周期在 `_start()` / `_stop()` 中管理。`Conversation` 门面封装了 `session_id` 自动管理和常用参数默认值，是推荐的多轮对话入口。
 
-新增涉及对话管道的功能时，优先修改 `ChatOrchestrator`，不要在两端各自复制逻辑。
+新增涉及对话管道的功能时，优先修改 `ChatPipeline`，不要在两端各自复制逻辑。
 
 ### 新增 LLM Profile
 
@@ -228,16 +235,17 @@ domain ← application ← adapters ← service/sdk
 | `thinking_start` | `{"round"}` |
 | `thinking` | `{"text"}` |
 | `thinking_stop` | `{"duration_ms"}` |
-| `tool_start` | `{"tool", "input"}` |
-| `tool_result` | `{"tool", "input", "result", "is_error", "duration_ms"}` |
+| `tool_start` | `{"tool", "tool_call_id", "input"}` |
+| `tool_result` | `{"tool", "tool_call_id", "input", "result", "is_error", "duration_ms"}` |
 | `message` | `{"text"}` |
 | `done` | `{"conversation": {"title", "last_message_preview", "message_count", "updated_at"}}` |
 | `error` | `{"message"}` |
-| `auto_skills` | `{"anchor": "skill_name_or_null", "routed": ["name1"]}` |
+| `auto_skills` | `{"anchor": "skill_name_or_null", "routed": ["name1", …]}` |
 | `agent_start` | `{"agent_id", "task", "model"}` |
-| `agent_text` | `{"agent_id", "text"}` |
-| `agent_tool` | `{"agent_id", "tool", "input"}` |
-| `agent_result` | `{"agent_id", "tool", "input", "result", "is_error", "duration_ms"}` |
+| `agent_message` | `{"agent_id", "text"}` |
+| `agent_thinking` | `{"agent_id", "text"}` |
+| `agent_tool_start` | `{"agent_id", "tool", "tool_call_id", "input"}` |
+| `agent_tool_result` | `{"agent_id", "tool", "tool_call_id", "result", "is_error", "duration_ms"}` |
 | `agent_done` | `{"agent_id", "duration_ms", "error"}` |
 
 `done` 事件的 `conversation` 字段携带后端更新后的会话元数据，前端收到后直接同步本地状态，无需再发 PATCH 请求。如果会话行不存在（如纯 SDK 调用未创建 ConversationRow），该字段可能为 `null`。

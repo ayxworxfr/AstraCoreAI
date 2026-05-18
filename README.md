@@ -19,7 +19,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 - **Skill 自动路由**：三种模式（`off` / `vector` / `llm`）；vector 模式用 sentence-transformers 余弦相似度匹配，llm 模式用轻量 LLM 调用判断；主技能（anchor，📌）+ routing 自动追加副技能（⚡）分层显示
 - **并行多 Agent**：`spawn_agents` 工具将任务分解为 2–5 个独立子任务，Worker Agent 并发执行，前端实时展示各 Agent 进度；可通过 `agent.enable_spawn_agents` 配置开关；Worker 自动使用用户当前选择的模型 profile
 - **策略引擎**：tenacity retry + asyncio timeout 实际生效，Token 预算 O(n) 截断
-- **双形态交付**：SDK 嵌入 + FastAPI 服务 HTTP 访问，两者共享同一 ChatOrchestrator 执行引擎
+- **双形态交付**：SDK 嵌入 + FastAPI 服务 HTTP 访问，两者共享同一 `ChatPipeline` 执行引擎
 - **前端 SPA 控制台**：React + Vite + Zustand 会话式 Playground，含模型 Profile 切换、Skill 管理、RAG 调试、系统运行参数配置
 - **安全基线**：CORS 环境变量白名单、输入验证预编译、敏感字段脱敏
 
@@ -83,7 +83,7 @@ hatch run pip install -e ".[anthropic,openai,dev]"
 
 ### 基础用法 - SDK
 
-SDK 必须通过 `async with` 上下文管理器使用（MCP 工具等异步资源在此阶段初始化）：
+SDK 必须通过 `async with` 上下文管理器使用（MCP 工具等异步资源在此阶段初始化）。推荐通过 `client.conversation()` 创建会话对象，自动维护 `session_id` 和对话默认参数：
 
 ```python
 import asyncio
@@ -92,30 +92,36 @@ from astracore.sdk import AstraCoreClient
 async def main():
     # 默认读取 config/config.yaml，并通过 .env 中的 api_key_env 解析密钥
     async with AstraCoreClient() as client:
-        # 简单对话
-        result = await client.chat("你好，你是谁？", model_profile="claude-sonnet")
-        print(result.content)
-        print("session_id:", result.session_id)
+        # Conversation 门面：自动维护 session_id，参数一次配置多轮复用
+        conv = client.conversation(use_tools=True, model_profile="claude-sonnet")
 
-        # 续接上轮会话的流式对话
-        async for event in client.chat_stream(
-            "讲一个故事",
-            session_id=result.session_id,
-        ):
-            if event.content:
-                print(event.content, end="", flush=True)
+        # 同步对话
+        result = await conv.send("你好，你是谁？")
+        print(result.content)           # 回复文本
+        print(result.anchor_skill)      # 激活的主技能名（如有）
 
-        # 工具调用 + RAG + Skill 等均通过同一 chat_stream 接口
-        async for event in client.chat_stream(
-            "列出当前目录下的文件",
-            use_tools=True,
-            enable_rag=False,
-        ):
-            if event.content:
+        # 流式对话（同一会话自动续接）
+        async for chunk in conv.stream("讲一个故事"):
+            print(chunk, end="", flush=True)
+
+        # 需要工具/思考/技能路由等原始事件时，用 stream_events
+        from astracore.core.ports.llm import StreamEventType
+        async for event in conv.stream_events("列出当前目录下的文件"):
+            if event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
+                print(f"→ 调用工具: {event.tool_call.name}")
+            elif event.event_type == StreamEventType.TEXT_DELTA:
                 print(event.content, end="", flush=True)
 
 asyncio.run(main())
 ```
+
+需要跨函数共享会话或恢复已有会话时，传入 `session_id`：
+
+```python
+conv = client.conversation(session_id=existing_uuid)
+```
+
+低级 API（`client.chat()` / `client.chat_stream()`）仍可用于单次调用或需要精确控制 `session_id` 的场景。
 
 ### 基础用法 - 服务
 
@@ -154,8 +160,8 @@ make fe-dev
 ```
 src/astracore/
 ├── core/
-│   ├── domain/          # 纯领域模型（Session、Message、Agent、Workflow）
-│   ├── application/     # 用例（Chat、RAG、ToolLoop、MultiAgent）
+│   ├── domain/          # 纯领域模型（Session、Message、ChatContext、Agent）
+│   ├── application/     # 用例（RAG、ToolLoop、MultiAgent）
 │   └── ports/           # 适配器接口（LLM、Memory、Retriever、Tool、Workflow）
 ├── adapters/
 │   ├── llm/             # Anthropic（流式累积）、OpenAI 适配器
@@ -173,10 +179,12 @@ src/astracore/
 │   ├── api/             # FastAPI 路由（Chat Run、RAG、Skills、Settings、System）
 │   ├── middleware/      # HTTP 中间件
 │   ├── chat_pipeline.py       # 共享 chat 执行引擎（Command + Pipeline 模式）
-│   ├── chat_context.py        # 不可变 ChatContext 冻结数据类
-│   └── prompt_utils.py        # 系统提示工具函数
+│   ├── builtin_tools.py       # 内置工具注册与组合
+│   ├── skill_router.py        # Skill 自动路由（off/vector/llm 三种模式）
+│   ├── seeds.py               # 内置 Skill 种子同步
+│   └── prompt_utils.py        # 系统提示工具函数（时间、占位符渲染）
 └── sdk/
-    ├── client.py              # 主 SDK 客户端（async context manager）
+    ├── client.py              # 主 SDK 客户端（AstraCoreClient + Conversation 门面）
     ├── config.py              # Pydantic v2 YAML 配置模型
     └── model_capabilities.py  # 内置模型能力注册表
 
@@ -311,7 +319,7 @@ make clean-rag    # 清空 ChromaDB 数据
 - [x] M2：记忆、预算、策略、可观测性
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
-- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatOrchestrator）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅ 并行多 Agent（spawn_agents）✅ Command + Pipeline 模式重构（ChatPipeline 替换 ChatOrchestrator）✅
+- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatOrchestrator）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅ 并行多 Agent（spawn_agents）✅ Command + Pipeline 模式重构（ChatPipeline 替换 ChatOrchestrator）✅ Conversation 门面（多轮会话自动管理 session_id）✅ SKILL_MATCH 事件（SDK 技能路由透传）✅
 - [ ] M6：可靠性与安全 — 熔断器、API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档

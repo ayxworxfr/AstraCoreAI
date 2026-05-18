@@ -112,6 +112,24 @@ function ThinkingBlock({
   );
 }
 
+const _BJT = 'Asia/Shanghai';
+function formatMsgTime(isoStr: string): string {
+  const d = new Date(isoStr);
+  const fmt = (opts: Intl.DateTimeFormatOptions) =>
+    new Intl.DateTimeFormat('zh-CN', { timeZone: _BJT, ...opts });
+  const { year, month, day, hour, minute } = Object.fromEntries(
+    fmt({ year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+      .formatToParts(d)
+      .map(({ type, value }) => [type, value]),
+  );
+  const hm = `${hour}:${minute}`;
+  const todayParts = fmt({ year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(new Date());
+  const today = Object.fromEntries(todayParts.map(({ type, value }) => [type, value]));
+  if (year === today.year && month === today.month && day === today.day) return `今天 ${hm}`;
+  if (year === today.year) return `${month}月${day}日 ${hm}`;
+  return `${year}年${month}月${day}日 ${hm}`;
+}
+
 function MessageActions({
   message,
   conversationId,
@@ -145,7 +163,7 @@ function MessageActions({
 
   return (
     <Flex
-      gap={2}
+      vertical
       style={{
         opacity: visible ? 1 : 0,
         pointerEvents: visible ? 'auto' : 'none',
@@ -153,24 +171,35 @@ function MessageActions({
         padding: '2px 0',
       }}
     >
-      <Tooltip title={copied ? '已复制' : '复制'}>
-        <Button
-          type="text"
-          size="small"
-          icon={copied ? <CheckOutlined style={{ color: token.colorSuccess }} /> : <CopyOutlined />}
-          onClick={handleCopy}
-          style={btnStyle}
-        />
-      </Tooltip>
-      <Tooltip title="删除">
-        <Button
-          type="text"
-          size="small"
-          icon={<DeleteOutlined />}
-          onClick={() => deleteMessage(conversationId, message.id)}
-          style={{ ...btnStyle, color: token.colorError }}
-        />
-      </Tooltip>
+      <Flex gap={2} align="center">
+        <Tooltip title={copied ? '已复制' : '复制'}>
+          <Button
+            type="text"
+            size="small"
+            icon={copied ? <CheckOutlined style={{ color: token.colorSuccess }} /> : <CopyOutlined />}
+            onClick={handleCopy}
+            style={btnStyle}
+          />
+        </Tooltip>
+        <Tooltip title="删除">
+          <Button
+            type="text"
+            size="small"
+            icon={<DeleteOutlined />}
+            onClick={() => deleteMessage(conversationId, message.id)}
+            style={{ ...btnStyle, color: token.colorError }}
+          />
+        </Tooltip>
+      </Flex>
+      <span style={{
+        fontSize: 11,
+        color: token.colorTextQuaternary,
+        padding: '0 4px',
+        userSelect: 'none',
+        whiteSpace: 'nowrap',
+      }}>
+        {formatMsgTime(message.createdAt)}
+      </span>
     </Flex>
   );
 }
@@ -634,6 +663,10 @@ export default function ChatMain(): JSX.Element {
     bottomAnchorRef.current?.scrollIntoView({ behavior, block: 'end' });
   }, []);
 
+  // 通过 ref 让 handleScroll 始终能拿到最新的 handleScrollLoadMore，
+  // 避免把 handleScrollLoadMore 加入 handleScroll 的依赖而引发重建循环
+  const handleScrollLoadMoreRef = useRef<() => Promise<void>>(() => Promise.resolve());
+
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -643,6 +676,10 @@ export default function ChatMain(): JSX.Element {
     setHasScrollableContent(maxScroll > 12);
     setScrollProgress(Math.min(1, Math.max(0, progress)));
     setShowScrollBtn(distanceFromBottom > 120);
+    // scroll 事件：滚到顶部附近时触发加载更多
+    if (el.scrollTop < 200) {
+      void handleScrollLoadMoreRef.current();
+    }
   }, []);
 
 
@@ -725,6 +762,7 @@ export default function ChatMain(): JSX.Element {
     messagesByConversation,
     hasMoreMessages,
     isLoadingMessages,
+    isLoadingMoreMessages,
     enableThinking,
     enableRag,
     enableTools,
@@ -753,39 +791,39 @@ export default function ChatMain(): JSX.Element {
 
   // 保存 prepend 前的 scrollHeight，以便 prepend 后还原位置
   const prevScrollHeightRef = useRef<number | null>(null);
-  const loadMoreRef = useRef(false);
   // 标记初次加载完成后需要滚到底部（让用户看到最新消息，之后才能上拉加载更早的）
   const shouldScrollToBottomRef = useRef(false);
   // 顶部哨兵：IntersectionObserver 的观察目标
   const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
 
-  // 加载更早的消息（由 IntersectionObserver 驱动，不依赖 scroll 事件）
+  // 加载更早的消息：每次调用时从 store 直接读取最新状态，避免 React 闭包过期问题
   const handleScrollLoadMore = useCallback(async () => {
-    if (loadMoreRef.current) return;
-    loadMoreRef.current = true;
+    // 直接从 store 读取最新状态，不依赖 React 渲染周期的快照值
+    const { isLoadingMoreMessages: loading, hasMoreMessages, activeConversationId: convId } = useChatStore.getState();
+    if (loading || !hasMoreMessages[convId]) return;
     const el = scrollContainerRef.current;
     if (el) prevScrollHeightRef.current = el.scrollHeight;
-    const loaded = await loadMoreMessages(activeConversationId);
+    const loaded = await loadMoreMessages(convId);
     if (!loaded) {
       // 无新消息时清除占位，避免下次消息变化时错误补偿 scrollTop
       prevScrollHeightRef.current = null;
     }
-    loadMoreRef.current = false;
-  }, [activeConversationId, loadMoreMessages]);
+  }, [loadMoreMessages]);
+
+  useEffect(() => { handleScrollLoadMoreRef.current = handleScrollLoadMore; }, [handleScrollLoadMore]);
 
   // IntersectionObserver：顶部哨兵进入可视区域时触发加载
-  // 优于 scrollTop 检查：即使 scrollTop 已为 0 也能可靠触发
   useEffect(() => {
     const sentinel = loadMoreSentinelRef.current;
     const container = scrollContainerRef.current;
     if (!sentinel || !container) return;
     const io = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) void handleScrollLoadMore(); },
+      ([entry]) => { if (entry.isIntersecting) void handleScrollLoadMoreRef.current(); },
       { root: container, threshold: 0 },
     );
     io.observe(sentinel);
     return () => io.disconnect();
-  }, [handleScrollLoadMore]);
+  }, []);
 
   // 切换/首次进入会话时加载消息，并在加载完成后滚动到底部
   useEffect(() => {
@@ -875,6 +913,7 @@ export default function ChatMain(): JSX.Element {
             display: 'flex',
             justifyContent: isUser ? 'flex-end' : 'flex-start',
             marginTop: -12,   // 贴近气泡，抵消 Bubble 默认间距
+            paddingRight: isUser ? -14 : 0,
           }}
         >
           <MessageActions
@@ -900,10 +939,10 @@ export default function ChatMain(): JSX.Element {
           style={{ height: '100%', overflowY: 'auto', scrollbarWidth: 'none' }}
         >
           {/* 顶部哨兵：IntersectionObserver 的观察目标，进入可视区域时触发加载更多 */}
-          <div ref={loadMoreSentinelRef} />
+          <div ref={loadMoreSentinelRef} style={{ height: 1, overflow: 'hidden' }} />
           {hasMore && (
             <div style={{ textAlign: 'center', padding: '8px 0', opacity: 0.5, fontSize: 12 }}>
-              {isLoadingMessages ? '加载中...' : '上滑加载更早的消息'}
+              {isLoadingMoreMessages ? '加载中...' : '上滑加载更早的消息'}
             </div>
           )}
           {messages.length === 0 && !isLoadingMessages ? (

@@ -10,13 +10,14 @@ from astracore.sdk.config import AstraCoreConfig
 
 
 def __getattr__(name: str) -> object:
-    if name in ("AstraCoreClient", "ChatResult"):
-        from astracore.sdk.client import AstraCoreClient, ChatResult  # noqa: PLC0415
+    if name in ("AstraCoreClient", "ChatResult", "Conversation"):
+        from astracore.sdk.client import AstraCoreClient, ChatResult, Conversation  # noqa: PLC0415
 
         globals()["AstraCoreClient"] = AstraCoreClient
         globals()["ChatResult"] = ChatResult
+        globals()["Conversation"] = Conversation
         return globals()[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["AstraCoreClient", "AstraCoreConfig", "ChatResult"]
+__all__ = ["AstraCoreClient", "AstraCoreConfig", "ChatResult", "Conversation"]

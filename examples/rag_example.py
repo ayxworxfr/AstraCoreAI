@@ -1,4 +1,4 @@
-"""RAG 示例：演示文档索引、向量检索，以及开启 RAG 的对话。
+"""RAG 示例：文档索引、向量检索，以及开启 RAG 的对话。
 
 用法：
     python examples/rag_example.py
@@ -8,9 +8,12 @@ import asyncio
 
 from dotenv import load_dotenv
 
+from astracore.runtime.observability.logger import get_logger, setup_logging
 from astracore.sdk import AstraCoreClient
 
 load_dotenv()
+setup_logging()
+logger = get_logger("astracore.examples.rag_example")
 
 DOCUMENTS = [
     {
@@ -46,34 +49,32 @@ DOCUMENTS = [
 async def main() -> None:
     async with AstraCoreClient() as client:
         # 1. 索引文档
-        print("=== 索引文档 ===\n")
+        logger.info("=== 索引文档 ===")
         for doc in DOCUMENTS:
             ok = await client.index_document(doc["document_id"], doc["text"], doc["metadata"])
-            status = "✓" if ok else "✗"
-            print(f"  {status} {doc['document_id']}")
-        print()
+            logger.info("%s %s", "✓" if ok else "✗", doc["document_id"])
 
         # 2. 纯向量检索
-        print("=== 向量检索 ===\n")
+        logger.info("=== 向量检索 ===")
         query = "AstraCore 支持哪些 LLM？"
         chunks = await client.retrieve(query, top_k=3)
-        print(f"查询: {query}\n")
+        logger.info("查询: %s", query)
         for i, chunk in enumerate(chunks, 1):
             score = getattr(chunk, "score", 0)
             content = getattr(chunk, "content", str(chunk))
-            print(f"  {i}. [score={score:.3f}] {content[:80]}...")
-        print()
+            logger.info("  %d. [score=%.3f] %s...", i, score, content[:80])
 
         # 3. RAG 增强对话
-        print("=== RAG 对话 ===\n")
+        logger.info("=== RAG 对话 ===")
+        conv = client.conversation(enable_rag=True, disable_skill=True)
         question = "AstraCore 的 Skill 是什么，怎么使用？"
-        print(f"问题: {question}\n")
-        result = await client.chat(question, enable_rag=True, disable_skill=True)
-        print(f"回复: {result.content}\n")
-        print(f"模型: {result.model}")
+        result = await conv.send(question)
+        logger.info("Q: %s", question)
+        logger.info("A: %s", result.content)
+        logger.info("模型: %s", result.model)
 
 
-def test_main():
+def test_main() -> None:
     asyncio.run(main())
 
 

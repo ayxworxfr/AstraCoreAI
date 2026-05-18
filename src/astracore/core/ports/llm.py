@@ -21,6 +21,7 @@ class StreamEventType(StrEnum):
     THINKING_STOP = "thinking_stop"  # 思考轮结束，携带 duration_ms
     TOOL_CALL = "tool_call"          # LLM 决定调用工具（含 arguments）
     TOOL_RESULT = "tool_result"      # 工具执行完毕，携带结果
+    SKILL_MATCH = "skill_match"   # 技能路由命中，metadata: anchor, routed
     ERROR = "error"
     DONE = "done"
 

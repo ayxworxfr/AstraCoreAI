@@ -80,7 +80,7 @@ function toChatMessage(convId: string, index: number, item: SessionMessageItem):
     thinkingMode: toolActivity.length ? 'tool' : thinkingBlocks ? 'deep' : undefined,
     toolActivity: toolActivity.length ? toolActivity : undefined,
     status: 'done',
-    createdAt: new Date().toISOString(),
+    createdAt: item.created_at || new Date().toISOString(),
   };
 }
 
@@ -94,6 +94,8 @@ type ChatStore = {
   messagesOffset: Record<string, number>;
   hasMoreMessages: Record<string, boolean>;
   isLoadingMessages: boolean;
+  /** loadMoreMessages 专用 loading flag，与 loadMessages 互不阻塞 */
+  isLoadingMoreMessages: boolean;
   useStream: boolean;
   enableThinking: boolean;
   enableRag: boolean;
@@ -145,6 +147,7 @@ export const useChatStore = create<ChatStore>()(
       messagesOffset: {},
       hasMoreMessages: {},
       isLoadingMessages: false,
+      isLoadingMoreMessages: false,
       useStream: true,
       enableThinking: false,
       enableRag: false,
@@ -421,14 +424,14 @@ export const useChatStore = create<ChatStore>()(
       },
 
       loadMoreMessages: async (convId) => {
-        const { messagesOffset, hasMoreMessages, isLoadingMessages } = get();
-        if (isLoadingMessages || !hasMoreMessages[convId]) return false;
-        set({ isLoadingMessages: true });
+        const { messagesOffset, hasMoreMessages, isLoadingMoreMessages } = get();
+        if (isLoadingMoreMessages || !hasMoreMessages[convId]) return false;
+        set({ isLoadingMoreMessages: true });
         try {
           const currentOffset = messagesOffset[convId] ?? 0;
           const result = await fetchSessionMessages(convId, PAGE_SIZE, currentOffset);
           if (result.messages.length === 0) {
-            set({ isLoadingMessages: false });
+            set({ isLoadingMoreMessages: false });
             return false;
           }
           const older: ChatMessage[] = result.messages.map((m, i) => toChatMessage(convId, currentOffset + i, m));
@@ -439,11 +442,11 @@ export const useChatStore = create<ChatStore>()(
             },
             messagesOffset: { ...s.messagesOffset, [convId]: currentOffset + result.messages.length },
             hasMoreMessages: { ...s.hasMoreMessages, [convId]: result.has_more },
-            isLoadingMessages: false,
+            isLoadingMoreMessages: false,
           }));
           return true;
         } catch {
-          set({ isLoadingMessages: false });
+          set({ isLoadingMoreMessages: false });
           return false;
         }
       },

@@ -8,6 +8,7 @@ export type SessionMessagesResponse = {
     content: string;
     thinking_blocks: string[];
     tool_activity: ChatRunState['tool_activity'];
+    created_at: string;
   }>;
   total: number;
   has_more: boolean;

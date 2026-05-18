@@ -120,6 +120,9 @@ def _parse_skill_dir(skill_dir: Path) -> dict:
             meta = parsed
         system_prompt = raw[fm_match.end():].strip()
 
+    # 将 {{skill_dir}} 替换为该 skill 目录的绝对路径（使用正斜杠，兼容 Node.js/shell）
+    system_prompt = system_prompt.replace("{{skill_dir}}", skill_dir.as_posix())
+
     if not meta.get("name"):
         raise ValueError(f"SKILL.md 缺少 name 字段: {skill_file}")
     try:
