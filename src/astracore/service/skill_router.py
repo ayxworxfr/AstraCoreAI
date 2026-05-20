@@ -166,6 +166,7 @@ class SkillRouter:
                     api_key=profile.api_key,
                     default_model=profile.model,
                     base_url=profile.base_url,
+                    api_type=profile.api_type,
                     max_tokens=256,
                 )
         return self._llm_adapter

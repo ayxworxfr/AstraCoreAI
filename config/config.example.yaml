@@ -17,6 +17,15 @@ llm:
       model: deepseek-v4-flash
       max_tokens: 8192
 
+    - id: gpt-5-5
+      label: GPT-5.5
+      provider: openai
+      base_url: https://anyrouter.top/v1
+      api_key_env: ANTHROPIC_PROXY_API_KEY
+      api_type: responses
+      model: gpt-5.5
+      max_tokens: 8192
+
 agent:
   max_tool_result_chars: 20000
   max_tool_iterations: 10

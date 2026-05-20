@@ -308,6 +308,7 @@ class ParallelAgentTool(ToolAdapter):
                     api_key=profile.api_key,
                     default_model=profile.model,
                     base_url=profile.base_url,
+                    api_type=profile.api_type,
                     max_tokens=profile.max_tokens,
                 )
         return self._llm_adapters[profile_id]

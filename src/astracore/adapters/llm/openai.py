@@ -33,18 +33,20 @@ def _repair_json(tool_name: str, raw: str, original_exc: json.JSONDecodeError) -
 
 
 class OpenAIAdapter(LLMAdapter):
-    """OpenAI Chat Completions 协议适配器。"""
+    """OpenAI 兼容协议适配器，支持 Chat Completions 与 Responses API。"""
 
     def __init__(
         self,
         api_key: str,
         default_model: str = "gpt-4o",
         base_url: str | None = None,
+        api_type: str = "chat_completions",
         max_tokens: int = 8192,
     ):
         self.api_key = api_key
         self.default_model = default_model
         self._base_url = base_url
+        self.api_type = api_type
         self.max_tokens = max_tokens
         self._client: Any = None
 
@@ -128,6 +130,99 @@ class OpenAIAdapter(LLMAdapter):
 
         return converted
 
+    def _responses_input(self, messages: list[Message]) -> tuple[str | None, list[dict[str, str]]]:
+        """转为 Responses API input，并将 system 消息提取为 instructions。"""
+        instructions: list[str] = []
+        input_messages: list[dict[str, str]] = []
+
+        for msg in messages:
+            if msg.role == MessageRole.SYSTEM:
+                if msg.content:
+                    instructions.append(msg.content)
+                continue
+            if msg.role in {MessageRole.USER, MessageRole.ASSISTANT}:
+                input_messages.append({"role": msg.role.value, "content": msg.content})
+
+        return "\n\n".join(instructions) if instructions else None, input_messages
+
+    @staticmethod
+    def _response_text(response: Any) -> str:
+        output_text = getattr(response, "output_text", None)
+        if isinstance(output_text, str):
+            return output_text
+
+        parts: list[str] = []
+        for item in getattr(response, "output", []) or []:
+            for content in getattr(item, "content", []) or []:
+                text = getattr(content, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+
+    @staticmethod
+    def _response_usage(response: Any) -> dict[str, int]:
+        usage = getattr(response, "usage", None)
+        return {
+            "input_tokens": getattr(usage, "input_tokens", 0) if usage else 0,
+            "output_tokens": getattr(usage, "output_tokens", 0) if usage else 0,
+        }
+
+    async def _generate_responses(
+        self,
+        messages: list[Message],
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> LLMResponse:
+        client = self._get_client()
+        instructions, input_messages = self._responses_input(messages)
+        request_params: dict[str, Any] = {
+            "model": model,
+            "input": input_messages,
+            "max_output_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if instructions:
+            request_params["instructions"] = instructions
+
+        response = await client.responses.create(**request_params)
+        return LLMResponse(
+            content=self._response_text(response),
+            tool_calls=[],
+            model=model,
+            usage=self._response_usage(response),
+        )
+
+    async def _generate_responses_stream(
+        self,
+        messages: list[Message],
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> AsyncIterator[StreamEvent]:
+        client = self._get_client()
+        instructions, input_messages = self._responses_input(messages)
+        request_params: dict[str, Any] = {
+            "model": model,
+            "input": input_messages,
+            "max_output_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if instructions:
+            request_params["instructions"] = instructions
+
+        async with client.responses.stream(**request_params) as stream:
+            async for event in stream:
+                if getattr(event, "type", "") == "response.output_text.delta":
+                    delta = getattr(event, "delta", "")
+                    if delta:
+                        yield StreamEvent(
+                            event_type=StreamEventType.TEXT_DELTA,
+                            content=delta,
+                        )
+
+        yield StreamEvent(event_type=StreamEventType.DONE)
+
     async def generate(
         self,
         messages: list[Message],
@@ -140,6 +235,14 @@ class OpenAIAdapter(LLMAdapter):
         client = self._get_client()
         model = model or self.default_model
         max_tokens = max_tokens or self.max_tokens
+
+        if self.api_type == "responses":
+            return await self._generate_responses(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
 
         converted_messages = self._convert_messages(messages)
 
@@ -192,6 +295,16 @@ class OpenAIAdapter(LLMAdapter):
         client = self._get_client()
         model = model or self.default_model
         max_tokens = max_tokens or self.max_tokens
+
+        if self.api_type == "responses":
+            async for event in self._generate_responses_stream(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            ):
+                yield event
+            return
 
         converted_messages = self._convert_messages(messages)
 

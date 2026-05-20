@@ -61,13 +61,15 @@ def test_openai_profile_uses_openai_compatible_config() -> None:
     profile = LLMProfileConfig(
         id="gpt-5-5",
         provider="openai",
-        base_url="https://anyrouter.top",
+        base_url="https://anyrouter.top/v1",
         api_key="test-key",
+        api_type="responses",
         model="gpt-5.5",
     )
 
     assert profile.provider == "openai"
-    assert profile.base_url == "https://anyrouter.top"
+    assert profile.base_url == "https://anyrouter.top/v1"
+    assert profile.api_type == "responses"
     assert profile.capabilities.tools is True
     assert profile.capabilities.anthropic_blocks is False
 

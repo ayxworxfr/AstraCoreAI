@@ -71,7 +71,7 @@ Repository = "https://github.com/astracore/astracore-ai"
 packages = ["src/astracore"]
 
 [tool.hatch.envs.default]
-features = ["vector"]
+features = ["vector", "openai", "anthropic"]
 dependencies = [
     "pytest",
     "pytest-asyncio",

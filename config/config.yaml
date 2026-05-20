@@ -1,5 +1,5 @@
 llm:
-  default_profile: claude-opus
+  default_profile: gpt-5-5
   profiles:
     - id: claude-sonnet
       label: Claude Sonnet
@@ -32,8 +32,9 @@ llm:
     - id: gpt-5-5
       label: GPT-5.5
       provider: openai
-      base_url: https://anyrouter.top
+      base_url: https://anyrouter.top/v1
       api_key_env: ANTHROPIC_PROXY_API_KEY
+      api_type: responses
       model: gpt-5.5
       max_tokens: 16384
 
