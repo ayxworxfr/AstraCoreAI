@@ -298,6 +298,7 @@ class ParallelAgentTool(ToolAdapter):
                     api_key=profile.api_key,
                     default_model=profile.model,
                     base_url=profile.base_url,
+                    extra_headers=profile.extra_headers,
                     max_tokens=profile.max_tokens,
                     supports_temperature=profile.capabilities.temperature,
                     use_anthropic_blocks=profile.capabilities.anthropic_blocks,

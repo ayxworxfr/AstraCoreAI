@@ -29,6 +29,7 @@ class LLMProfileConfig(BaseModel):
     api_key: str = ""
     api_key_env: str | None = None
     base_url: str | None = None
+    extra_headers: dict[str, str] = Field(default_factory=dict)
     model: str
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=8192, ge=1)

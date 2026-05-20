@@ -1,11 +1,13 @@
 llm:
-  default_profile: deepseek-chat
+  default_profile: claude-opus
   profiles:
     - id: claude-sonnet
       label: Claude Sonnet
       provider: anthropic
       base_url: https://anyrouter.top
       api_key_env: ANTHROPIC_PROXY_API_KEY
+      extra_headers:
+        anthropic-beta: context-1m-2025-08-07
       model: claude-sonnet-4-6
       max_tokens: 16384
 
@@ -14,7 +16,9 @@ llm:
       provider: anthropic
       base_url: https://anyrouter.top
       api_key_env: ANTHROPIC_PROXY_API_KEY
-      model: claude-opus-4-6
+      extra_headers:
+        anthropic-beta: context-1m-2025-08-07
+      model: claude-opus-4-7
       max_tokens: 16384
 
     - id: deepseek-chat

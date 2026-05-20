@@ -42,6 +42,7 @@ class AnthropicAdapter(LLMAdapter):
         api_key: str,
         default_model: str = "claude-sonnet-4-6",
         base_url: str | None = None,
+        extra_headers: dict[str, str] | None = None,
         max_tokens: int = 8192,
         supports_temperature: bool = True,
         use_anthropic_blocks: bool = False,
@@ -49,6 +50,7 @@ class AnthropicAdapter(LLMAdapter):
         self.api_key = api_key
         self.default_model = default_model
         self._base_url = base_url
+        self._extra_headers = extra_headers or {}
         self.max_tokens = max_tokens
         self.supports_temperature = supports_temperature
         self.use_anthropic_blocks = use_anthropic_blocks
@@ -63,6 +65,8 @@ class AnthropicAdapter(LLMAdapter):
                 kwargs: dict[str, Any] = {"api_key": self.api_key}
                 if self._base_url:
                     kwargs["base_url"] = self._base_url
+                if self._extra_headers:
+                    kwargs["default_headers"] = self._extra_headers
                 self._client = AsyncAnthropic(**kwargs)
             except ImportError as e:
                 raise ImportError(
