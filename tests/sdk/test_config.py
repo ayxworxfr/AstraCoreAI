@@ -57,6 +57,21 @@ def test_deepseek_profile_applies_default_base_url() -> None:
     assert profile.base_url == "https://api.deepseek.com"
 
 
+def test_openai_profile_uses_openai_compatible_config() -> None:
+    profile = LLMProfileConfig(
+        id="gpt-5-5",
+        provider="openai",
+        base_url="https://anyrouter.top",
+        api_key="test-key",
+        model="gpt-5.5",
+    )
+
+    assert profile.provider == "openai"
+    assert profile.base_url == "https://anyrouter.top"
+    assert profile.capabilities.tools is True
+    assert profile.capabilities.anthropic_blocks is False
+
+
 def test_llm_profile_infers_claude_opus_capabilities() -> None:
     profile = LLMProfileConfig(
         id="claude-opus",

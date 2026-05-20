@@ -4,7 +4,7 @@ llm:
     - id: claude-sonnet
       label: Claude Sonnet
       provider: anthropic
-      base_url: https://llm-proxy.oa.com/aws
+      base_url: https://anyrouter.top
       api_key_env: ANTHROPIC_PROXY_API_KEY
       model: claude-sonnet-4-6
       max_tokens: 16384
@@ -12,7 +12,7 @@ llm:
     - id: claude-opus
       label: Claude Opus
       provider: anthropic
-      base_url: https://llm-proxy.oa.com/aws
+      base_url: https://anyrouter.top
       api_key_env: ANTHROPIC_PROXY_API_KEY
       model: claude-opus-4-6
       max_tokens: 16384
@@ -23,6 +23,14 @@ llm:
       base_url: https://api.deepseek.com/anthropic
       api_key_env: DEEPSEEK_API_KEY
       model: deepseek-chat
+      max_tokens: 16384
+
+    - id: gpt-5-5
+      label: GPT-5.5
+      provider: openai
+      base_url: https://anyrouter.top
+      api_key_env: ANTHROPIC_PROXY_API_KEY
+      model: gpt-5.5
       max_tokens: 16384
 
     - id: glm-5-1

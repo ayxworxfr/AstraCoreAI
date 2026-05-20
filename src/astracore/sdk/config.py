@@ -13,6 +13,7 @@ from astracore.sdk.model_capabilities import LLMCapabilities, infer_model_capabi
 
 _DEFAULT_MODELS: dict[str, str] = {
     "deepseek": "deepseek-v4-flash",
+    "openai": "gpt-4o-mini",
     "anthropic": "claude-sonnet-4-6",
 }
 
@@ -24,7 +25,7 @@ class LLMProfileConfig(BaseModel):
 
     id: str
     label: str | None = None
-    provider: Literal["deepseek", "anthropic"]
+    provider: Literal["deepseek", "openai", "anthropic"]
     api_key: str = ""
     api_key_env: str | None = None
     base_url: str | None = None
