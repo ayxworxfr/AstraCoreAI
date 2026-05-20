@@ -14,7 +14,17 @@ from starlette.responses import FileResponse
 from starlette.types import Scope
 
 from astracore.runtime.observability.logger import get_logger, setup_logging
-from astracore.service.api import chat, conversations, health, rag, settings, skills, system
+from astracore.service.api import (
+    chat,
+    conversations,
+    health,
+    memory,
+    projects,
+    rag,
+    settings,
+    skills,
+    system,
+)
 from astracore.service.middleware.logging import RequestLoggingMiddleware
 from astracore.service.seeds import seed_builtin_skills, seed_documents
 
@@ -141,6 +151,8 @@ def create_app() -> FastAPI:
     app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["conversations"])
     app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
     app.include_router(skills.router, prefix="/api/v1/skills", tags=["skills"])
+    app.include_router(memory.router, prefix="/api/v1/memory", tags=["memory"])
+    app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])
     app.include_router(settings.router, prefix="/api/v1/settings", tags=["settings"])
     app.include_router(system.router, prefix="/api/v1/system", tags=["system"])
 

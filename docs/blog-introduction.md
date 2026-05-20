@@ -1,4 +1,4 @@
-# 我用 Clean Architecture 造了个 AI 框架，120 个测试、70 个模块，生产可用
+# 我用 Clean Architecture 造了个 AI 框架，130 项测试、78 个模块，生产可用
 
 > 这篇文章介绍我做的开源项目 **AstraCore AI** —— 一个基于 Clean Architecture 的 Python AI 框架。不是玩具，不是 demo，是能实际用于生产的 AI 应用底座。
 
@@ -28,7 +28,7 @@ AI 应用开发有一个反复出现的困境：
 GitHub: https://github.com/ayxworxfr/AstraCoreAI
 语言: Python 3.11+
 架构: Clean Architecture + Ports & Adapters
-测试: 120 个单元测试，全部通过 ✅
+测试: pytest 当前收集 130 项（127 passed，3 failed 待修复）
 Lint: ruff 0 error ✅
 ```
 
@@ -43,7 +43,7 @@ Lint: ruff 0 error ✅
       │  SDK 客户端  │     │ FastAPI 服务 │
       └──────┬──────┘     └──────┬──────┘
              └─────────┬─────────┘
-                       │   ← 共享同一个 ChatOrchestrator
+                       │   ← 共享同一个 ChatPipeline
              ┌─────────▼─────────┐
              │   应用层 Use Cases  │
              └─────────┬─────────┘
@@ -55,7 +55,7 @@ Lint: ruff 0 error ✅
    └────┬────┘   └─────┬──────┘  └───┬──────┘
         ▼               ▼              ▼
   Anthropic/      Redis + SQLite   ChromaDB
-  OpenAI/DeepSeek  + PostgreSQL
+  OpenAI/DeepSeek  (默认本地持久化)
 ```
 
 ---
@@ -66,7 +66,7 @@ Lint: ruff 0 error ✅
 
 大多数框架有这个问题：SDK 版本和 HTTP 版本各自实现了一套 chat 逻辑，慢慢开始分叉，最后变成两套需要各自维护的东西。
 
-AstraCore 用 `ChatOrchestrator` 彻底解决这个问题：
+AstraCore 当前用 `ChatPipeline` 彻底解决这个问题：
 
 ```python
 # SDK 用法
@@ -74,7 +74,7 @@ async with AstraCoreClient() as client:
     async for event in client.chat_stream("你好"):
         print(event.content, end="")
 
-# FastAPI 服务 —— 内部调用的是同一个 ChatOrchestrator
+# FastAPI 服务 —— 内部调用的是同一个 ChatPipeline
 POST /api/v1/chat/runs
 GET  /api/v1/chat/runs/{run_id}/stream  # SSE 订阅
 ```
@@ -139,7 +139,7 @@ order: 25
 ```
 Redis          → 热数据，TTL 淘汰，毫秒级读写
 SQLite         → Redis 不可用时自动降级，重启可恢复
-PostgreSQL     → 长期存储（可选）
+StructuredMemory → SQLite 持久化（默认），后续可扩展到 PostgreSQL
 ```
 
 Redis 挂掉？自动降级到 SQLite，应用无感知继续运行。
@@ -217,7 +217,7 @@ async for event in client.chat_stream(
 ## 代码质量基线
 
 ```
-120 tests passed in 2.66s ✅
+pytest collected 130 items: 127 passed, 3 failed
 ruff: 0 errors             ✅
 ```
 
@@ -276,7 +276,7 @@ asyncio.run(main())
 | M7：SLO/指标/压测基线 | 🔜 规划中 |
 | M8：版本策略、回滚预案、运维文档 | 🔜 规划中 |
 
-当前 70 个 Python 模块、120 个测试，核心链路稳定，持续演进中。
+当前 78 个 Python 模块、pytest 收集 130 项测试，核心链路持续演进中。
 
 ---
 

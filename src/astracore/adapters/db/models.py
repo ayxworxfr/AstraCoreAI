@@ -2,7 +2,17 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -29,6 +39,96 @@ class MemoryEntryRow(Base):
 
     __table_args__ = (
         Index("ix_memory_entries_session_created", "session_id", "created_at"),
+    )
+
+
+class ProjectRow(Base):
+    """Project boundary for project-scoped memory."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    root_paths: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class ConversationProjectBindingRow(Base):
+    """Conversation-to-project binding for memory isolation."""
+
+    __tablename__ = "conversation_project_bindings"
+
+    conversation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id"), nullable=False, index=True
+    )
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class StructuredMemoryRow(Base):
+    """Structured long-lived memory used by the Memory Engine."""
+
+    __tablename__ = "structured_memories"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    subject: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.id"), nullable=True, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    source_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    confidence: Mapped[float] = mapped_column(nullable=False, default=1.0)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_structured_memories_scope_project_status", "scope", "project_id", "status"),
+        Index("ix_structured_memories_scope_session_status", "scope", "session_id", "status"),
+        Index("ix_structured_memories_scope_user_status", "scope", "user_id", "status"),
     )
 
 

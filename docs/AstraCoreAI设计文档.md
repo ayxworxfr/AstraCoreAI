@@ -11,7 +11,7 @@
 
 非目标（当前阶段不做）：
 
-- 不强依赖消息队列（默认最小依赖为 PostgreSQL + Redis）
+- 不强依赖消息队列（默认最小依赖为 SQLite；Redis 可选）
 - 不将 LangGraph 设为默认强依赖，只预留无缝接入能力
 
 ## 2. 设计原则
@@ -98,7 +98,7 @@ flowchart TD
 对外部依赖的实现层。
 
 - Provider：Claude / OpenAI 兼容协议适配，按模型 Profile 动态选择
-- 存储：PostgreSQL（持久化）+ Redis（短期上下文与缓存）
+- 存储：默认 SQLite（持久化）+ Redis（短期上下文与缓存，可选）；PostgreSQL 作为生产扩展方向保留
 - 检索：向量库适配（支持后续替换）
 - 接口：FastAPI 网关、后台 Chat Run、SSE 订阅输出、鉴权与限流中间件
 - 可观测：日志、指标、Trace
@@ -146,7 +146,7 @@ Service 层将一次前端对话发送抽象为 `ChatRunRow`，避免浏览器�
 ### 5.4 Memory 系统
 
 - 短期记忆：三层架构 — Redis（TTL 淘汰 + 容量上限，热路径）→ 本地字典缓存（fallback）→ SQLite 持久化（重启恢复）
-- 长期记忆：PostgreSQL 存会话摘要、用户偏好、关键事件
+- 长期/结构化记忆：当前默认写入 SQLite `structured_memories` 等表，保存会话摘要、用户偏好、项目状态和关键事件；PostgreSQL 可作为后续部署形态
 - 自动摘要：当上下文逼近预算阈值时触发
 - 记忆检索：按会话、用户、场景标签召回
 - 会话清理：删除或清空对话时同步删除后端短期记忆，防止数据孤岛

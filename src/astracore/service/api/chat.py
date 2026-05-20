@@ -10,13 +10,15 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.orm.attributes import flag_modified as _flag_modified
 from sse_starlette.sse import EventSourceResponse
 
 from astracore.adapters.db.models import ChatRunRow, ChatSessionRow, ConversationRow
-from sqlalchemy.orm.attributes import flag_modified as _flag_modified
 from astracore.adapters.db.session import get_session
 from astracore.adapters.memory.hybrid import HybridMemoryAdapter
+from astracore.adapters.memory.store import SQLMemoryStore
+from astracore.core.application.memory_engine import MemoryEngine
 from astracore.core.domain.chat_context import ChatContext
 from astracore.core.domain.message import MessageRole
 from astracore.core.ports.llm import StreamEventType
@@ -128,6 +130,12 @@ def _get_skill_router() -> SkillRouter:
 
 
 @lru_cache(maxsize=1)
+def _get_memory_engine() -> MemoryEngine:
+    cfg = _get_settings()
+    return MemoryEngine(SQLMemoryStore(cfg.memory.db_url))
+
+
+@lru_cache(maxsize=1)
 def _get_chat_pipeline() -> ChatPipeline:
     cfg = _get_settings()
     return ChatPipeline(
@@ -137,6 +145,7 @@ def _get_chat_pipeline() -> ChatPipeline:
         policy=PolicyEngine(),
         tool_adapter=build_tool_adapter(),
         skill_router=_get_skill_router() if cfg.skill_routing.mode != "off" else None,
+        memory_engine=_get_memory_engine(),
     )
 
 
@@ -240,6 +249,54 @@ def _run_row_to_state(row: ChatRunRow) -> ChatRunStateResponse:
     )
 
 
+def _run_row_to_messages(row: ChatRunRow) -> list[MessageItem]:
+    """Convert a persisted chat run into UI-visible chat messages."""
+    messages = [
+        MessageItem(
+            id=row.id,
+            role=MessageRole.USER.value,
+            content=row.user_message,
+            created_at=_utc_iso(row.created_at),
+        )
+    ]
+    if row.assistant_content:
+        messages.append(
+            MessageItem(
+                id=f"{row.id}:assistant",
+                role=MessageRole.ASSISTANT.value,
+                content=row.assistant_content,
+                thinking_blocks=row.thinking_blocks or [],
+                tool_activity=row.tool_activity or [],
+                created_at=_utc_iso(row.completed_at or row.updated_at),
+            )
+        )
+    return messages
+
+
+async def _load_done_runs(session_id: UUID) -> list[ChatRunRow]:
+    async with get_session(_get_settings().memory.db_url) as db:
+        result = await db.execute(
+            select(ChatRunRow)
+            .where(
+                ChatRunRow.session_id == str(session_id),
+                ChatRunRow.status == "done",
+            )
+            .order_by(ChatRunRow.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+
+def _paginate_messages(messages: list[MessageItem], limit: int, offset: int) -> SessionMessagesResponse:
+    total = len(messages)
+    end = max(0, total - offset)
+    start = max(0, end - limit)
+    return SessionMessagesResponse(
+        messages=messages[start:end],
+        total=total,
+        has_more=start > 0,
+    )
+
+
 async def _get_run_row(run_id: str) -> ChatRunRow | None:
     async with get_session(_get_settings().memory.db_url) as db:
         return await db.get(ChatRunRow, run_id)
@@ -294,19 +351,19 @@ async def _create_run_row(request: ChatRequest, session_id: UUID) -> ChatRunRow:
 
 
 async def _update_conversation_from_messages(session_id: UUID) -> dict[str, Any] | None:
-    """Update conversation metadata from the currently persisted session.
+    """Update conversation metadata from completed chat runs.
 
     Returns the updated fields, or None if the conversation row does not exist.
     """
-    messages = await _get_memory_adapter().load_short_term(session_id)
-    visible = [m for m in messages if m.role in (MessageRole.USER, MessageRole.ASSISTANT)]
+    runs = await _load_done_runs(session_id)
+    visible = [message for run in runs for message in _run_row_to_messages(run)]
     preview = visible[-1].content[:256] if visible else ""
     async with get_session(_get_settings().memory.db_url) as db:
         row = await db.get(ConversationRow, str(session_id))
         if row is None:
             return None
         if row.title == "新会话" and row.message_count == 0 and visible:
-            first_user = next((m for m in visible if m.role == MessageRole.USER), None)
+            first_user = next((m for m in visible if m.role == MessageRole.USER.value), None)
             if first_user:
                 row.title = first_user.content[:24] or "新会话"
         row.last_message_preview = preview
@@ -512,6 +569,17 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
         tool_activity=[{**item, "done": True} for item in tool_activity],
         status="done",
     )
+    try:
+        await _get_memory_engine().extract_and_store(
+            session_id=ctx.session_id,
+            user_message=ctx.message,
+            assistant_content=accumulated_content,
+            source_run_id=run_id,
+            llm_adapter=_get_chat_pipeline()._get_llm_adapter(ctx.profile),
+            model=ctx.profile.model,
+        )
+    except Exception:
+        logger.exception("Memory 自动提取失败，run_id=%s", run_id)
     if row:
         _broadcast_snapshot(run_id, row)
     _broadcast_run_event(run_id, "done", {"conversation": conv_meta} if conv_meta else {})
@@ -582,6 +650,13 @@ async def _run_chat_in_background(
 async def delete_session(session_id: UUID) -> None:
     logger.info("删除会话: session_id=%s", session_id)
     await _get_memory_adapter().delete_session_memory(session_id)
+    await _get_memory_engine().delete_conversation_memories(session_id)
+    async with get_session(_get_settings().memory.db_url) as db:
+        await db.execute(delete(ChatRunRow).where(ChatRunRow.session_id == str(session_id)))
+        session_row = await db.get(ChatSessionRow, str(session_id))
+        if session_row is not None:
+            await db.delete(session_row)
+        await db.commit()
 
 
 @router.delete("/sessions/{session_id}/messages", status_code=204)
@@ -590,71 +665,23 @@ async def delete_session_message(
     role: Literal["user", "assistant"],
     message_id: str,
 ) -> None:
-    """从会话历史中按轮次删除消息。
-
-    通过 message_id（USER 消息 UUID）精确定位轮次，避免重复内容时误删。
-    USER role：删除整个轮次（USER + 其后所有 ASSISTANT/TOOL，直到下一条 USER）。
-    ASSISTANT role：仅删除该轮次的 ASSISTANT/TOOL 消息，保留 USER。
-    """
-    memory = _get_memory_adapter()
-    messages = await memory.load_short_term(session_id)
-    # 通过 UUID 精确定位轮次的 USER 消息
-    idx = next(
-        (i for i, m in enumerate(messages) if m.role == MessageRole.USER and str(m.id) == message_id),
-        None,
-    )
-    if idx is None:
-        raise HTTPException(status_code=404, detail="消息未找到")
-
-    user_msg_content = messages[idx].content
-    # 该轮次在同内容 USER 消息中的出现次序（0-based），用于定位对应的 ChatRunRow
-    occurrence = sum(
-        1 for m in messages[:idx] if m.role == MessageRole.USER and m.content == user_msg_content
-    )
-
-    # 该轮次的结束位置（下一条 USER 或列表末尾）
-    end = idx + 1
-    while end < len(messages) and messages[end].role != MessageRole.USER:
-        end += 1
-    new_messages = list(messages)
-    if role == "user":
-        new_messages = new_messages[:idx] + new_messages[end:]
-    else:
-        new_messages = new_messages[: idx + 1] + new_messages[end:]
-    messages_data = [m.model_dump(mode="json") for m in new_messages]
-    # 原子性地持久化到 DB：更新 ChatSessionRow + 删除对应 ChatRunRow 在同一事务中
+    """Delete a visible history message using its run-based message id."""
+    run_id = message_id.removesuffix(":assistant")
     async with get_session(_get_settings().memory.db_url) as db:
-        session_row = await db.get(ChatSessionRow, str(session_id))
-        if session_row:
-            session_row.messages = messages_data
-            _flag_modified(session_row, "messages")
-            session_row.updated_at = datetime.now(UTC)
+        row = await db.get(ChatRunRow, run_id)
+        if row is None or row.session_id != str(session_id):
+            raise HTTPException(status_code=404, detail="消息未找到")
+        if role == "user":
+            await db.delete(row)
         else:
-            db.add(
-                ChatSessionRow(
-                    session_id=str(session_id),
-                    messages=messages_data,
-                    updated_at=datetime.now(UTC),
-                )
-            )
-        # 只删除第 occurrence 条同内容的 ChatRunRow（按创建时间排序）
-        run_result = await db.execute(
-            select(ChatRunRow)
-            .where(
-                ChatRunRow.session_id == str(session_id),
-                ChatRunRow.user_message == user_msg_content,
-            )
-            .order_by(ChatRunRow.created_at.asc())
-        )
-        matching_runs = run_result.scalars().all()
-        if occurrence < len(matching_runs):
-            await db.delete(matching_runs[occurrence])
+            row.assistant_content = ""
+            row.thinking_blocks = []
+            row.tool_activity = []
+            _flag_modified(row, "thinking_blocks")
+            _flag_modified(row, "tool_activity")
+            row.updated_at = datetime.now(UTC)
         await db.commit()
-    # DB 事务提交成功后 best-effort 更新 Redis（失败不影响已持久化的 DB 状态）
-    try:
-        await memory.save_short_term(session_id, new_messages)
-    except Exception:
-        pass
+    await _update_conversation_from_messages(session_id)
 
 
 @router.get("/sessions/{session_id}/messages", response_model=SessionMessagesResponse)
@@ -663,69 +690,9 @@ async def get_session_messages(
     limit: int = 30,
     offset: int = 0,
 ) -> SessionMessagesResponse:
-    all_msgs = await _get_memory_adapter().load_short_term(session_id)
-    visible = [m for m in all_msgs if m.role in (MessageRole.USER, MessageRole.ASSISTANT)]
-
-    async with get_session(_get_settings().memory.db_url) as db:
-        result = await db.execute(
-            select(ChatRunRow)
-            .where(
-                ChatRunRow.session_id == str(session_id),
-                ChatRunRow.status == "done",
-            )
-            .order_by(ChatRunRow.created_at.asc())
-        )
-        runs = result.scalars().all()
-
-    run_meta: dict[str, list[ChatRunRow]] = {}
-    for run in runs:
-        if not run.assistant_content:
-            continue
-        run_meta.setdefault(run.user_message, []).append(run)
-
-    folded: list[MessageItem] = []
-    index = 0
-    while index < len(visible):
-        current = visible[index]
-        if current.role != MessageRole.USER:
-            folded.append(MessageItem(id=str(current.id), role=current.role.value, content=current.content, created_at=_utc_iso(current.created_at)))
-            index += 1
-            continue
-
-        folded.append(MessageItem(id=str(current.id), role=current.role.value, content=current.content, created_at=_utc_iso(current.created_at)))
-        next_user_index = index + 1
-        while next_user_index < len(visible) and visible[next_user_index].role != MessageRole.USER:
-            next_user_index += 1
-
-        matches = run_meta.get(current.content)
-        if matches:
-            run = matches.pop(0)
-            folded.append(
-                MessageItem(
-                    role=MessageRole.ASSISTANT.value,
-                    content=run.assistant_content,
-                    thinking_blocks=run.thinking_blocks or [],
-                    tool_activity=run.tool_activity or [],
-                    created_at=_utc_iso(run.completed_at or run.created_at),
-                )
-            )
-            index = next_user_index
-            continue
-
-        for message in visible[index + 1:next_user_index]:
-            folded.append(MessageItem(id=str(message.id), role=message.role.value, content=message.content, created_at=_utc_iso(message.created_at)))
-        index = next_user_index
-
-    total = len(folded)
-    end = max(0, total - offset)
-    start = max(0, end - limit)
-    page = folded[start:end]
-
-    return SessionMessagesResponse(
-        messages=page,
-        total=total,
-        has_more=start > 0,
-    )
+    runs = await _load_done_runs(session_id)
+    messages = [message for run in runs for message in _run_row_to_messages(run)]
+    return _paginate_messages(messages, limit=limit, offset=offset)
 
 
 @router.get("/sessions/{session_id}/runs/active", response_model=ChatRunStateResponse | None)
@@ -831,6 +798,7 @@ async def cancel_chat_run(run_id: UUID) -> ChatRunStateResponse:
 async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     """Simple (non-streaming) chat. Routing to tool loop is handled by pipeline.prepare()."""
     session_id = request.session_id or uuid4()
+    row = await _create_run_row(request, session_id)
     try:
         ctx = await _get_chat_pipeline().prepare(
             message=request.message,
@@ -847,6 +815,24 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             disable_skill=request.disable_skill,
         )
         content = await _get_chat_pipeline().execute(ctx)
+        await _update_run_row(
+            row.id,
+            assistant_content=content,
+            thinking_blocks=[],
+            tool_activity=[],
+            status="done",
+        )
+        try:
+            await _get_memory_engine().extract_and_store(
+                session_id=session_id,
+                user_message=request.message,
+                assistant_content=content,
+                source_run_id=row.id,
+                llm_adapter=_get_chat_pipeline()._get_llm_adapter(ctx.profile),
+                model=ctx.profile.model,
+            )
+        except Exception:
+            logger.exception("Memory 自动提取失败，run_id=%s", row.id)
         await _update_conversation_from_messages(session_id)
         return ChatResponse(
             session_id=session_id,
@@ -855,6 +841,7 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             model=ctx.profile.model,
         )
     except Exception as e:
+        await _update_run_row(row.id, status="error", error=str(e))
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 

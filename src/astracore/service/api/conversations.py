@@ -6,10 +6,17 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
-from astracore.adapters.db.models import ChatSessionRow, ConversationRow
+from astracore.adapters.db.models import (
+    ChatRunRow,
+    ChatSessionRow,
+    ConversationProjectBindingRow,
+    ConversationRow,
+)
 from astracore.adapters.db.session import get_session
+from astracore.adapters.memory.store import SQLMemoryStore
+from astracore.core.application.memory_engine import MemoryEngine
 from astracore.sdk.config import AstraCoreConfig
 
 router = APIRouter()
@@ -18,6 +25,11 @@ router = APIRouter()
 @lru_cache(maxsize=1)
 def _get_db_url() -> str:
     return AstraCoreConfig().memory.db_url
+
+
+@lru_cache(maxsize=1)
+def _get_memory_engine() -> MemoryEngine:
+    return MemoryEngine(SQLMemoryStore(_get_db_url()))
 
 
 def _row_to_item(row: ConversationRow) -> "ConversationItem":
@@ -121,8 +133,9 @@ async def patch_conversation(
 
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_conversation(conversation_id: UUID) -> None:
-    """Delete conversation metadata and its session message history."""
+    """Delete conversation metadata, message history, runs, bindings, and scoped memory."""
     cid = str(conversation_id)
+    await _get_memory_engine().delete_conversation_memories(conversation_id)
     async with get_session(_get_db_url()) as db:
         row = await db.get(ConversationRow, cid)
         if row is not None:
@@ -130,4 +143,8 @@ async def delete_conversation(conversation_id: UUID) -> None:
         session_row = await db.get(ChatSessionRow, cid)
         if session_row is not None:
             await db.delete(session_row)
+        binding_row = await db.get(ConversationProjectBindingRow, cid)
+        if binding_row is not None:
+            await db.delete(binding_row)
+        await db.execute(delete(ChatRunRow).where(ChatRunRow.session_id == cid))
         await db.commit()

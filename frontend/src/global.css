@@ -13,9 +13,76 @@ body,
   overflow: hidden;
 }
 
-/* 隐藏聊天滚动条（Webkit） */
-.chat-scroll-area::-webkit-scrollbar {
-  display: none;
+:root {
+  --app-scrollbar-thumb: rgba(120, 144, 180, 0.42);
+  --app-scrollbar-thumb-hover: rgba(120, 144, 180, 0.62);
+  --app-scrollbar-track: transparent;
+}
+
+html[data-theme='dark'] {
+  --app-scrollbar-thumb: rgba(139, 148, 158, 0.42);
+  --app-scrollbar-thumb-hover: rgba(139, 148, 158, 0.64);
+  --app-scrollbar-track: rgba(13, 17, 23, 0.18);
+}
+
+.app-scroll-area {
+  height: 100%;
+}
+
+/* SimpleBar 的 clearfix 使用 content: ' '（空格字符），当容器继承了
+   font-size / line-height 时，::before 和 ::after 会各撑出约一行高度的空白。
+   覆盖为空字符串消除文本贡献，保留 display: table 以维持浮动清除语义。 */
+.app-scroll-area .simplebar-content::before,
+.app-scroll-area .simplebar-content::after {
+  content: '' !important;
+}
+
+.app-scroll-area .simplebar-track.simplebar-vertical {
+  width: 9px;
+}
+
+.app-scroll-area .simplebar-track.simplebar-horizontal {
+  height: 9px;
+}
+
+.app-scroll-area .simplebar-track {
+  background: var(--app-scrollbar-track);
+}
+
+.app-scroll-area .simplebar-scrollbar::before {
+  inset: 2px;
+  background: var(--app-scrollbar-thumb);
+  border-radius: 999px;
+  opacity: 1;
+}
+
+.app-scroll-area .simplebar-scrollbar.simplebar-visible::before,
+.app-scroll-area .simplebar-scrollbar:hover::before {
+  background: var(--app-scrollbar-thumb-hover);
+  opacity: 1;
+}
+
+textarea {
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-scrollbar-thumb) var(--app-scrollbar-track);
+}
+
+textarea::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+textarea::-webkit-scrollbar-track {
+  background: var(--app-scrollbar-track);
+}
+
+textarea::-webkit-scrollbar-thumb {
+  background: var(--app-scrollbar-thumb);
+  border-radius: 999px;
+}
+
+textarea::-webkit-scrollbar-thumb:hover {
+  background: var(--app-scrollbar-thumb-hover);
 }
 
 

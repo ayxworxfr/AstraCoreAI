@@ -13,7 +13,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 - **健壮工具循环**：悬空 tool_use 清理、总结收尾兜底、空响应引导续接、单次工具超时隔离、中间轮旁白与最终答案自动分流
 - **后台 Chat Run**：流式回答由后端后台任务驱动，SSE 仅负责订阅输出；刷新页面不会中断生成，重连后可恢复当前 run
 - **Command + Pipeline 执行引擎**：`ChatPipeline` 作为 SDK 与 HTTP Service 的统一 chat 管道；`prepare()` 一次性完成所有 DB 查询与决策，返回不可变 `ChatContext`；`stream()` 纯执行，system prompt 始终注入，无分支歧义
-- **记忆系统**：Redis 短期（TTL 淘汰）+ SQLite 短期持久化（重启恢复）+ PostgreSQL 长期存储，Redis 不可用时自动降级到 SQLite
+- **记忆系统**：Redis 短期缓存 + SQLite 持久化兜底（重启恢复）+ 结构化 Memory Store（默认 `astracore.db`），Redis 不可用时自动降级到 SQLite
 - **RAG 管道**：ChromaDB 向量搜索（幂等 upsert）、文档分块、引用支持
 - **Skill 系统**：Skill 提示词管理（CRUD + 内置/自定义）、全局指令编辑、对话时动态切换激活 Skill；支持多目录扫描（`skills.extra_dirs`）
 - **Skill 自动路由**：三种模式（`off` / `vector` / `llm`）；vector 模式用 sentence-transformers 余弦相似度匹配，llm 模式用轻量 LLM 调用判断；主技能（anchor，📌）+ routing 自动追加副技能（⚡）分层显示
@@ -26,11 +26,11 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 ## 测试状态
 
 ```
-120 tests passed in 2.66s ✅
+131 passed, 1 warning in the current local Hatch env
 ruff: 0 errors             ✅
 ```
 
-覆盖核心链路：SessionState、PolicyEngine、SecurityValidator、RAGPipeline、ToolLoopUseCase、LLM 适配器、HybridMemoryAdapter、MCP、Skill、流式会话安全等
+覆盖核心链路：SessionState、PolicyEngine、SecurityValidator、RAGPipeline、ToolLoopUseCase、LLM 适配器、HybridMemoryAdapter、MCP、Skill、Memory 自动抽取、流式会话安全等。
 
 ## 架构
 
@@ -53,15 +53,15 @@ ruff: 0 errors             ✅
          ┌───────────────────┼───────────────────┐
          │                   │                   │
     ┌────▼─────┐      ┌─────▼──────┐     ┌─────▼─────┐
-    │  策略    │      │   端口     │     │  运行时   │
-    │  引擎    │      │ (适配器)   │     │ (可观测)  │
+    │  策略    │      │   端口      │     │  运行时   │
+    │  引擎    │      │  (适配器)   │     │ (可观测)  │
     └──────────┘      └─────┬──────┘     └───────────┘
                             │
           ┌─────────────────┼─────────────────┐
           │                 │                 │
      ┌────▼─────┐    ┌─────▼──────┐   ┌─────▼─────┐
      │   LLM    │    │   记忆     │   │   检索    │
-     │  适配器  │    │  适配器    │   │  适配器   │
+     │  适配器  │    │   适配器    │   │  适配器   │
      └────┬─────┘    └─────┬──────┘   └─────┬─────┘
           │                │                 │
           ▼                ▼                 ▼
@@ -195,7 +195,7 @@ config/
 
 frontend/
 ├── src/app             # 应用入口与路由
-├── src/pages           # Chat / RAG / Skills / System 页面
+├── src/pages           # Chat / Memory / RAG / Skills / System 页面
 ├── src/components      # 复用 UI 组件（chat / rag / skills / system）
 ├── src/stores          # Zustand（chatStore / skillStore / settingsStore）
 └── src/services        # API、SSE、Skill 与系统信息通信
@@ -285,6 +285,7 @@ make clean-rag    # 清空 ChromaDB 数据
 - **基础对话**：`python examples/basic_chat.py` — 同步/流式对话、会话续接
 - **工具调用**：`python examples/tool_calling.py [--web]` — 工具事件流、自定义工具注册
 - **RAG 管道**：`python examples/rag_example.py` — 文档索引、向量检索、RAG 增强对话
+- **结构化记忆**：`python examples/memory_example.py` — 手动 CRUD、Project 绑定、自动记忆提取
 - **并发会话**：`python examples/multi_agent.py` — asyncio.gather 并发多会话
 - **Skill + 工具**：`python examples/skill_with_tools.py [skill名] [--web]` — Skill 绑定与工具联动
 - **服务运行**：`python examples/run_service.py [--port 8080] [--reload]` — 启动 FastAPI HTTP 服务
@@ -307,7 +308,7 @@ make clean-rag    # 清空 ChromaDB 数据
 - **数据验证**：Pydantic 2.x（YAML 配置模型 + discriminated union）
 - **LLM Providers**：Anthropic Messages 协议、OpenAI 兼容协议（DeepSeek/GLM 等可通过 profile 接入）
 - **MCP**：fastmcp（Model Context Protocol 工具集成）
-- **存储**：Redis（短期记忆）、SQLite/aiosqlite（持久化）、PostgreSQL/asyncpg（长期存储）
+- **存储**：Redis（短期缓存，可选）、SQLite/aiosqlite（默认持久化）；保留 asyncpg 依赖用于后续 PostgreSQL 部署扩展
 - **向量数据库**：ChromaDB
 - **策略**：tenacity、asyncio
 - **测试**：pytest-asyncio（auto mode）、unittest.mock
@@ -319,16 +320,16 @@ make clean-rag    # 清空 ChromaDB 数据
 - [x] M2：记忆、预算、策略、可观测性
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
-- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 120 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatOrchestrator）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅ 并行多 Agent（spawn_agents）✅ Command + Pipeline 模式重构（ChatPipeline 替换 ChatOrchestrator）✅ Conversation 门面（多轮会话自动管理 session_id）✅ SKILL_MATCH 事件（SDK 技能路由透传）✅
+- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 131 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ Memory 自动抽取 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatPipeline 统一执行）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅ 并行多 Agent（spawn_agents）✅ Command + Pipeline 模式重构 ✅ Conversation 门面（多轮会话自动管理 session_id）✅ SKILL_MATCH 事件（SDK 技能路由透传）✅
 - [ ] M6：可靠性与安全 — 熔断器、API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档
 
 ## 文件统计
 
-- **69 个 Python 源模块**：覆盖 Domain / Application / Ports / Adapters / Runtime / Service / SDK 全栈
-- **测试覆盖**：120 个单元测试，覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略等核心链路
-- **6 个完整示例**：可直接通过 SDK 运行，无需 HTTP 服务
+- **78 个 Python 源模块**：覆盖 Domain / Application / Ports / Adapters / Runtime / Service / SDK 全栈
+- **测试覆盖**：131 个测试，覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略、Skill、Memory、MCP、流式会话安全等核心链路
+- **7 个完整示例**：可直接通过 SDK 运行，无需 HTTP 服务
 - **双形态交付**：SDK + Service 共享同一 ChatPipeline 执行引擎
 
 ## 许可证

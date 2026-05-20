@@ -22,7 +22,9 @@ from astracore.adapters.db.session import get_session
 from astracore.adapters.llm.anthropic import AnthropicAdapter
 from astracore.adapters.llm.openai import OpenAIAdapter
 from astracore.adapters.memory.hybrid import HybridMemoryAdapter
+from astracore.adapters.memory.store import SQLMemoryStore
 from astracore.adapters.tools.composite import CompositeToolAdapter
+from astracore.core.application.memory_engine import MemoryEngine
 from astracore.core.application.rag import RAGPipeline
 from astracore.core.application.tool_loop import ToolLoopUseCase
 from astracore.core.domain.chat_context import ChatContext
@@ -140,6 +142,7 @@ class ChatPipeline:
         policy: PolicyEngine,
         tool_adapter: ToolAdapter,
         skill_router: SkillRouter | None = None,
+        memory_engine: MemoryEngine | None = None,
     ) -> None:
         self._config = config
         self._memory = memory
@@ -147,6 +150,7 @@ class ChatPipeline:
         self._policy = policy
         self._default_tool_adapter = tool_adapter
         self._skill_router = skill_router
+        self._memory_engine = memory_engine or MemoryEngine(SQLMemoryStore(config.memory.db_url))
         self._llm_adapters: dict[str, LLMAdapter] = {}
 
     # ------------------------------------------------------------------
@@ -245,6 +249,7 @@ class ChatPipeline:
 
     async def _build_system_prompt(
         self,
+        session_id: UUID,
         skill_id: UUID | None,
         disable_skill: bool,
         enable_rag: bool,
@@ -312,6 +317,16 @@ class ChatPipeline:
         if instruction:
             parts.append(instruction)
 
+        try:
+            memory_context = await self._memory_engine.build_memory_context(
+                session_id=session_id,
+                message=message,
+            )
+            if memory_context:
+                parts.append(memory_context)
+        except Exception:
+            logger.exception("Memory context 构建失败，跳过本轮记忆注入")
+
         if enable_rag:
             rag_ctx = await self._build_rag_context(message)
             if rag_ctx:
@@ -359,6 +374,7 @@ class ChatPipeline:
         # 1. Compose system prompt (skill + global instruction + RAG context in one pass)
         system_prompt, anchor_name, routed_names, skill_has_refs, anchor_id = (
             await self._build_system_prompt(
+                session_id=session_id,
                 skill_id=skill_id,
                 disable_skill=disable_skill,
                 enable_rag=enable_rag,
@@ -384,7 +400,9 @@ class ChatPipeline:
         # skill_id, which may be None when the skill is auto-loaded from default_skill_id.
         effective_adapter: ToolAdapter = base_adapter
         if skill_has_refs and anchor_id is not None:
-            from astracore.service.builtin_tools import build_skill_reference_adapter  # noqa: PLC0415
+            from astracore.service.builtin_tools import (
+                build_skill_reference_adapter,  # noqa: PLC0415
+            )
 
             ref_adapter = build_skill_reference_adapter(anchor_id, self._config.memory.db_url)
             effective_adapter = CompositeToolAdapter([ref_adapter, base_adapter])

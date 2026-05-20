@@ -66,7 +66,7 @@ Ports 是一组抽象接口，先定义协议，再接入实现：
 |------|------|
 | `LLMAdapter` | 文本生成（同步 + 流式） |
 | `ToolAdapter` | 工具执行与定义查询 |
-| `MemoryAdapter` | 短期 / 长期记忆读写 |
+| `MemoryAdapter` | 短期会话记忆读写 |
 | `RetrieverAdapter` | 向量检索 |
 | `WorkflowOrchestrator` | 工作流编排与 checkpoint |
 | `AuditLogger` | 审计日志 |
@@ -147,7 +147,7 @@ AI 对话最常见的设计是"Redis 存上下文"，问题在于这是单点—
   SQLite    ← 持久化层，重启后从这里恢复历史消息
 
 长期记忆（冷路径）
-  PostgreSQL ← 会话摘要、用户偏好、关键事件（异步写入）
+  SQLite / SQLMemoryStore ← 结构化 Memory、项目、Skill、Chat Run（默认本地持久化）
 ```
 
 **Redis 失败处理**：第一次遇到 Redis 异常时，标记 `_redis_disabled = True`，后续所有操作直接走 SQLite，不再尝试连接 Redis，避免每次请求都卡在 Redis 超时上。

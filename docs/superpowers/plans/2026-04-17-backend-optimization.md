@@ -1,5 +1,7 @@
 # Backend Optimization Implementation Plan
 
+> **归档说明（2026-05）**：这是历史执行计划，保留用于追溯任务拆解和实现过程。当前代码状态以根目录 `README.md`、`docs/AstraCoreAI设计文档.md` 和实际源码为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix all identified bugs, performance issues, security vulnerabilities, and code quality problems across the AstraCoreAI backend.

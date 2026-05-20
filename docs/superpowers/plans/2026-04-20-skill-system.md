@@ -1,5 +1,7 @@
 # Skill System Implementation Plan
 
+> **归档说明（2026-05）**：这是历史执行计划，保留用于追溯 Skill 系统落地过程。当前 Skill 行为以 `src/astracore/service/skills/`、`src/astracore/service/skill_router.py`、`src/astracore/service/api/skills.py` 和根目录 `README.md` 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a two-layer skill (system prompt) system with SQLite/PostgreSQL dual-DB support, skill CRUD API, and full frontend management UI.

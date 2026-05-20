@@ -10,6 +10,52 @@ export type ConversationApiItem = {
   updated_at: string;
 };
 
+export type MemoryApiItem = {
+  id: string;
+  scope: 'session' | 'project' | 'user' | 'global';
+  type: 'fact' | 'preference' | 'decision' | 'constraint' | 'state' | 'plan' | 'summary' | 'lesson';
+  subject: string;
+  content: string;
+  summary: string;
+  session_id: string | null;
+  conversation_id: string | null;
+  project_id: string | null;
+  user_id: string;
+  source_run_id: string | null;
+  importance: number;
+  confidence: number;
+  status: 'active' | 'stale' | 'archived' | 'rejected';
+  locked: boolean;
+  use_count: number;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  last_used_at: string | null;
+};
+
+export type MemoryListResponse = {
+  items: MemoryApiItem[];
+  total: number;
+};
+
+export type ProjectApiItem = {
+  id: string;
+  name: string;
+  root_paths: string[];
+  description: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConversationProjectBindingApiItem = {
+  conversation_id: string;
+  project_id: string;
+  locked: boolean;
+  source: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type CreateConversationRequest = {
   id: string;
   title?: string;

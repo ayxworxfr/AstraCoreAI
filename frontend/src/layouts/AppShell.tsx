@@ -7,6 +7,7 @@ const { Header, Content } = Layout;
 
 const NAV_ITEMS = [
   { key: '/chat', label: <NavLink to="/chat">对话</NavLink> },
+  { key: '/memory', label: <NavLink to="/memory">Memory</NavLink> },
   { key: '/rag', label: <NavLink to="/rag">RAG</NavLink> },
   { key: '/skills', label: <NavLink to="/skills">Skill</NavLink> },
   { key: '/system', label: <NavLink to="/system">系统</NavLink> },
@@ -30,7 +31,7 @@ export default function AppShell(): JSX.Element {
           borderBottom: theme === 'light' ? '1px solid #e8edf2' : '1px solid rgba(255,255,255,0.06)',
         }}
       >
-        <Flex align="center" gap={8}>
+        <Flex align="center" gap={8} style={{ flex: '0 0 auto' }}>
           <Menu
             theme={theme === 'dark' ? 'dark' : 'light'}
             mode="horizontal"
@@ -39,7 +40,8 @@ export default function AppShell(): JSX.Element {
             style={{
               background: 'transparent',
               border: 'none',
-              minWidth: 320,
+              width: 440,
+              flex: '0 0 440px',
               height: 56,
               lineHeight: '56px',
               fontSize: 14,

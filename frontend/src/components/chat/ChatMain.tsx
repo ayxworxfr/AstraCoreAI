@@ -21,6 +21,7 @@ import MarkdownContent from './MarkdownContent';
 import ModelSelector from './ModelSelector';
 import SkillSelector from '../skills/SkillSelector';
 import type { ChatMessage, SubAgentActivity, ThinkingMode, ToolActivity } from '../../types/chat';
+import AppScrollArea from '../common/AppScrollArea';
 
 const SUGGESTED_PROMPTS = [
   { key: '1', label: '你能做什么？', icon: <ThunderboltOutlined /> },
@@ -91,20 +92,21 @@ function ThinkingBlock({
             },
           },
           children: (
-            <div
-              style={{
-                maxHeight: 360,
-                overflow: 'auto',
-                fontSize: 13,
-                lineHeight: 1.75,
-                color: contentColor,
-                whiteSpace: 'pre-wrap',
-                fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace',
-                opacity: 0.9,
-              }}
-            >
-              {thinking}
-            </div>
+            <AppScrollArea style={{ maxHeight: 360 }}>
+              <div
+                style={{
+                  paddingRight: 8,
+                  fontSize: 13,
+                  lineHeight: 1.75,
+                  color: contentColor,
+                  whiteSpace: 'pre-wrap',
+                  fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace',
+                  opacity: 0.9,
+                }}
+              >
+                {thinking}
+              </div>
+            </AppScrollArea>
           ),
         },
       ]}
@@ -213,108 +215,7 @@ function formatDuration(ms: number | undefined): string | null {
 }
 
 function SenderWithScrollbar(props: ComponentProps<typeof Sender>) {
-  const { token } = theme.useToken();
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const taRef = useRef<HTMLTextAreaElement | null>(null);
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [scrollProgress, setScrollProgress] = useState(0);
-  const [hasScrollable, setHasScrollable] = useState(false);
-  const [thumbMetrics, setThumbMetrics] = useState({ thumbHeight: 20, thumbTop: 0 });
-  const [overlay, setOverlay] = useState<{ top: number; right: number; height: number } | null>(null);
-
-  const measureScroll = useCallback(() => {
-    const ta = taRef.current;
-    if (!ta) return;
-    const maxScroll = Math.max(0, ta.scrollHeight - ta.clientHeight);
-    setHasScrollable(maxScroll > 4);
-    setScrollProgress(maxScroll > 0 ? ta.scrollTop / maxScroll : 0);
-  }, []);
-
-  const updateOverlay = useCallback(() => {
-    const wrapper = wrapperRef.current;
-    const ta = taRef.current;
-    if (!wrapper || !ta) return;
-    const wRect = wrapper.getBoundingClientRect();
-    const tRect = ta.getBoundingClientRect();
-    setOverlay({
-      top: tRect.top - wRect.top + 6,
-      right: wRect.right - tRect.right + 3,
-      height: Math.max(0, tRect.height - 12),
-    });
-  }, []);
-
-  useEffect(() => {
-    const wrapper = wrapperRef.current;
-    if (!wrapper) return;
-    const ta = wrapper.querySelector<HTMLTextAreaElement>('textarea');
-    if (!ta) return;
-    taRef.current = ta;
-    ta.addEventListener('scroll', measureScroll);
-    measureScroll();
-    updateOverlay();
-    const ro = new ResizeObserver(() => { measureScroll(); updateOverlay(); });
-    ro.observe(ta);
-    ro.observe(wrapper);
-    return () => {
-      ta.removeEventListener('scroll', measureScroll);
-      ro.disconnect();
-    };
-  }, [measureScroll, updateOverlay]);
-
-  useEffect(() => { measureScroll(); }, [measureScroll, props.value]);
-
-  useLayoutEffect(() => {
-    if (!hasScrollable || !overlay) return;
-    const track = trackRef.current;
-    const ta = taRef.current;
-    if (!track || !ta) return;
-    const trackH = overlay.height;
-    const ratio = ta.clientHeight / Math.max(ta.scrollHeight, 1);
-    const thumbH = Math.max(16, Math.min(trackH, Math.round(trackH * ratio)));
-    const maxThumbTop = Math.max(0, trackH - thumbH);
-    setThumbMetrics({ thumbHeight: thumbH, thumbTop: maxThumbTop * scrollProgress });
-  }, [hasScrollable, scrollProgress, overlay]);
-
-  const { thumbHeight, thumbTop } = thumbMetrics;
-
-  return (
-    <div ref={wrapperRef} style={{ position: 'relative' }}>
-      <Sender
-        {...props}
-        styles={{ ...props.styles, input: { scrollbarWidth: 'none', ...props.styles?.input } }}
-      />
-      {hasScrollable && overlay && (
-        <div
-          ref={trackRef}
-          style={{
-            position: 'absolute',
-            right: overlay.right,
-            top: overlay.top,
-            height: overlay.height,
-            width: 4,
-            borderRadius: 999,
-            background: token.colorFillTertiary,
-            pointerEvents: 'none',
-            zIndex: 1,
-          }}
-        >
-          <div
-            style={{
-              position: 'absolute',
-              left: 0,
-              right: 0,
-              height: thumbHeight,
-              top: thumbTop,
-              borderRadius: 999,
-              background: token.colorPrimary,
-              opacity: 0.72,
-              transition: 'top 0.05s linear',
-            }}
-          />
-        </div>
-      )}
-    </div>
-  );
+  return <Sender {...props} />;
 }
 
 function ScrollPane({
@@ -326,79 +227,10 @@ function ScrollPane({
   maxHeight: number;
   style?: React.CSSProperties;
 }) {
-  const { token } = theme.useToken();
-  const [scrollProgress, setScrollProgress] = useState(0);
-  const [hasScrollable, setHasScrollable] = useState(false);
-  const [thumbMetrics, setThumbMetrics] = useState({ thumbHeight: 20, thumbTop: 0 });
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const trackRef = useRef<HTMLDivElement>(null);
-
-  const measureScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
-    setHasScrollable(maxScroll > 4);
-    setScrollProgress(maxScroll > 0 ? el.scrollTop / maxScroll : 0);
-  }, []);
-
-  useEffect(() => {
-    measureScroll();
-  }, [measureScroll, children]);
-
-  // 在 DOM 更新后才读取 trackRef.clientHeight，避免首次渲染时 track 尚未挂载导致尺寸为 0
-  useLayoutEffect(() => {
-    if (!hasScrollable) return;
-    const track = trackRef.current;
-    const el = scrollRef.current;
-    if (!track || !el) return;
-    const trackH = track.clientHeight;
-    const ratio = el.clientHeight / Math.max(el.scrollHeight, 1);
-    const thumbH = Math.max(16, Math.min(trackH, Math.round(trackH * ratio)));
-    const maxThumbTop = Math.max(0, trackH - thumbH);
-    setThumbMetrics({ thumbHeight: thumbH, thumbTop: maxThumbTop * scrollProgress });
-  }, [hasScrollable, scrollProgress]);
-
-  const { thumbHeight, thumbTop } = thumbMetrics;
-
   return (
-    <div style={{ position: 'relative', maxHeight, overflow: 'hidden', ...style }}>
-      <div
-        ref={scrollRef}
-        onScroll={measureScroll}
-        style={{ maxHeight, overflowY: 'auto', scrollbarWidth: 'none' }}
-      >
-        {children}
-      </div>
-      {hasScrollable && (
-        <div
-          ref={trackRef}
-          style={{
-            position: 'absolute',
-            right: 3,
-            top: 6,
-            bottom: 6,
-            width: 4,
-            borderRadius: 999,
-            background: token.colorFillTertiary,
-            pointerEvents: 'none',
-          }}
-        >
-          <div
-            style={{
-              position: 'absolute',
-              left: 0,
-              right: 0,
-              height: thumbHeight,
-              top: thumbTop,
-              borderRadius: 999,
-              background: token.colorPrimary,
-              opacity: 0.72,
-              transition: 'top 0.05s linear',
-            }}
-          />
-        </div>
-      )}
-    </div>
+    <AppScrollArea style={{ maxHeight, ...style }}>
+      {children}
+    </AppScrollArea>
   );
 }
 
@@ -645,19 +477,12 @@ function AssistantContent({ message }: { message: ChatMessage }) {
 type RolesType = Record<string, BubbleProps & { placement?: 'start' | 'end' }>;
 
 export default function ChatMain(): JSX.Element {
-  const { token } = theme.useToken();
   const [inputValue, setInputValue] = useState('');
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
-  const [hasScrollableContent, setHasScrollableContent] = useState(false);
-  const [scrollProgress, setScrollProgress] = useState(0);
-  const [isDraggingScroll, setIsDraggingScroll] = useState(false);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomAnchorRef = useRef<HTMLDivElement>(null);
-  const scrollTrackRef = useRef<HTMLDivElement>(null);
-  const draggingRef = useRef(false);
-  const dragOffsetRef = useRef(0);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     bottomAnchorRef.current?.scrollIntoView({ behavior, block: 'end' });
@@ -672,81 +497,12 @@ export default function ChatMain(): JSX.Element {
     if (!el) return;
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
     const distanceFromBottom = maxScroll - el.scrollTop;
-    const progress = maxScroll > 0 ? el.scrollTop / maxScroll : 0;
-    setHasScrollableContent(maxScroll > 12);
-    setScrollProgress(Math.min(1, Math.max(0, progress)));
     setShowScrollBtn(distanceFromBottom > 120);
     // scroll 事件：滚到顶部附近时触发加载更多
     if (el.scrollTop < 200) {
       void handleScrollLoadMoreRef.current();
     }
   }, []);
-
-
-  const getThumbMetrics = useCallback(() => {
-    const track = scrollTrackRef.current;
-    const el = scrollContainerRef.current;
-    const trackHeight = track?.clientHeight ?? 0;
-    if (!el || trackHeight <= 0) return { trackHeight: 0, thumbHeight: 0, thumbTop: 0 };
-    const ratio = el.clientHeight / Math.max(el.scrollHeight, 1);
-    const thumbHeight = Math.max(28, Math.min(trackHeight, Math.round(trackHeight * ratio)));
-    const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
-    const thumbTop = maxThumbTop * scrollProgress;
-    return { trackHeight, thumbHeight, thumbTop };
-  }, [scrollProgress]);
-
-  const updateScrollByClientY = useCallback((clientY: number, behavior: ScrollBehavior = 'auto') => {
-    const track = scrollTrackRef.current;
-    const el = scrollContainerRef.current;
-    if (!track || !el) return;
-    const rect = track.getBoundingClientRect();
-    const { trackHeight, thumbHeight } = getThumbMetrics();
-    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
-    if (trackHeight <= 0 || thumbHeight <= 0 || maxScroll <= 0) return;
-    const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
-    const rawTop = clientY - rect.top - dragOffsetRef.current;
-    const thumbTop = Math.min(Math.max(0, rawTop), maxThumbTop);
-    const progress = maxThumbTop > 0 ? thumbTop / maxThumbTop : 0;
-    el.scrollTo({ top: progress * maxScroll, behavior });
-  }, [getThumbMetrics]);
-
-  const handleThumbMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const track = scrollTrackRef.current;
-    if (!track) return;
-    const rect = track.getBoundingClientRect();
-    const { thumbTop } = getThumbMetrics();
-    dragOffsetRef.current = e.clientY - (rect.top + thumbTop);
-    draggingRef.current = true;
-    setIsDraggingScroll(true);
-  };
-
-  const handleTrackMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const { thumbHeight } = getThumbMetrics();
-    // 点击轨道时，将点击点作为滑块中心位置，并平滑滚动到目标位置
-    dragOffsetRef.current = thumbHeight / 2;
-    updateScrollByClientY(e.clientY, 'smooth');
-  };
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!draggingRef.current) return;
-      updateScrollByClientY(e.clientY);
-    };
-    const handleMouseUp = () => {
-      if (!draggingRef.current) return;
-      draggingRef.current = false;
-      setIsDraggingScroll(false);
-    };
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [updateScrollByClientY]);
 
   // streaming 时若已在底部则自动跟随；不在底部则仅显示按钮
   useEffect(() => {
@@ -926,105 +682,65 @@ export default function ChatMain(): JSX.Element {
     };
   });
 
-  const { thumbHeight, thumbTop } = getThumbMetrics();
-
   return (
     <Flex vertical style={{ height: '100%', overflow: 'hidden' }}>
       {/* 消息区域 */}
       <div style={{ flex: '1 1 0', minHeight: 0, overflow: 'hidden', position: 'relative' }}>
-        <div
-          ref={scrollContainerRef}
-          onScroll={handleScroll}
-          className="chat-scroll-area"
-          style={{ height: '100%', overflowY: 'auto', scrollbarWidth: 'none' }}
+        <AppScrollArea
+          style={{ height: '100%' }}
+          scrollableNodeProps={{ ref: scrollContainerRef, onScroll: handleScroll }}
         >
-          {/* 顶部哨兵：IntersectionObserver 的观察目标，进入可视区域时触发加载更多 */}
-          <div ref={loadMoreSentinelRef} style={{ height: 1, overflow: 'hidden' }} />
-          {hasMore && (
-            <div style={{ textAlign: 'center', padding: '8px 0', opacity: 0.5, fontSize: 12 }}>
-              {isLoadingMoreMessages ? '加载中...' : '上滑加载更早的消息'}
-            </div>
-          )}
-          {messages.length === 0 && !isLoadingMessages ? (
-            <Flex
-              vertical
-              align="center"
-              justify="center"
-              gap={32}
-              style={{ height: '100%', padding: '0 24px' }}
-            >
-              <Flex vertical align="center" gap={16}>
-                <Avatar
-                  size={72}
-                  icon={<RobotOutlined />}
-                  style={{
-                    background: 'linear-gradient(135deg, #1677ff 0%, #722ed1 100%)',
-                    fontSize: 32,
+          <div style={{ minHeight: '100%' }}>
+            {/* 顶部哨兵：IntersectionObserver 的观察目标，进入可视区域时触发加载更多 */}
+            <div ref={loadMoreSentinelRef} style={{ height: 1, overflow: 'hidden' }} />
+            {hasMore && (
+              <div style={{ textAlign: 'center', padding: '8px 0', opacity: 0.5, fontSize: 12 }}>
+                {isLoadingMoreMessages ? '加载中...' : '上滑加载更早的消息'}
+              </div>
+            )}
+            {messages.length === 0 && !isLoadingMessages ? (
+              <Flex
+                vertical
+                align="center"
+                justify="center"
+                gap={32}
+                style={{ minHeight: '100%', padding: '0 24px' }}
+              >
+                <Flex vertical align="center" gap={16}>
+                  <Avatar
+                    size={72}
+                    icon={<RobotOutlined />}
+                    style={{
+                      background: 'linear-gradient(135deg, #1677ff 0%, #722ed1 100%)',
+                      fontSize: 32,
+                    }}
+                  />
+                  <Flex vertical align="center" gap={4}>
+                    <Typography.Title level={4} style={{ margin: 0 }}>
+                      你好，我是 AstraCoreAI
+                    </Typography.Title>
+                    <Typography.Text type="secondary" style={{ fontSize: 14 }}>
+                      专业 AI 基础设施，有什么可以帮你的？
+                    </Typography.Text>
+                  </Flex>
+                </Flex>
+                <Prompts
+                  items={SUGGESTED_PROMPTS}
+                  onItemClick={({ data }) => {
+                    if (typeof data.label === 'string') handleSendMessage(data.label);
                   }}
                 />
-                <Flex vertical align="center" gap={4}>
-                  <Typography.Title level={4} style={{ margin: 0 }}>
-                    你好，我是 AstraCoreAI
-                  </Typography.Title>
-                  <Typography.Text type="secondary" style={{ fontSize: 14 }}>
-                    专业 AI 基础设施，有什么可以帮你的？
-                  </Typography.Text>
-                </Flex>
               </Flex>
-              <Prompts
-                items={SUGGESTED_PROMPTS}
-                onItemClick={({ data }) => {
-                  if (typeof data.label === 'string') handleSendMessage(data.label);
-                }}
+            ) : (
+              <Bubble.List
+                items={bubbleItems}
+                roles={roles}
+                style={{ padding: '16px 24px' }}
               />
-            </Flex>
-          ) : (
-            <Bubble.List
-              items={bubbleItems}
-              roles={roles}
-              style={{ padding: '16px 24px' }}
-            />
-          )}
-          <div ref={bottomAnchorRef} style={{ height: 1 }} />
-        </div>
-
-        {/* 右侧滚动进度条 */}
-        {hasScrollableContent && (
-          <div
-            ref={scrollTrackRef}
-            onMouseDown={handleTrackMouseDown}
-            style={{
-              position: 'absolute',
-              right: 12,
-              top: 20,
-              bottom: 20,
-              width: 6,
-              borderRadius: 999,
-              background: token.colorFillTertiary,
-              opacity: 0.9,
-              pointerEvents: 'auto',
-              cursor: isDraggingScroll ? 'grabbing' : 'default',
-              userSelect: 'none',
-            }}
-            aria-hidden
-          >
-            <div
-              style={{
-                position: 'absolute',
-                left: 0,
-                right: 0,
-                height: thumbHeight || 28,
-                borderRadius: 999,
-                top: thumbTop,
-                background: token.colorPrimary,
-                opacity: isDraggingScroll ? 1 : 0.78,
-                transition: isDraggingScroll ? 'none' : 'opacity 0.15s ease',
-                cursor: isDraggingScroll ? 'grabbing' : 'grab',
-              }}
-              onMouseDown={handleThumbMouseDown}
-            />
+            )}
+            <div ref={bottomAnchorRef} style={{ height: 1 }} />
           </div>
-        )}
+        </AppScrollArea>
 
         {/* 回到最新消息按钮 */}
         {showScrollBtn && (
@@ -1078,7 +794,7 @@ export default function ChatMain(): JSX.Element {
           flexShrink: 0,
         }}
       >
-        <div style={{ maxWidth: 860, margin: '0 auto' }}>
+        <div style={{ maxWidth: 1040, margin: '0 auto' }}>
           {/* 工具栏独立一行，不占 Sender 内部空间 */}
           <Flex align="center" gap={6} style={{ marginBottom: 8, flexWrap: 'wrap' }}>
             <Tooltip title={enableThinking ? '关闭深度思考' : '开启深度思考（Extended Thinking）'}>

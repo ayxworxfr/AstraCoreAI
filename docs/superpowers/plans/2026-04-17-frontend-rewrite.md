@@ -1,5 +1,7 @@
 # AstraCoreAI 前端重写实现计划
 
+> **归档说明（2026-05）**：这是历史执行计划，保留用于追溯任务拆解和实现过程。当前前端状态以 `frontend/` 源码、`frontend/README.md` 和 `docs/前端SPA设计方案.md` 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 从零重写 AstraCoreAI 前端 SPA，使用 Ant Design 5 + Ant Design X 构建专业、美观的 AI 对话界面，支持深/浅双主题，AI 消息 Markdown 渲染。

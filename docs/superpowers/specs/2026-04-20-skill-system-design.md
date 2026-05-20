@@ -1,5 +1,7 @@
 # Skill System Design
 
+> **归档说明（2026-05）**：这是历史设计规格，保留用于追溯方案来源。当前 Skill 系统实现以 `src/astracore/service/seeds.py`、`src/astracore/service/skill_router.py`、`src/astracore/service/api/skills.py` 和 `config/README.md` 为准。
+
 **Date:** 2026-04-20
 **Status:** Approved
 

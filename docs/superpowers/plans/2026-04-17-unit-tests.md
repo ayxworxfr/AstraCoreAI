@@ -1,5 +1,7 @@
 # Unit Test Suite Implementation Plan
 
+> **归档说明（2026-05）**：这是历史执行计划，保留用于追溯测试建设过程。当前测试数量和覆盖面以 `tests/` 目录与根目录 `README.md` 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Write unit tests for all code paths touched by the backend optimization pass, with full coverage of the behaviors that were actually changed.

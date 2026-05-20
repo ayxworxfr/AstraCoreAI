@@ -5,6 +5,7 @@ import { Conversations } from '@ant-design/x';
 import type { ConversationsProps } from '@ant-design/x';
 import type { InputRef } from 'antd/es/input';
 import { useChatStore } from '../../stores/chatStore';
+import AppScrollArea from '../common/AppScrollArea';
 
 type ConversationItem = NonNullable<ConversationsProps['items']>[number];
 
@@ -118,43 +119,45 @@ export default function ConversationSidebar(): JSX.Element {
       </Flex>
 
       {/* 会话列表 */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '0 4px' }}>
-        {!conversationsLoaded || filtered.length === 0 ? (
-          <Typography.Text
-            type="secondary"
-            style={{ fontSize: 13, display: 'block', textAlign: 'center', padding: '16px 8px' }}
-          >
-            {!conversationsLoaded ? '加载中...' : search ? '无匹配结果' : '暂无会话'}
-          </Typography.Text>
-        ) : (
-          <Conversations
-            groupable={{ sort: (a, b) => (GROUP_ORDER[a] ?? 99) - (GROUP_ORDER[b] ?? 99) }}
-            items={items}
-            activeKey={activeConversationId}
-            onActiveChange={handleActiveChange}
-            menu={(item: ConversationItem) => {
-              const conv = conversations.find((c) => c.id === item.key);
-              return {
-                items: [
-                  { key: 'pin', label: conv?.pinned ? '取消置顶' : '置顶' },
-                  { key: 'rename', label: '重命名' },
-                  { key: 'clear', label: '清空消息' },
-                  { key: 'delete', label: '删除', danger: true },
-                ],
-                onClick: ({ key }: { key: string }) => {
-                  const id = String(item.key);
-                  if (key === 'pin') togglePin(id);
-                  if (key === 'rename') {
-                    openRenameModal(id);
-                  }
-                  if (key === 'clear') clearConversation(id);
-                  if (key === 'delete') deleteConversation(id);
-                },
-              };
-            }}
-          />
-        )}
-      </div>
+      <AppScrollArea style={{ flex: 1, minHeight: 0 }}>
+        <div style={{ padding: '0 4px' }}>
+          {!conversationsLoaded || filtered.length === 0 ? (
+            <Typography.Text
+              type="secondary"
+              style={{ fontSize: 13, display: 'block', textAlign: 'center', padding: '16px 8px' }}
+            >
+              {!conversationsLoaded ? '加载中...' : search ? '无匹配结果' : '暂无会话'}
+            </Typography.Text>
+          ) : (
+            <Conversations
+              groupable={{ sort: (a, b) => (GROUP_ORDER[a] ?? 99) - (GROUP_ORDER[b] ?? 99) }}
+              items={items}
+              activeKey={activeConversationId}
+              onActiveChange={handleActiveChange}
+              menu={(item: ConversationItem) => {
+                const conv = conversations.find((c) => c.id === item.key);
+                return {
+                  items: [
+                    { key: 'pin', label: conv?.pinned ? '取消置顶' : '置顶' },
+                    { key: 'rename', label: '重命名' },
+                    { key: 'clear', label: '清空消息' },
+                    { key: 'delete', label: '删除', danger: true },
+                  ],
+                  onClick: ({ key }: { key: string }) => {
+                    const id = String(item.key);
+                    if (key === 'pin') togglePin(id);
+                    if (key === 'rename') {
+                      openRenameModal(id);
+                    }
+                    if (key === 'clear') clearConversation(id);
+                    if (key === 'delete') deleteConversation(id);
+                  },
+                };
+              }}
+            />
+          )}
+        </div>
+      </AppScrollArea>
       <Modal
         title="重命名会话"
         open={Boolean(renameTargetId)}

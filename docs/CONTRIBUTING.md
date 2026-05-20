@@ -331,7 +331,7 @@ make docker-clean    # 停止并删除所有数据卷（⚠️ 不可逆）
 
 ### 数据库迁移
 
-项目使用 Alembic 管理 SQLite/PostgreSQL schema，迁移文件位于 `src/astracore/adapters/db/migrations/`。新增模型字段后：
+当前项目通过 SQLAlchemy `create_all` 初始化 SQLite schema，默认数据库为 `astracore.db`。Alembic 迁移仍是生产化待补齐项；新增模型字段后：
 
 ```bash
 hatch run alembic revision --autogenerate -m "add xxx field"

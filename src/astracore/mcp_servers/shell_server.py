@@ -15,7 +15,23 @@ import re
 import sys
 from pathlib import Path
 
-from fastmcp import FastMCP
+try:
+    from fastmcp import FastMCP
+except ModuleNotFoundError:
+    class FastMCP:  # type: ignore[no-redef]
+        """Import-time fallback so helper tests do not require optional MCP deps."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def tool(self, *args: object, **kwargs: object) -> object:
+            def decorator(func: object) -> object:
+                return func
+
+            return decorator
+
+        def run(self, *args: object, **kwargs: object) -> None:
+            raise RuntimeError("fastmcp is required to run the shell MCP server")
 
 # ---------------------------------------------------------------------------
 # 危险命令黑名单（正则，case-insensitive），匹配即拒绝

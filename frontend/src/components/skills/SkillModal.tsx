@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Alert, Form, Input, Modal } from 'antd';
 import RagMarkdownEditor from '../rag/RagMarkdownEditor';
 import type { CreateSkillRequest, Skill } from '../../types/skill';
+import AppScrollArea from '../common/AppScrollArea';
 
 type Props = {
   open: boolean;
@@ -43,35 +44,38 @@ export default function SkillModal({ open, skill, readOnly, onClose, onSave }: P
       footer={readOnly ? null : undefined}
       width="min(960px, 90vw)"
       style={{ top: 40 }}
-      styles={{ body: { maxHeight: 'calc(100vh - 160px)', overflowY: 'auto' } }}
       destroyOnClose
     >
-      {readOnly && (
-        <Alert message="内置 Skill 不可修改" type="info" showIcon style={{ marginBottom: 16 }} />
-      )}
-      <Form form={form} layout="vertical" disabled={readOnly}>
-        <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
-          <Input placeholder="代码助手" maxLength={128} />
-        </Form.Item>
-        <Form.Item name="description" label="描述">
-          <Input placeholder="简短说明这个 Skill 的用途" maxLength={200} />
-        </Form.Item>
-        <Form.Item
-          name="system_prompt"
-          label="System Prompt"
-          rules={[{ required: true, message: '请输入 System Prompt' }]}
-        >
-          <Form.Item noStyle shouldUpdate>
-            {({ getFieldValue, setFieldValue }) => (
-              <RagMarkdownEditor
-                value={getFieldValue('system_prompt') ?? ''}
-                onChange={(v) => setFieldValue('system_prompt', v)}
-                height={460}
-              />
-            )}
-          </Form.Item>
-        </Form.Item>
-      </Form>
+      <AppScrollArea style={{ maxHeight: 'calc(100vh - 160px)' }}>
+        <div style={{ paddingRight: 8 }}>
+          {readOnly && (
+            <Alert message="内置 Skill 不可修改" type="info" showIcon style={{ marginBottom: 16 }} />
+          )}
+          <Form form={form} layout="vertical" disabled={readOnly}>
+            <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
+              <Input placeholder="代码助手" maxLength={128} />
+            </Form.Item>
+            <Form.Item name="description" label="描述">
+              <Input placeholder="简短说明这个 Skill 的用途" maxLength={200} />
+            </Form.Item>
+            <Form.Item
+              name="system_prompt"
+              label="System Prompt"
+              rules={[{ required: true, message: '请输入 System Prompt' }]}
+            >
+              <Form.Item noStyle shouldUpdate>
+                {({ getFieldValue, setFieldValue }) => (
+                  <RagMarkdownEditor
+                    value={getFieldValue('system_prompt') ?? ''}
+                    onChange={(v) => setFieldValue('system_prompt', v)}
+                    height={460}
+                  />
+                )}
+              </Form.Item>
+            </Form.Item>
+          </Form>
+        </div>
+      </AppScrollArea>
     </Modal>
   );
 }

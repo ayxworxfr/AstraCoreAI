@@ -7,6 +7,7 @@ import SkillCard from '../components/skills/SkillCard';
 import SkillModal from '../components/skills/SkillModal';
 import type { CreateSkillRequest, Skill } from '../types/skill';
 import GlobalInstructionEditor from '../components/skills/GlobalInstructionEditor';
+import AppScrollArea from '../components/common/AppScrollArea';
 
 export default function SkillsPage(): JSX.Element {
   const { skills, settings, isLoading, error, fetchSkills, fetchSettings, createSkill, updateSkill, deleteSkill, saveSettings, clearError } =
@@ -69,7 +70,8 @@ export default function SkillsPage(): JSX.Element {
   );
 
   return (
-    <Flex vertical style={{ height: '100%', overflow: 'auto', padding: 24 }} gap={16}>
+    <AppScrollArea style={{ height: '100%' }}>
+      <Flex vertical style={{ padding: 24 }} gap={16}>
       <Flex align="center" justify="space-between">
         <Typography.Title level={4} style={{ margin: 0 }}>
           Skill 管理
@@ -131,6 +133,7 @@ export default function SkillsPage(): JSX.Element {
         onClose={() => setModalOpen(false)}
         onSave={handleSave}
       />
-    </Flex>
+      </Flex>
+    </AppScrollArea>
   );
 }

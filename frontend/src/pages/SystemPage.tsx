@@ -22,6 +22,7 @@ import { normalizeError } from '../services/apiClient';
 import { useSkillStore } from '../stores/skillStore';
 import type { SystemInfo } from '../types/system';
 import type { UserSettings } from '../types/skill';
+import AppScrollArea from '../components/common/AppScrollArea';
 
 // ─── 系统状态 Tab ─────────────────────────────────────────────────────────────
 
@@ -429,7 +430,8 @@ function RuntimeParamsTab(): JSX.Element {
 
 export default function SystemPage(): JSX.Element {
   return (
-    <Flex vertical style={{ height: '100%', overflow: 'auto', padding: 24 }} gap={16}>
+    <AppScrollArea style={{ height: '100%' }}>
+      <Flex vertical style={{ padding: 24 }} gap={16}>
       <Typography.Title level={4} style={{ margin: 0 }}>
         系统
       </Typography.Title>
@@ -440,6 +442,7 @@ export default function SystemPage(): JSX.Element {
           { key: 'runtime', label: '运行参数', children: <RuntimeParamsTab /> },
         ]}
       />
-    </Flex>
+      </Flex>
+    </AppScrollArea>
   );
 }

@@ -1,11 +1,11 @@
 """Skill seed and prompt rendering tests."""
 
 from astracore.service import seeds
-from astracore.service.api import chat
+from astracore.service.prompt_utils import render_skill_prompt
 
 
 def test_render_skill_prompt_injects_current_beijing_time() -> None:
-    rendered = chat._render_skill_prompt(
+    rendered = render_skill_prompt(
         "时间上下文：\n{{current_time_info}}",
         ai_name="小卡",
         owner_name="灰尘",
@@ -18,11 +18,15 @@ def test_render_skill_prompt_injects_current_beijing_time() -> None:
 
 
 def test_builtin_skills_are_ordered_by_frontmatter_order(tmp_path, monkeypatch) -> None:
-    (tmp_path / "a.md").write_text(
+    skill_a = tmp_path / "a"
+    skill_b = tmp_path / "b"
+    skill_a.mkdir()
+    skill_b.mkdir()
+    (skill_a / "SKILL.md").write_text(
         "---\nname: A\ndescription: A desc\norder: 30\n---\nA prompt",
         encoding="utf-8",
     )
-    (tmp_path / "b.md").write_text(
+    (skill_b / "SKILL.md").write_text(
         "---\nname: B\ndescription: B desc\norder: 10\n---\nB prompt",
         encoding="utf-8",
     )

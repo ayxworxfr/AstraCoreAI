@@ -1,5 +1,7 @@
 # Docker Containerization Implementation Plan
 
+> **归档说明（2026-05）**：这是历史执行计划，保留用于追溯 Docker 化过程。当前容器运行方式以 `Dockerfile`、`docker-compose.yml`、`Makefile` 和根目录 `README.md` 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Package AstraCoreAI (FastAPI backend + React frontend) into a Docker Compose setup that any user can run with a single `docker-compose up` after filling in their API key.

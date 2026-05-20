@@ -1,7 +1,7 @@
 # Multi-Agent 并行执行设计方案
 
 **版本**: 1.1  
-**状态**: 已确认，待实现  
+**状态**: 已实现（原设计文档保留，用于追溯设计目标与实现取舍）
 **作者**: AstraCoreAI Team
 
 ---
@@ -17,9 +17,11 @@
 | 能力 | 现状 |
 |---|---|
 | 工具级并发 | ✅ 已有（`execute_parallel()` via `asyncio.gather`） |
-| 多 LLM 实例并行推理 | ❌ 不支持 |
-| 子 Agent 独立上下文 | ❌ 不支持 |
-| 子 Agent 流式进度可见 | ❌ 不支持 |
+| 多 LLM 实例并行推理 | ✅ 已支持（`spawn_agents` / `ParallelAgentTool`） |
+| 子 Agent 独立上下文 | ✅ 已支持 |
+| 子 Agent 流式进度可见 | ✅ 已支持（`AGENT_*` 事件） |
+
+> 当前实现位于 `src/astracore/adapters/tools/parallel_agent.py`，由 `agent.enable_spawn_agents` 控制是否暴露工具。Worker Agent 使用用户当前选择的 model profile，并通过 `AGENT_START`、`AGENT_TEXT_DELTA`、`AGENT_TOOL_CALL`、`AGENT_TOOL_RESULT`、`AGENT_DONE` 等事件回传进度。
 
 ### 1.2 目标
 
