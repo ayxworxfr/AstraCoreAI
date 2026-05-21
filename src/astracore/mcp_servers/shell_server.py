@@ -18,6 +18,7 @@ from pathlib import Path
 try:
     from fastmcp import FastMCP
 except ModuleNotFoundError:
+
     class FastMCP:  # type: ignore[no-redef]
         """Import-time fallback so helper tests do not require optional MCP deps."""
 
@@ -33,30 +34,34 @@ except ModuleNotFoundError:
         def run(self, *args: object, **kwargs: object) -> None:
             raise RuntimeError("fastmcp is required to run the shell MCP server")
 
+
 # ---------------------------------------------------------------------------
 # 危险命令黑名单（正则，case-insensitive），匹配即拒绝
 # ---------------------------------------------------------------------------
 _DANGEROUS_PATTERNS: list[re.Pattern[str]] = [
     re.compile(p, re.IGNORECASE)
     for p in [
-        r"rm\s+-[a-z]*r[a-z]*f\s+/",       # rm -rf /
-        r"rm\s+-[a-z]*f[a-z]*r\s+/",       # rm -fr /
-        r"format\s+[a-zA-Z]:",              # format C:
-        r"del\s+/[fFsS].*\s+[a-zA-Z]:",    # del /f /s C:
-        r"rd\s+/[sS]\s+/[qQ]\s+[a-zA-Z]:", # rd /s /q C:
-        r"mkfs",                             # mkfs.*
-        r"dd\s+if=",                         # dd if= (覆写磁盘)
-        r"shutdown",                         # shutdown / halt
+        r"rm\s+-[a-z]*r[a-z]*f\s+/",  # rm -rf /
+        r"rm\s+-[a-z]*f[a-z]*r\s+/",  # rm -fr /
+        r"format\s+[a-zA-Z]:",  # format C:
+        r"del\s+/[fFsS].*\s+[a-zA-Z]:",  # del /f /s C:
+        r"rd\s+/[sS]\s+/[qQ]\s+[a-zA-Z]:",  # rd /s /q C:
+        r"mkfs",  # mkfs.*
+        r"dd\s+if=",  # dd if= (覆写磁盘)
+        r"shutdown",  # shutdown / halt
         r"reboot",
         r"halt",
-        r">\s*/dev/sd",                      # > /dev/sdX
-        r"chmod\s+-[rR]\s+777\s+/",         # chmod -R 777 /
+        r">\s*/dev/sd",  # > /dev/sdX
+        r"chmod\s+-[rR]\s+777\s+/",  # chmod -R 777 /
     ]
 ]
 
 MAX_OUTPUT_CHARS = 8000
 _WINDOWS_UNIX_HINTS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bps\s+aux\b", re.IGNORECASE), "Get-Process | Sort-Object WorkingSet -Descending"),
+    (
+        re.compile(r"\bps\s+aux\b", re.IGNORECASE),
+        "Get-Process | Sort-Object WorkingSet -Descending",
+    ),
     (re.compile(r"\bgrep\b", re.IGNORECASE), "findstr <关键词> 或 Select-String"),
     (re.compile(r"\blsof\b", re.IGNORECASE), "netstat -ano"),
     (re.compile(r"\bpkill\b", re.IGNORECASE), "taskkill /F /PID <pid>"),
@@ -102,8 +107,7 @@ _TIMEOUT: float = _args.timeout
 mcp = FastMCP(
     name="shell",
     instructions=(
-        "提供受控的 shell 命令执行能力。"
-        "执行前请先用 list_allowed_dirs() 确认可操作目录。"
+        "提供受控的 shell 命令执行能力。执行前请先用 list_allowed_dirs() 确认可操作目录。"
     ),
 )
 
@@ -177,9 +181,9 @@ async def run_command(command: str, cwd: str | None = None) -> str:
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
-            stdin=asyncio.subprocess.DEVNULL,   # 断开 stdin：避免子进程等待终端输入导致永久阻塞
+            stdin=asyncio.subprocess.DEVNULL,  # 断开 stdin：避免子进程等待终端输入导致永久阻塞
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,   # stderr 合并到 stdout，统一捕获
+            stderr=asyncio.subprocess.STDOUT,  # stderr 合并到 stdout，统一捕获
             cwd=str(work_dir),
         )
 
@@ -194,7 +198,9 @@ async def run_command(command: str, cwd: str | None = None) -> str:
         if len(output) > MAX_OUTPUT_CHARS:
             result += f"\n... [输出已截断，共 {len(output)} 字符]"
 
-        output_line = f"[退出码: {exit_code}]\n{result}" if result else f"[退出码: {exit_code}] (无输出)"
+        output_line = (
+            f"[退出码: {exit_code}]\n{result}" if result else f"[退出码: {exit_code}] (无输出)"
+        )
         # 非零退出码视为命令失败：抛出异常让 fastmcp 将结果标记为 isError=True，
         # LLM 收到明确的错误信号而非模糊的"成功"响应，能更准确地判断后续操作。
         if exit_code != 0:

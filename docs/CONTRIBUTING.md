@@ -52,24 +52,20 @@ make fe-dev   # 前端  http://127.0.0.1:5173
 
 ```
 src/astracore/
-├── core/
-│   ├── domain/       # 纯领域模型 — 零外部依赖（Session、Message、ChatContext、Agent）
-│   ├── application/  # 用例（ToolLoop、RAG、MultiAgent）
-│   └── ports/        # 抽象接口（LLM、Memory、Retriever、Tool、Workflow）
-├── adapters/         # 端口的具体实现（Anthropic、OpenAI、Redis、ChromaDB、MCP…）
+├── app/              # FastAPI 应用装配、生命周期、中间件
+├── modules/          # 按能力模块组织的业务代码
+│   ├── agent/        # 多 Agent 编排领域、用例和 workflow port
+│   ├── chat/         # Chat API、Conversation API、Pipeline、会话领域模型
+│   ├── memory/       # 结构化 Memory API、领域模型、Engine、Store port
+│   ├── projects/     # Project API
+│   ├── rag/          # RAG API、检索领域模型、Pipeline、Retriever port、种子文档
+│   ├── settings/     # 用户设置 API
+│   ├── skills/       # Skill API、路由、提示渲染、内置 Skill 种子
+│   ├── system/       # Health / System API
+│   └── tools/        # 内置工具注册和 Tool port
+├── infrastructure/   # 技术实现（DB、LLM、Memory、Retrieval、Tools、Workflow）
 ├── mcp_servers/      # 内置 MCP 服务器实现
-├── runtime/
-│   ├── policy/       # PolicyEngine（retry / timeout）
-│   ├── observability/
-│   └── security/     # SecurityValidator
-├── service/
-│   ├── api/          # FastAPI 路由
-│   ├── middleware/
-│   ├── chat_pipeline.py   # 共享 chat 执行引擎（prepare + stream + execute）
-│   ├── builtin_tools.py   # 内置工具注册
-│   ├── skill_router.py    # Skill 自动路由
-│   ├── seeds.py           # 内置 Skill 种子同步
-│   └── prompt_utils.py    # 系统提示工具函数
+├── shared/           # 跨模块共享能力（policy、observability、security、shared ports）
 └── sdk/
     ├── client.py          # AstraCoreClient + Conversation 门面
     ├── config.py          # YAML 配置模型
@@ -81,11 +77,18 @@ config/
 └── config.docker.yaml
 
 frontend/src/
-├── components/       # React UI 组件
-├── pages/            # 页面（Chat / RAG / Skills / System）
-├── stores/           # Zustand 状态管理
-├── services/         # API / SSE 通信
-└── types/            # TypeScript 类型定义
+├── app/              # Router、App 根组件、主题
+├── features/         # 按产品能力组织页面、组件、状态、服务和类型
+│   ├── chat/
+│   ├── memory/
+│   ├── projects/
+│   ├── rag/
+│   ├── settings/
+│   ├── skills/
+│   └── system/
+├── layouts/          # 跨页面布局
+├── shared/           # 跨 feature 复用的组件、服务、类型、工具
+└── main.tsx
 
 tests/
 ├── unit/             # 单元测试（mock 外部依赖）
@@ -176,27 +179,71 @@ make test-cov                          # 带覆盖率报告
 
 ## 架构约定
 
+### 目录组织原则
+
+AstraCoreAI 采用 **按能力模块组织 + 基础设施分层**。目录首先反映产品能力，而不是技术层类型。
+
+- 新增业务能力时，优先在 `src/astracore/modules/<capability>/` 和 `frontend/src/features/<capability>/` 下收拢相关代码。
+- 不新增后端顶层 `service/`、`core/`、`adapters/`、`runtime/` 目录；这些职责已经分别收敛到 `app/`、`modules/`、`infrastructure/`、`shared/`。
+- 不新增前端顶层 `components/`、`pages/`、`stores/`、`services/`、`types/` 目录；feature 私有代码放在对应 `features/<capability>/` 内。
+- 只有真正跨多个能力模块复用的代码，才放入 `shared/`。不要为了“方便 import”把业务代码提前放进 shared。
+- 模块内可以继续按 `api.py`、`application/`、`domain.py`、`ports/`、`components/`、`services/`、`store/` 等技术职责细分，但这一级必须服务于所属能力模块。
+- 迁移或新增代码时不保留旧路径兼容层。当前分支未发布的旧路径直接删除并适配引用。
+
 ### 依赖方向
 
 ```
-domain ← application ← adapters ← service/sdk
+modules/domain + modules/ports ← modules/application ← infrastructure/app/sdk
 ```
 
-- `domain` 层：**零外部依赖**，不能 import 任何第三方库
-- `application` 层：只依赖 `domain` 和 `ports`，不依赖具体适配器
-- `ports`（接口）由 `application` 定义，`adapters` 负责实现
+- `modules/<capability>/domain*`：表达该能力的核心数据和规则，不能依赖具体基础设施实现。
+- `modules/<capability>/application/`：编排领域对象和 port，不直接依赖 LLM、DB、ChromaDB、MCP 等具体实现。
+- `modules/<capability>/ports/`：定义该能力需要的抽象接口。
+- `infrastructure/`：实现 port，封装 SQLAlchemy、LLM SDK、ChromaDB、MCP、Workflow 等技术细节。
+- `app/`：只负责 FastAPI 装配、生命周期、中间件和路由注册，不承载业务逻辑。
+- `shared/`：只放跨能力模块的稳定共享能力，例如 logger、policy、security、LLM port。
+- `sdk/`：面向外部调用者的门面，可以装配 modules 和 infrastructure，但不要复制 HTTP API 的业务逻辑。
 
 违反依赖方向的 import 会被 mypy 和 code review 拒绝。
 
+### 后端新增代码放置规则
+
+| 场景 | 放置位置 |
+|---|---|
+| 新增 HTTP 路由 | `src/astracore/modules/<capability>/api.py` |
+| 新增领域模型 | `src/astracore/modules/<capability>/domain.py` 或 `domain/` |
+| 新增用例 / 编排逻辑 | `src/astracore/modules/<capability>/application/` |
+| 新增抽象接口 | `src/astracore/modules/<capability>/ports/`；跨模块稳定接口才放 `shared/ports/` |
+| 新增 DB / LLM / MCP / ChromaDB 实现 | `src/astracore/infrastructure/` |
+| 新增启动逻辑 / 中间件 / 路由注册 | `src/astracore/app/` |
+| 新增内置 Skill | `src/astracore/modules/skills/builtin/<skill-name>/` |
+| 新增 RAG 种子文档 | `src/astracore/modules/rag/seed_docs/` |
+
+### 前端新增代码放置规则
+
+| 场景 | 放置位置 |
+|---|---|
+| 新增页面 | `frontend/src/features/<capability>/pages/` |
+| 新增 feature 私有组件 | `frontend/src/features/<capability>/components/` |
+| 新增 feature 状态 | `frontend/src/features/<capability>/store/` |
+| 新增 feature API 调用 | `frontend/src/features/<capability>/services/` |
+| 新增 feature 类型 | `frontend/src/features/<capability>/types.ts` |
+| 新增跨 feature 组件 | `frontend/src/shared/components/` |
+| 新增跨 feature API 基础设施 | `frontend/src/shared/services/` |
+| 新增跨 feature 类型 | `frontend/src/shared/types/` |
+| 新增跨 feature 工具函数 | `frontend/src/shared/utils/` |
+
+前端跨目录 import 优先使用 `@/` 别名，例如 `@/features/chat/store/chatStore`。feature 内部相邻文件可以使用相对路径。
+
 ### SDK 与 Service 共享执行引擎
 
-`service/chat_pipeline.py` 中的 `ChatPipeline` 是 SDK 与 HTTP Service 的统一 chat 执行引擎，采用 **Command + Pipeline** 模式：
+`modules/chat/pipeline.py` 中的 `ChatPipeline` 是 SDK 与 HTTP Service 的统一 chat 执行引擎，采用 **Command + Pipeline** 模式：
 
-- **`prepare()`**：一次性完成所有 DB 查询与业务逻辑决策（Skill 解析、系统提示拼装、温度解析、工具白名单计算），返回不可变的 `ChatContext`（`core/domain/chat_context.py`）
+- **`prepare()`**：一次性完成所有 DB 查询与业务逻辑决策（Skill 解析、系统提示拼装、温度解析、工具白名单计算），返回不可变的 `ChatContext`（`modules/chat/domain/chat_context.py`）
 - **`stream(ctx)`**：纯执行阶段，消费 `ChatContext` 数据，零额外 DB 查询、零条件分支。内部路由到 `_stream_normal`（直接 LLM 调用）或 `_stream_tool_loop`（工具循环 + 总结兜底）
 - **`execute(ctx)`**：`stream()` 的非流式封装，收集所有 `TEXT_DELTA` 返回完整文本
 
-**HTTP Service**（`service/api/chat.py`）调用 `prepare()` 后把 `ChatContext` 交给后台任务，`_execute_run` 消费 `stream()` 输出的 `StreamEvent`，叠加 SSE 广播、run 状态追踪等 HTTP 专属逻辑。
+**HTTP Service**（`modules/chat/api.py`）调用 `prepare()` 后把 `ChatContext` 交给后台任务，`_execute_run` 消费 `stream()` 输出的 `StreamEvent`，叠加 SSE 广播、run 状态追踪等 HTTP 专属逻辑。
 
 **SDK**（`sdk/client.py`）在 `chat_stream()` 中调用 `prepare()` 后直接 yield `stream()` 的事件流，额外 yield `SKILL_MATCH` 事件（技能路由结果），MCP 生命周期在 `_start()` / `_stop()` 中管理。`Conversation` 门面封装了 `session_id` 自动管理和常用参数默认值，是推荐的多轮对话入口。
 
@@ -206,21 +253,21 @@ domain ← application ← adapters ← service/sdk
 
 优先通过 `config/config.yaml` 增加 profile，而不是新增适配器：
 
-1. 在 `llm.profiles` 添加稳定 `id`、展示 `label`、`provider`、`base_url`、`api_key_env`、`model`。
+1. 在 `llm.profiles` 添加稳定 `id`、展示 `label`、`protocol`、`base_url`、`api_key_env`、`model`。
 2. 在根目录 `.env` 填写 `api_key_env` 指向的真实密钥。
 3. 如模型能力不在内置表中，先更新 `src/astracore/sdk/model_capabilities.py`。
 4. 只有代理或模型行为与内置表不一致时，才在 YAML 的 `capabilities` 写局部覆盖。
 
 ### 新增 LLM 适配器
 
-1. 在 `src/astracore/adapters/llm/` 新建文件，继承 `LLMAdapter`（`core/ports/llm.py`）。
+1. 在 `src/astracore/infrastructure/llm/` 新建文件，继承 `LLMAdapter`（`shared/ports/llm.py`）。
 2. 实现 `generate` 和 `generate_stream` 两个方法。
-3. 扩展 `LLMProfileConfig.provider` 的枚举与 Service/SDK 的 adapter factory。
+3. 扩展 `LLMProfileConfig.protocol` 的枚举与 Service/SDK 的 adapter factory。
 4. 补充 profile 配置加载、能力推导和适配器行为单元测试。
 
 ### 新增工具
 
-**内置工具**（无需外部进程）：在 `src/astracore/service/builtin_tools.py` 注册。
+**内置工具**（无需外部进程）：在 `src/astracore/modules/tools/builtin.py` 注册。
 
 **MCP 工具**：在 `config/config.yaml` 的 `mcp.servers` 中配置；类型为 `custom` 时提供 `name` / `command` / `args` / `env`。
 
@@ -250,18 +297,18 @@ domain ← application ← adapters ← service/sdk
 
 `done` 事件的 `conversation` 字段携带后端更新后的会话元数据，前端收到后直接同步本地状态，无需再发 PATCH 请求。如果会话行不存在（如纯 SDK 调用未创建 ConversationRow），该字段可能为 `null`。
 
-前端统一通过 `chatService.ts` 中的 `safeJson()` 解析，新增事件类型须同步更新 `parseBlock` 和 `StreamHandlers` 类型定义。
+前端统一通过 `features/chat/services/chatService.ts` 中的 `safeJson()` 解析，新增事件类型须同步更新 `parseBlock` 和 `StreamHandlers` 类型定义。
 
 ### 并行多 Agent（spawn_agents）
 
-`ParallelAgentTool`（`adapters/tools/parallel_agent.py`）实现 `spawn_agents` 工具，通过 `asyncio.Queue` 并发驱动最多 5 个 Worker Agent。
+`ParallelAgentTool`（`infrastructure/tools/parallel_agent.py`）实现 `spawn_agents` 工具，通过 `asyncio.Queue` 并发驱动最多 5 个 Worker Agent。
 
 **关键设计约定：**
 
 - **`is_timeout_managed` 协议**：`ParallelAgentTool.is_timeout_managed("spawn_agents")` 返回 `True`，`ToolLoopUseCase` 因此用 `contextlib.nullcontext()` 替代 `asyncio.timeout()`，避免外层超时误杀长时间运行的并行任务。所有自行管理超时的工具须遵循此协议。
 - **`profile_id` 透传**：`ToolLoopUseCase` 通过 `context={"profile_id": self.profile_id}` 把当前用户选择的模型 profile 传给工具，`ParallelAgentTool` 据此为每个 Worker 创建同 profile 的 `LLMAdapter`（按 profile_id 缓存）。
 - **取消传播**：外层 generator 收到 `CancelledError` 时，立即 cancel 所有 Worker asyncio.Task，再 `await asyncio.gather(return_exceptions=True)` 确保清理完成后再重新 raise。
-- **开关控制**：`config.agent.enable_spawn_agents`，`False` 时 `builtin_tools.py` 不注册 `ParallelAgentTool`，LLM 不可见该工具。
+- **开关控制**：`config.agent.enable_spawn_agents`，`False` 时 `modules/tools/builtin.py` 不注册 `ParallelAgentTool`，LLM 不可见该工具。
 
 ### 工具结果截断
 

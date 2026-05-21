@@ -9,9 +9,9 @@ import asyncio
 
 from dotenv import load_dotenv
 
-from astracore.core.ports.llm import StreamEventType
-from astracore.core.ports.tool import ToolParameter, ToolParameterType
-from astracore.runtime.observability.logger import get_logger, setup_logging
+from astracore.shared.ports.llm import StreamEventType
+from astracore.modules.tools.ports.tool import ToolParameter, ToolParameterType
+from astracore.shared.observability.logger import get_logger, setup_logging
 from astracore.sdk import AstraCoreClient
 
 load_dotenv()

@@ -38,8 +38,8 @@
 ```python
 # tests/core/domain/test_session.py
 """Tests for SessionState, ContextWindow, TokenBudget domain models."""
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.session import ContextWindow, SessionState, TokenBudget
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.chat.domain.session import ContextWindow, SessionState, TokenBudget
 
 
 def _msg(content: str) -> Message:
@@ -170,10 +170,10 @@ git commit -m "test: session domain — truncate_to_budget O(n) and restore_mess
 """Tests for PolicyEngine — retry (tenacity), timeout, security, budget policies."""
 import asyncio
 import pytest
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.session import SessionState
-from astracore.runtime.policy.engine import PolicyConfig, PolicyEngine, _make_retry_predicate
-from astracore.runtime.policy.rules import RetryRule, SecurityRule, TimeoutRule
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.chat.domain.session import SessionState
+from astracore.shared.policy.engine import PolicyConfig, PolicyEngine, _make_retry_predicate
+from astracore.shared.policy.rules import RetryRule, SecurityRule, TimeoutRule
 
 
 # ---------- _make_retry_predicate ----------
@@ -343,7 +343,7 @@ git commit -m "test: policy engine — tenacity retry, timeout, security check"
 # tests/runtime/test_security_validator.py
 """Tests for InputValidator (XSS patterns, length) and ContentFilter."""
 import pytest
-from astracore.runtime.security.validator import ContentFilter, InputValidator
+from astracore.shared.security.validator import ContentFilter, InputValidator
 
 
 @pytest.fixture
@@ -483,10 +483,10 @@ git commit -m "test: security validator — XSS patterns, length limit, metadata
 """Tests for RAGPipeline — retrieve_and_inject, index, delete."""
 import pytest
 from unittest.mock import AsyncMock
-from astracore.core.application.rag import RAGPipeline
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.retrieval import Citation, RetrievedChunk
-from astracore.core.ports.retriever import IndexResult
+from astracore.modules.rag.application.pipeline import RAGPipeline
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.rag.domain import Citation, RetrievedChunk
+from astracore.modules.rag.ports.retriever import IndexResult
 
 
 def _chunk(content: str, score: float = 0.9, source_id: str = "doc1") -> RetrievedChunk:
@@ -623,10 +623,10 @@ import pytest
 from unittest.mock import AsyncMock
 from uuid import uuid4
 from astracore.core.application.chat import ChatUseCase
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.ports.llm import LLMResponse
-from astracore.core.ports.memory import MemoryAdapter
-from astracore.runtime.policy.engine import PolicyEngine
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.shared.ports.llm import LLMResponse
+from astracore.modules.memory.ports.memory import MemoryAdapter
+from astracore.shared.policy.engine import PolicyEngine
 
 
 @pytest.fixture
@@ -752,18 +752,18 @@ git commit -m "test: chat use case — session restore, token double-count fix, 
 """Tests for ToolLoopUseCase — tool execution, security block, max_iterations, build_defs."""
 import pytest
 from unittest.mock import AsyncMock
-from astracore.core.application.tool_loop import ToolLoopUseCase
-from astracore.core.domain.message import ToolCall
-from astracore.core.domain.session import SessionState
-from astracore.core.ports.llm import LLMResponse
-from astracore.core.ports.tool import (
+from astracore.modules.chat.application.tool_loop import ToolLoopUseCase
+from astracore.modules.chat.domain.message import ToolCall
+from astracore.modules.chat.domain.session import SessionState
+from astracore.shared.ports.llm import LLMResponse
+from astracore.modules.tools.ports.tool import (
     ToolDefinition,
     ToolExecutionResult,
     ToolParameter,
     ToolParameterType,
 )
-from astracore.runtime.policy.engine import PolicyConfig, PolicyEngine
-from astracore.runtime.policy.rules import SecurityRule
+from astracore.shared.policy.engine import PolicyConfig, PolicyEngine
+from astracore.shared.policy.rules import SecurityRule
 
 
 def _tool_def(name: str = "search") -> ToolDefinition:
@@ -956,9 +956,9 @@ git commit -m "test: tool loop — security block, max_iterations, tool executio
 """Tests for AnthropicAdapter — _convert_messages and generate_stream tool arg accumulation."""
 import pytest
 from unittest.mock import MagicMock
-from astracore.adapters.llm.anthropic import AnthropicAdapter
-from astracore.core.domain.message import Message, MessageRole, ToolCall, ToolResult
-from astracore.core.ports.llm import StreamEventType
+from astracore.infrastructure.llm.anthropic import AnthropicAdapter
+from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
+from astracore.shared.ports.llm import StreamEventType
 
 
 @pytest.fixture
@@ -1208,8 +1208,8 @@ from uuid import uuid4
 
 import pytest
 
-from astracore.adapters.memory.hybrid import HybridMemoryAdapter
-from astracore.core.domain.message import Message, MessageRole
+from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
+from astracore.modules.chat.domain.message import Message, MessageRole
 
 
 def _adapter() -> HybridMemoryAdapter:
@@ -1355,9 +1355,9 @@ git commit -m "test: hybrid memory — in-memory fallback, TTL eviction, cap enf
 """Tests for NativeWorkflowOrchestrator — create, execute, pause, resume, checkpoint."""
 import pytest
 from uuid import uuid4
-from astracore.adapters.workflow.native import NativeWorkflowOrchestrator
-from astracore.core.domain.agent import AgentRole, AgentTask, AgentTaskStatus
-from astracore.core.ports.workflow import WorkflowStatus
+from astracore.infrastructure.workflow.native import NativeWorkflowOrchestrator
+from astracore.modules.agent.domain import AgentRole, AgentTask, AgentTaskStatus
+from astracore.modules.agent.ports.workflow import WorkflowStatus
 
 
 def _task(description: str = "do something") -> AgentTask:

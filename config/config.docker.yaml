@@ -3,7 +3,7 @@ llm:
   profiles:
     - id: deepseek-v4-flash
       label: DeepSeek Chat
-      provider: anthropic
+      protocol: anthropic
       base_url: https://api.deepseek.com/anthropic
       api_key_env: DEEPSEEK_API_KEY
       model: deepseek-v4-flash

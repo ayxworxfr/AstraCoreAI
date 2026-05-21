@@ -6,9 +6,9 @@ from uuid import uuid4
 
 import pytest
 
-from astracore.adapters.db.session import get_engine, init_db
-from astracore.core.domain.message import Message
-from astracore.core.ports.llm import LLMAdapter, LLMResponse, StreamEvent
+from astracore.infrastructure.db.session import get_engine, init_db
+from astracore.modules.chat.domain.message import Message
+from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent
 
 
 class _MemoryDecisionLLM(LLMAdapter):
@@ -49,9 +49,9 @@ async def memory_db(tmp_path, monkeypatch):
     get_engine.cache_clear()
     await init_db(db_url)
 
-    from astracore.service.api import conversations as conversations_api
-    from astracore.service.api import memory as memory_api
-    from astracore.service.api import projects as projects_api
+    from astracore.modules.chat import conversations_api
+    from astracore.modules.memory import api as memory_api
+    from astracore.modules.projects import api as projects_api
 
     monkeypatch.setattr(conversations_api, "_get_db_url", lambda: db_url)
     monkeypatch.setattr(memory_api, "_get_db_url", lambda: db_url)
@@ -69,9 +69,9 @@ async def memory_db(tmp_path, monkeypatch):
 
 
 async def test_memory_engine_formats_relevant_context(memory_db) -> None:
-    from astracore.adapters.memory.store import SQLMemoryStore
-    from astracore.core.application.memory_engine import MemoryEngine
-    from astracore.core.domain.memory import MemoryScope, MemoryType
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryType
 
     session_id = uuid4()
     engine = MemoryEngine(SQLMemoryStore(memory_db))
@@ -120,8 +120,8 @@ async def test_memory_engine_formats_relevant_context(memory_db) -> None:
 
 
 async def test_memory_api_crud_and_project_binding(memory_db) -> None:
-    from astracore.service.api import memory as memory_api
-    from astracore.service.api import projects as projects_api
+    from astracore.modules.memory import api as memory_api
+    from astracore.modules.projects import api as projects_api
 
     conversation_id = uuid4()
     project = await projects_api.create_project(
@@ -164,8 +164,8 @@ async def test_memory_api_crud_and_project_binding(memory_db) -> None:
 
 
 async def test_memory_extraction_requires_llm_decision(memory_db) -> None:
-    from astracore.adapters.memory.store import SQLMemoryStore
-    from astracore.core.application.memory_engine import MemoryEngine
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
 
     session_id = uuid4()
     engine = MemoryEngine(SQLMemoryStore(memory_db))
@@ -183,8 +183,8 @@ async def test_memory_extraction_requires_llm_decision(memory_db) -> None:
 
 
 async def test_llm_memory_extraction_creates_session_memory(memory_db) -> None:
-    from astracore.adapters.memory.store import SQLMemoryStore
-    from astracore.core.application.memory_engine import MemoryEngine
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
 
     session_id = uuid4()
     engine = MemoryEngine(SQLMemoryStore(memory_db))
@@ -212,9 +212,9 @@ async def test_llm_memory_extraction_creates_session_memory(memory_db) -> None:
 async def test_memory_extraction_updates_existing_subject_instead_of_creating_duplicate(
     memory_db,
 ) -> None:
-    from astracore.adapters.memory.store import SQLMemoryStore
-    from astracore.core.application.memory_engine import MemoryEngine
-    from astracore.core.domain.memory import MemoryScope, MemoryType
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryType
 
     session_id = uuid4()
     engine = MemoryEngine(SQLMemoryStore(memory_db))
@@ -251,9 +251,9 @@ async def test_memory_extraction_updates_existing_subject_instead_of_creating_du
 
 
 async def test_memory_extraction_does_not_overwrite_locked_conflict(memory_db) -> None:
-    from astracore.adapters.memory.store import SQLMemoryStore
-    from astracore.core.application.memory_engine import MemoryEngine
-    from astracore.core.domain.memory import MemoryScope, MemoryStatus, MemoryType
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryStatus, MemoryType
 
     session_id = uuid4()
     engine = MemoryEngine(SQLMemoryStore(memory_db))
@@ -291,9 +291,9 @@ async def test_memory_extraction_does_not_overwrite_locked_conflict(memory_db) -
 
 
 async def test_session_memory_compaction_deletes_compressed_details(memory_db) -> None:
-    from astracore.adapters.memory.store import SQLMemoryStore
-    from astracore.core.application.memory_engine import MemoryEngine
-    from astracore.core.domain.memory import MemoryScope, MemoryType
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryType
 
     session_id = uuid4()
     engine = MemoryEngine(SQLMemoryStore(memory_db))
@@ -317,12 +317,12 @@ async def test_session_memory_compaction_deletes_compressed_details(memory_db) -
 
 
 async def test_delete_conversation_cleans_related_memory_and_history(memory_db) -> None:
-    from astracore.adapters.db.models import ChatRunRow, ChatSessionRow
-    from astracore.adapters.db.session import get_session
-    from astracore.adapters.memory.store import SQLMemoryStore
-    from astracore.core.application.memory_engine import MemoryEngine
-    from astracore.core.domain.memory import MemoryScope, MemoryType
-    from astracore.service.api import conversations as conversations_api
+    from astracore.infrastructure.db.models import ChatRunRow, ChatSessionRow
+    from astracore.infrastructure.db.session import get_session
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.chat import conversations_api
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryType
 
     conversation_id = uuid4()
     engine = MemoryEngine(SQLMemoryStore(memory_db))
@@ -360,9 +360,9 @@ async def test_delete_conversation_cleans_related_memory_and_history(memory_db) 
 async def test_chat_pipeline_injects_memory_context() -> None:
     from unittest.mock import AsyncMock, MagicMock
 
-    from astracore.core.application.rag import RAGPipeline
-    from astracore.runtime.policy.engine import PolicyEngine
-    from astracore.service.chat_pipeline import ChatPipeline
+    from astracore.modules.chat.pipeline import ChatPipeline
+    from astracore.modules.rag.application.pipeline import RAGPipeline
+    from astracore.shared.policy.engine import PolicyEngine
 
     class _MemoryEngineStub:
         async def build_memory_context(self, *, session_id, message):

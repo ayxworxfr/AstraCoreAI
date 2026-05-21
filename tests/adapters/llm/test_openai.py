@@ -5,14 +5,37 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from astracore.adapters.llm.openai import OpenAIAdapter
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.ports.llm import StreamEventType
+from astracore.infrastructure.llm.openai import OpenAIAdapter
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.shared.ports.llm import StreamEventType
 
 
 @pytest.fixture
 def adapter() -> OpenAIAdapter:
     return OpenAIAdapter(api_key="test-key")
+
+
+def test_openai_adapter_passes_extra_headers_to_client(monkeypatch):
+    created_kwargs = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            created_kwargs.update(kwargs)
+
+    monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
+    adapter = OpenAIAdapter(
+        api_key="test-key",
+        base_url="https://proxy.example.com/v1",
+        extra_headers={"x-proxy-route": "glm"},
+    )
+
+    adapter._get_client()
+
+    assert created_kwargs == {
+        "api_key": "test-key",
+        "base_url": "https://proxy.example.com/v1",
+        "default_headers": {"x-proxy-route": "glm"},
+    }
 
 
 class _FakeAsyncStream:
@@ -88,7 +111,7 @@ async def test_generate_stream_merges_tool_arguments_by_index_when_id_missing(ad
 
 @pytest.mark.asyncio
 async def test_generate_uses_responses_api_when_configured():
-    adapter = OpenAIAdapter(api_key="test-key", api_type="responses")
+    adapter = OpenAIAdapter(api_key="test-key", protocol="responses")
     mock_client = MagicMock()
     mock_client.responses.create = AsyncMock(
         return_value=SimpleNamespace(
@@ -120,7 +143,7 @@ async def test_generate_uses_responses_api_when_configured():
 
 @pytest.mark.asyncio
 async def test_generate_stream_uses_responses_api_when_configured():
-    adapter = OpenAIAdapter(api_key="test-key", api_type="responses")
+    adapter = OpenAIAdapter(api_key="test-key", protocol="responses")
     mock_client = MagicMock()
     mock_client.responses.stream.return_value = _FakeResponsesStream(
         [

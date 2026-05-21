@@ -1,13 +1,14 @@
 """Tests for PolicyEngine — retry (tenacity), timeout, security, budget policies."""
+
 import asyncio
 
 import pytest
 
-from astracore.runtime.policy.engine import PolicyConfig, PolicyEngine, _make_retry_predicate
-from astracore.runtime.policy.rules import RetryRule, SecurityRule, TimeoutRule
-
+from astracore.shared.policy.engine import PolicyConfig, PolicyEngine, _make_retry_predicate
+from astracore.shared.policy.rules import RetryRule, SecurityRule, TimeoutRule
 
 # ---------- _make_retry_predicate ----------
+
 
 def test_retry_predicate_retries_generic_exception():
     pred = _make_retry_predicate([429, 500])
@@ -29,6 +30,7 @@ def test_retry_predicate_retries_listed_status_code():
 
 
 # ---------- apply_retry_policy ----------
+
 
 async def test_apply_retry_policy_succeeds_on_third_attempt():
     config = PolicyConfig(retry=RetryRule(max_retries=3, initial_delay_ms=0, max_delay_ms=0))
@@ -77,6 +79,7 @@ async def test_apply_retry_policy_does_not_retry_non_listed_status_code():
 
 # ---------- apply_timeout_policy ----------
 
+
 async def test_apply_timeout_policy_raises_on_slow_function():
     config = PolicyConfig(timeout=TimeoutRule(llm_timeout_ms=50))
     engine = PolicyEngine(config)
@@ -112,6 +115,7 @@ async def test_apply_timeout_policy_uses_correct_timeout_for_type():
 
 
 # ---------- check_security_policy ----------
+
 
 def test_check_security_policy_allows_all_when_no_whitelist():
     engine = PolicyEngine()

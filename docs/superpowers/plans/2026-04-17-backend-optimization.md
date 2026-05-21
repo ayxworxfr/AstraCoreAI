@@ -79,12 +79,12 @@ from uuid import uuid4
 
 import pytest
 
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.session import SessionState
-from astracore.core.ports.llm import LLMResponse, StreamEvent, StreamEventType
-from astracore.core.ports.memory import MemoryAdapter
-from astracore.core.ports.tool import ToolDefinition, ToolExecutionResult
-from astracore.runtime.policy.engine import PolicyEngine
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.chat.domain.session import SessionState
+from astracore.shared.ports.llm import LLMResponse, StreamEvent, StreamEventType
+from astracore.modules.memory.ports.memory import MemoryAdapter
+from astracore.modules.tools.ports.tool import ToolDefinition, ToolExecutionResult
+from astracore.shared.policy.engine import PolicyEngine
 
 
 @pytest.fixture
@@ -129,8 +129,8 @@ Create `tests/core/domain/test_domain_models.py`:
 """Test that domain models use timezone-aware datetimes."""
 from datetime import UTC, datetime, timezone
 
-from astracore.core.domain.message import Message, MessageRole, ToolCall, ToolResult
-from astracore.core.domain.session import SessionState, TokenBudget
+from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
+from astracore.modules.chat.domain.session import SessionState, TokenBudget
 
 
 def test_message_created_at_is_timezone_aware():
@@ -239,7 +239,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class LLMConfig(BaseModel):
-    provider: str = "anthropic"
+    protocol: str = "anthropic"
     api_key: str
     default_model: str = "claude-sonnet-4-6"
     temperature: float = 0.7
@@ -341,8 +341,8 @@ Create `tests/core/domain/test_session.py`:
 """Tests for session domain model."""
 import pytest
 
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.session import ContextWindow, SessionState
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.chat.domain.session import ContextWindow, SessionState
 
 
 def _make_message(content: str) -> Message:
@@ -475,10 +475,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from astracore.core.application.rag import RAGPipeline
-from astracore.core.domain.message import MessageRole
-from astracore.core.domain.retrieval import Citation, RetrievalQuery, RetrievedChunk
-from astracore.core.ports.retriever import RetrieverAdapter
+from astracore.modules.rag.application.pipeline import RAGPipeline
+from astracore.modules.chat.domain.message import MessageRole
+from astracore.modules.rag.domain import Citation, RetrievalQuery, RetrievedChunk
+from astracore.modules.rag.ports.retriever import RetrieverAdapter
 
 
 def _make_chunk(score: float = 0.9) -> RetrievedChunk:
@@ -511,7 +511,7 @@ async def test_retrieve_and_inject_respects_top_k(mock_retriever):
 @pytest.mark.asyncio
 async def test_retrieve_and_inject_returns_context_prepended(mock_retriever):
     pipeline = RAGPipeline(retriever=mock_retriever)
-    from astracore.core.domain.message import Message
+    from astracore.modules.chat.domain.message import Message
     original = [Message(role=MessageRole.USER, content="hello")]
     result = await pipeline.retrieve_and_inject(query="test", messages=original, top_k=1)
     # Context message is prepended
@@ -609,9 +609,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from astracore.adapters.llm.anthropic import AnthropicAdapter
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.ports.llm import StreamEventType
+from astracore.infrastructure.llm.anthropic import AnthropicAdapter
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.shared.ports.llm import StreamEventType
 
 
 def _make_text_delta_event(text: str):
@@ -844,13 +844,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from astracore.core.application.tool_loop import ToolLoopUseCase
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.session import SessionState
-from astracore.core.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
-from astracore.core.ports.tool import ToolAdapter, ToolDefinition, ToolExecutionResult
-from astracore.runtime.policy.engine import PolicyEngine, PolicyConfig
-from astracore.runtime.policy.rules import SecurityRule
+from astracore.modules.chat.application.tool_loop import ToolLoopUseCase
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.chat.domain.session import SessionState
+from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
+from astracore.modules.tools.ports.tool import ToolAdapter, ToolDefinition, ToolExecutionResult
+from astracore.shared.policy.engine import PolicyEngine, PolicyConfig
+from astracore.shared.policy.rules import SecurityRule
 
 
 def _make_session_with_user_msg(content: str = "hello") -> SessionState:
@@ -882,7 +882,7 @@ def mock_tool_adapter():
 @pytest.mark.asyncio
 async def test_streaming_tool_loop_applies_security_policy():
     """Security policy must block tools in streaming path, same as non-streaming."""
-    from astracore.core.ports.llm import ToolCall as LLMToolCall
+    from astracore.shared.ports.llm import ToolCall as LLMToolCall
 
     llm = AsyncMock(spec=LLMAdapter)
 
@@ -941,11 +941,11 @@ Replace the entire `src/astracore/core/application/tool_loop.py`:
 from collections.abc import AsyncIterator
 from typing import Any
 
-from astracore.core.domain.message import Message, MessageRole, ToolResult
-from astracore.core.domain.session import SessionState
-from astracore.core.ports.llm import LLMAdapter, StreamEvent, StreamEventType
-from astracore.core.ports.tool import ToolAdapter
-from astracore.runtime.policy.engine import PolicyEngine
+from astracore.modules.chat.domain.message import Message, MessageRole, ToolResult
+from astracore.modules.chat.domain.session import SessionState
+from astracore.shared.ports.llm import LLMAdapter, StreamEvent, StreamEventType
+from astracore.modules.tools.ports.tool import ToolAdapter
+from astracore.shared.policy.engine import PolicyEngine
 
 
 class ToolLoopUseCase:
@@ -1127,15 +1127,15 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from astracore.adapters.llm.anthropic import AnthropicAdapter
-from astracore.adapters.memory.hybrid import HybridMemoryAdapter
-from astracore.adapters.tools.native import NativeToolAdapter
+from astracore.infrastructure.llm.anthropic import AnthropicAdapter
+from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
+from astracore.infrastructure.tools.native import NativeToolAdapter
 from astracore.core.application.chat import ChatUseCase
-from astracore.core.application.tool_loop import ToolLoopUseCase
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.session import SessionState
-from astracore.core.ports.llm import StreamEventType
-from astracore.runtime.policy.engine import PolicyEngine
+from astracore.modules.chat.application.tool_loop import ToolLoopUseCase
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.chat.domain.session import SessionState
+from astracore.shared.ports.llm import StreamEventType
+from astracore.shared.policy.engine import PolicyEngine
 
 router = APIRouter()
 
@@ -1355,8 +1355,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from astracore.adapters.retrieval.chroma import ChromaRetrieverAdapter
-from astracore.core.application.rag import RAGPipeline
+from astracore.infrastructure.retrieval.chroma import ChromaRetrieverAdapter
+from astracore.modules.rag.application.pipeline import RAGPipeline
 
 router = APIRouter()
 
@@ -1473,8 +1473,8 @@ from unittest.mock import AsyncMock, call
 
 import pytest
 
-from astracore.runtime.policy.engine import PolicyConfig, PolicyEngine
-from astracore.runtime.policy.rules import RetryRule, TimeoutRule
+from astracore.shared.policy.engine import PolicyConfig, PolicyEngine
+from astracore.shared.policy.rules import RetryRule, TimeoutRule
 
 
 @pytest.mark.asyncio
@@ -1546,9 +1546,9 @@ from typing import Any
 from pydantic import BaseModel
 from tenacity import RetryError, retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from astracore.core.domain.message import Message
-from astracore.core.domain.session import SessionState
-from astracore.runtime.policy.rules import (
+from astracore.modules.chat.domain.message import Message
+from astracore.modules.chat.domain.session import SessionState
+from astracore.shared.policy.rules import (
     BudgetRule,
     RetryRule,
     SecurityRule,
@@ -1752,8 +1752,8 @@ from uuid import uuid4
 
 import pytest
 
-from astracore.adapters.memory.hybrid import HybridMemoryAdapter
-from astracore.core.domain.message import Message, MessageRole
+from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
+from astracore.modules.chat.domain.message import Message, MessageRole
 
 
 def _adapter() -> HybridMemoryAdapter:
@@ -1825,8 +1825,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from astracore.core.domain.message import Message
-from astracore.core.ports.memory import MemoryAdapter, MemoryEntry
+from astracore.modules.chat.domain.message import Message
+from astracore.modules.memory.ports.memory import MemoryAdapter, MemoryEntry
 
 
 class HybridMemoryAdapter(MemoryAdapter):
@@ -2064,7 +2064,7 @@ from uuid import uuid4
 
 import pytest
 
-from astracore.adapters.memory.hybrid import HybridMemoryAdapter
+from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 
 POSTGRES_URL = os.getenv(
     "ASTRACORE_TEST_POSTGRES_URL",
@@ -2127,7 +2127,7 @@ Add to `src/astracore/adapters/memory/hybrid.py` (after the existing `_get_db` m
     async def ensure_schema(self) -> None:
         """Create tables if they don't exist. Call at startup or in tests."""
         from sqlalchemy.ext.asyncio import AsyncEngine
-        from astracore.adapters.memory.models import Base
+        from astracore.infrastructure.memory.models import Base
 
         engine: AsyncEngine = self._get_db()
         async with engine.begin() as conn:
@@ -2135,7 +2135,7 @@ Add to `src/astracore/adapters/memory/hybrid.py` (after the existing `_get_db` m
 
     async def drop_schema(self) -> None:
         """Drop all tables. Test helper only."""
-        from astracore.adapters.memory.models import Base
+        from astracore.infrastructure.memory.models import Base
         engine = self._get_db()
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
@@ -2147,7 +2147,7 @@ Add to `src/astracore/adapters/memory/hybrid.py` (after the existing `_get_db` m
         metadata: dict[str, Any] | None = None,
     ) -> MemoryEntry:
         from sqlalchemy.ext.asyncio import AsyncSession
-        from astracore.adapters.memory.models import MemoryEntryRow
+        from astracore.infrastructure.memory.models import MemoryEntryRow
 
         entry = MemoryEntry(
             session_id=session_id,
@@ -2176,7 +2176,7 @@ Add to `src/astracore/adapters/memory/hybrid.py` (after the existing `_get_db` m
     async def load_long_term(self, session_id: UUID, limit: int = 10) -> list[MemoryEntry]:
         from sqlalchemy import select
         from sqlalchemy.ext.asyncio import AsyncSession
-        from astracore.adapters.memory.models import MemoryEntryRow
+        from astracore.infrastructure.memory.models import MemoryEntryRow
 
         try:
             engine = self._get_db()
@@ -2210,7 +2210,7 @@ Add to `src/astracore/adapters/memory/hybrid.py` (after the existing `_get_db` m
         """Full-text search via ILIKE. For production, use pg_trgm or a vector index."""
         from sqlalchemy import select
         from sqlalchemy.ext.asyncio import AsyncSession
-        from astracore.adapters.memory.models import MemoryEntryRow
+        from astracore.infrastructure.memory.models import MemoryEntryRow
 
         try:
             engine = self._get_db()
@@ -2274,9 +2274,9 @@ from uuid import uuid4
 
 import pytest
 
-from astracore.adapters.workflow.native import NativeWorkflowOrchestrator
-from astracore.core.domain.agent import AgentRole, AgentTask
-from astracore.core.ports.workflow import WorkflowStatus
+from astracore.infrastructure.workflow.native import NativeWorkflowOrchestrator
+from astracore.modules.agent.domain import AgentRole, AgentTask
+from astracore.modules.agent.ports.workflow import WorkflowStatus
 
 
 @pytest.fixture
@@ -2342,8 +2342,8 @@ import asyncio
 from typing import Any
 from uuid import UUID
 
-from astracore.core.domain.agent import AgentTask, AgentTaskStatus
-from astracore.core.ports.workflow import WorkflowOrchestrator, WorkflowState, WorkflowStatus
+from astracore.modules.agent.domain import AgentTask, AgentTaskStatus
+from astracore.modules.agent.ports.workflow import WorkflowOrchestrator, WorkflowState, WorkflowStatus
 
 
 class NativeWorkflowOrchestrator(WorkflowOrchestrator):
@@ -2515,8 +2515,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from astracore.adapters.retrieval.chroma import ChromaRetrieverAdapter
-from astracore.core.domain.retrieval import Citation, RetrievalQuery, RetrievedChunk
+from astracore.infrastructure.retrieval.chroma import ChromaRetrieverAdapter
+from astracore.modules.rag.domain import Citation, RetrievalQuery, RetrievedChunk
 
 
 @pytest.mark.asyncio
@@ -2570,8 +2570,8 @@ import asyncio
 from typing import Any
 from uuid import uuid4
 
-from astracore.core.domain.retrieval import Citation, RetrievalQuery, RetrievedChunk
-from astracore.core.ports.retriever import IndexResult, RetrieverAdapter
+from astracore.modules.rag.domain import Citation, RetrievalQuery, RetrievedChunk
+from astracore.modules.rag.ports.retriever import IndexResult, RetrieverAdapter
 
 
 class ChromaRetrieverAdapter(RetrieverAdapter):

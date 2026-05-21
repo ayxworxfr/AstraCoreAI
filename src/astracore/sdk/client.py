@@ -10,15 +10,15 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
-from astracore.adapters.db.models import SkillRow
-from astracore.adapters.db.session import get_session, init_db
-from astracore.adapters.memory.hybrid import HybridMemoryAdapter
-from astracore.adapters.memory.store import SQLMemoryStore
-from astracore.adapters.retrieval.chroma import ChromaRetrieverAdapter
-from astracore.core.application.memory_engine import MemoryEngine
-from astracore.core.application.rag import RAGPipeline
-from astracore.core.domain.chat_context import ChatContext
-from astracore.core.domain.memory import (
+from astracore.infrastructure.db.models import SkillRow
+from astracore.infrastructure.db.session import get_session, init_db
+from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
+from astracore.infrastructure.memory.store import SQLMemoryStore
+from astracore.infrastructure.retrieval.chroma import ChromaRetrieverAdapter
+from astracore.modules.chat.domain.chat_context import ChatContext
+from astracore.modules.chat.pipeline import ChatPipeline
+from astracore.modules.memory.application.engine import MemoryEngine
+from astracore.modules.memory.domain import (
     ConversationProjectBinding,
     MemoryScope,
     MemoryStatus,
@@ -26,14 +26,14 @@ from astracore.core.domain.memory import (
     Project,
     StructuredMemory,
 )
-from astracore.core.ports.llm import StreamEvent, StreamEventType
-from astracore.core.ports.tool import ToolAdapter, ToolParameter
-from astracore.runtime.observability.logger import get_logger
-from astracore.runtime.policy.engine import PolicyEngine
+from astracore.modules.rag.application.pipeline import RAGPipeline
+from astracore.modules.skills.router import SkillRouter
+from astracore.modules.skills.seeds import seed_builtin_skills
+from astracore.modules.tools.ports.tool import ToolAdapter, ToolParameter
 from astracore.sdk.config import AstraCoreConfig
-from astracore.service.chat_pipeline import ChatPipeline
-from astracore.service.seeds import seed_builtin_skills
-from astracore.service.skill_router import SkillRouter
+from astracore.shared.observability.logger import get_logger
+from astracore.shared.policy.engine import PolicyEngine
+from astracore.shared.ports.llm import StreamEvent, StreamEventType
 
 logger = get_logger(__name__)
 
@@ -222,7 +222,7 @@ class AstraCoreClient:
         self._pipeline = self._build_pipeline()
 
     def _new_native_adapter(self) -> ToolAdapter:
-        from astracore.service.builtin_tools import build_tool_adapter  # noqa: PLC0415
+        from astracore.modules.tools.builtin import build_tool_adapter  # noqa: PLC0415
 
         return build_tool_adapter()
 
@@ -266,8 +266,10 @@ class AstraCoreClient:
 
         if self.config.mcp.servers:
             try:
-                from astracore.adapters.tools.composite import CompositeToolAdapter  # noqa: PLC0415
-                from astracore.adapters.tools.mcp import (  # noqa: PLC0415
+                from astracore.infrastructure.tools.composite import (
+                    CompositeToolAdapter,  # noqa: PLC0415
+                )
+                from astracore.infrastructure.tools.mcp import (  # noqa: PLC0415
                     MCPToolAdapter,
                     build_server_configs,
                 )

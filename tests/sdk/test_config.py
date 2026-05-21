@@ -10,7 +10,7 @@ def test_llm_config_resolves_default_profile() -> None:
     profile = LLMProfileConfig(
         id="claude-sonnet",
         label="Claude Sonnet",
-        provider="anthropic",
+        protocol="anthropic",
         api_key="test-key",
         base_url="https://proxy.example.com/aws",
         model="claude-sonnet-4-6",
@@ -25,8 +25,9 @@ def test_llm_config_resolves_default_profile() -> None:
 def test_llm_config_rejects_missing_default_profile() -> None:
     profile = LLMProfileConfig(
         id="deepseek-v4-flash",
-        provider="deepseek",
+        protocol="openai",
         api_key="test-key",
+        base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
     )
 
@@ -37,7 +38,7 @@ def test_llm_config_rejects_missing_default_profile() -> None:
 def test_llm_config_rejects_duplicate_profile_ids() -> None:
     profile = LLMProfileConfig(
         id="duplicate",
-        provider="anthropic",
+        protocol="anthropic",
         api_key="test-key",
         model="claude-sonnet-4-6",
     )
@@ -46,30 +47,28 @@ def test_llm_config_rejects_duplicate_profile_ids() -> None:
         LLMConfig(default_profile="duplicate", profiles=[profile, profile])
 
 
-def test_deepseek_profile_applies_default_base_url() -> None:
+def test_profile_does_not_apply_vendor_default_base_url() -> None:
     profile = LLMProfileConfig(
         id="deepseek-v4-flash",
-        provider="deepseek",
+        protocol="openai",
         api_key="test-key",
         model="deepseek-v4-flash",
     )
 
-    assert profile.base_url == "https://api.deepseek.com"
+    assert profile.base_url is None
 
 
-def test_openai_profile_uses_openai_compatible_config() -> None:
+def test_responses_profile_uses_protocol_config() -> None:
     profile = LLMProfileConfig(
         id="gpt-5-5",
-        provider="openai",
+        protocol="responses",
         base_url="https://anyrouter.top/v1",
         api_key="test-key",
-        api_type="responses",
         model="gpt-5.5",
     )
 
-    assert profile.provider == "openai"
+    assert profile.protocol == "responses"
     assert profile.base_url == "https://anyrouter.top/v1"
-    assert profile.api_type == "responses"
     assert profile.capabilities.tools is True
     assert profile.capabilities.anthropic_blocks is False
 
@@ -77,7 +76,7 @@ def test_openai_profile_uses_openai_compatible_config() -> None:
 def test_llm_profile_infers_claude_opus_capabilities() -> None:
     profile = LLMProfileConfig(
         id="claude-opus",
-        provider="anthropic",
+        protocol="anthropic",
         api_key="test-key",
         model="claude-opus-4-7",
     )
@@ -91,7 +90,7 @@ def test_llm_profile_infers_claude_opus_capabilities() -> None:
 def test_llm_profile_infers_deepseek_anthropic_capabilities() -> None:
     profile = LLMProfileConfig(
         id="deepseek-v4-flash",
-        provider="anthropic",
+        protocol="anthropic",
         base_url="https://api.deepseek.com/anthropic",
         api_key="test-key",
         model="deepseek-v4-flash",
@@ -106,7 +105,7 @@ def test_llm_profile_infers_deepseek_anthropic_capabilities() -> None:
 def test_llm_profile_allows_yaml_capability_override() -> None:
     profile = LLMProfileConfig(
         id="custom",
-        provider="anthropic",
+        protocol="anthropic",
         api_key="test-key",
         model="unknown-model",
         capabilities={"thinking": True},
@@ -127,7 +126,7 @@ llm:
   profiles:
     - id: claude-sonnet
       label: Claude Sonnet
-      provider: anthropic
+      protocol: anthropic
       base_url: https://proxy.example.com/aws
       api_key_env: ANTHROPIC_PROXY_API_KEY
       model: claude-sonnet-4-6

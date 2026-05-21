@@ -21,7 +21,7 @@ ASTRACORE_CONFIG=config/config.local.yaml
 ```yaml
 - id: claude-sonnet
   label: Claude Sonnet
-  provider: anthropic
+  protocol: anthropic
   base_url: https://api.anthropic.com
   api_key_env: ANTHROPIC_API_KEY
   model: claude-sonnet-4-6
@@ -32,7 +32,7 @@ ASTRACORE_CONFIG=config/config.local.yaml
 
 - `id`：稳定的 profile 标识，前端下拉和聊天请求使用它。
 - `label`：前端展示名称。
-- `provider`：适配器类型，目前支持 `anthropic` 和 `deepseek`。其中 `deepseek` 走 OpenAI 兼容接口。
+- `protocol`：接口协议，目前支持 `anthropic`、`openai`、`responses`。
 - `base_url`：模型服务地址。
 - `api_key_env`：密钥环境变量名，真实密钥写在根目录 `.env`。
 - `model`：传给上游服务的真实模型名。
@@ -47,10 +47,10 @@ ASTRACORE_CONFIG=config/config.local.yaml
 - `temperature`：是否支持 `temperature` 参数。
 - `anthropic_blocks`：是否回放 Anthropic 原始 `text/tool_use` blocks。
 
-当前内置策略会根据 `provider`、`model` 和 `base_url` 共同判断。例如：
+当前内置策略会根据 `protocol`、`model` 和 `base_url` 共同判断。例如：
 
 - Claude 系列默认支持工具调用，按模型差异决定是否发送 `thinking` 和 `temperature`。
-- DeepSeek OpenAI 兼容接口默认不发送 Anthropic thinking 参数。
+- OpenAI 兼容接口默认不发送 Anthropic thinking 参数。
 - DeepSeek Anthropic 兼容接口可通过 `anthropic_blocks` 控制历史 block 回放，避免代理协议不兼容。
 
 如遇到代理或新模型能力与内置表不一致，可以在对应 profile 中手动覆盖：
@@ -170,6 +170,6 @@ YAML 中通过 `api_key_env` 引用这些变量。
 
 - `default_profile` 决定默认选中项。
 - 每个 profile 的 `id` 会作为聊天请求中的 `model_profile`。
-- `label` 用于下拉展示；未配置时使用 `id/provider/model` 兜底。
+- `label` 用于下拉展示；未配置时使用 `id/protocol/model` 兜底。
 
 因此新增或删除模型只需要改 YAML 并重启后端，前端会自动跟随。

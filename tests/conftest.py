@@ -1,14 +1,14 @@
 """Shared test fixtures."""
+
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.session import SessionState
-from astracore.core.ports.llm import LLMResponse
-from astracore.core.ports.memory import MemoryAdapter
-from astracore.runtime.policy.engine import PolicyEngine
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.memory.ports.memory import MemoryAdapter
+from astracore.shared.policy.engine import PolicyEngine
+from astracore.shared.ports.llm import LLMResponse
 
 
 @pytest.fixture

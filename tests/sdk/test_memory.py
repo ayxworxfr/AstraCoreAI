@@ -5,8 +5,8 @@ from uuid import uuid4
 
 import pytest
 
-from astracore.adapters.db.session import get_engine, init_db
-from astracore.core.domain.memory import MemoryScope, MemoryStatus, MemoryType
+from astracore.infrastructure.db.session import get_engine, init_db
+from astracore.modules.memory.domain import MemoryScope, MemoryStatus, MemoryType
 from astracore.sdk.client import AstraCoreClient
 from astracore.sdk.config import AstraCoreConfig, LLMConfig, LLMProfileConfig, MemoryConfig
 
@@ -22,8 +22,9 @@ async def sdk_client(tmp_path):
             profiles=[
                 LLMProfileConfig(
                     id="test",
-                    provider="deepseek",
+                    protocol="openai",
                     api_key="test-key",
+                    base_url="https://api.deepseek.com",
                     model="deepseek-v4-flash",
                 )
             ],
@@ -126,9 +127,7 @@ async def test_sdk_memory_delete_conversation(sdk_client: AstraCoreClient) -> No
 
     assert deleted >= 2
     assert await sdk_client.memory.list(scope="session", session_id=conversation_id) == []
-    assert (
-        await sdk_client.memory.list(scope="project", memory_type=MemoryType.DECISION) == []
-    )
+    assert await sdk_client.memory.list(scope="project", memory_type=MemoryType.DECISION) == []
 
 
 async def test_sdk_projects_and_conversation_binding(sdk_client: AstraCoreClient) -> None:
@@ -186,9 +185,7 @@ async def test_sdk_clear_session_removes_all_memories(sdk_client: AstraCoreClien
     await sdk_client.clear_session(session_id)
 
     assert await sdk_client.memory.list(scope="session", session_id=session_id) == []
-    assert (
-        await sdk_client.memory.list(scope="project", memory_type=MemoryType.FACT) == []
-    )
+    assert await sdk_client.memory.list(scope="project", memory_type=MemoryType.FACT) == []
 
 
 async def test_sdk_chat_triggers_memory_extraction(sdk_client: AstraCoreClient) -> None:
@@ -202,11 +199,15 @@ async def test_sdk_chat_triggers_memory_extraction(sdk_client: AstraCoreClient) 
             patch.object(sdk_client._pipeline, "prepare", new_callable=AsyncMock) as mock_prepare,
             patch.object(sdk_client._pipeline, "execute", new_callable=AsyncMock) as mock_execute,
         ):
-            from astracore.core.domain.chat_context import ChatContext
+            from astracore.modules.chat.domain.chat_context import ChatContext
             from astracore.sdk.config import LLMProfileConfig
 
             profile = LLMProfileConfig(
-                id="test", provider="deepseek", api_key="key", model="deepseek-v4-flash"
+                id="test",
+                protocol="openai",
+                api_key="key",
+                base_url="https://api.deepseek.com",
+                model="deepseek-v4-flash",
             )
             fake_ctx = ChatContext(
                 session_id=uuid4(),

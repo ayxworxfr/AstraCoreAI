@@ -1,6 +1,7 @@
 """Test that domain models use timezone-aware datetimes."""
-from astracore.core.domain.message import Message, MessageRole, ToolCall, ToolResult
-from astracore.core.domain.session import SessionState
+
+from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall
+from astracore.modules.chat.domain.session import SessionState
 
 
 def test_message_created_at_is_timezone_aware():

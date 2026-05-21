@@ -1,15 +1,15 @@
 import { Layout, Menu, Button, Flex } from 'antd';
 import { BulbOutlined, MoonOutlined } from '@ant-design/icons';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { useSettingsStore } from '../stores/settingsStore';
+import { useSettingsStore } from '@/features/settings/store/settingsStore';
 
 const { Header, Content } = Layout;
 
 const NAV_ITEMS = [
   { key: '/chat', label: <NavLink to="/chat">对话</NavLink> },
+  { key: '/skills', label: <NavLink to="/skills">Skill</NavLink> },
   { key: '/memory', label: <NavLink to="/memory">Memory</NavLink> },
   { key: '/rag', label: <NavLink to="/rag">RAG</NavLink> },
-  { key: '/skills', label: <NavLink to="/skills">Skill</NavLink> },
   { key: '/system', label: <NavLink to="/system">系统</NavLink> },
 ];
 

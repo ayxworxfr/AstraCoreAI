@@ -187,7 +187,7 @@ export type ChatMessage = {
 
 ```typescript
 import axios, { type AxiosError } from 'axios';
-import type { ApiErrorResponse } from '../types/api';
+import type { ApiErrorResponse } from '@/shared/types/api';
 
 export const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? '',
@@ -208,8 +208,8 @@ export function normalizeError(error: unknown): string {
 - [ ] **Step 4: 创建 `frontend/src/services/chatService.ts`**
 
 ```typescript
-import type { ChatRequest, ChatResponse } from '../types/api';
-import { apiClient, normalizeError } from './apiClient';
+import type { ChatRequest, ChatResponse } from '@/shared/types/api';
+import { apiClient, normalizeError } from '@/shared/services/apiClient';
 
 type StreamHandlers = {
   onMessage: (delta: string) => void;
@@ -285,8 +285,8 @@ export async function sendChatStream(
 - [ ] **Step 5: 创建 `frontend/src/services/ragService.ts`**
 
 ```typescript
-import type { RagRetrieveRequest, RagRetrieveResponse } from '../types/api';
-import { apiClient } from './apiClient';
+import type { RagRetrieveRequest, RagRetrieveResponse } from '@/shared/types/api';
+import { apiClient } from '@/shared/services/apiClient';
 
 export async function ragRetrieve(payload: RagRetrieveRequest): Promise<RagRetrieveResponse> {
   const { data } = await apiClient.post<RagRetrieveResponse>('/api/v1/rag/retrieve', payload);
@@ -297,8 +297,8 @@ export async function ragRetrieve(payload: RagRetrieveRequest): Promise<RagRetri
 - [ ] **Step 6: 创建 `frontend/src/services/healthService.ts`**
 
 ```typescript
-import type { HealthResponse, ReadyResponse } from '../types/api';
-import { apiClient } from './apiClient';
+import type { HealthResponse, ReadyResponse } from '@/shared/types/api';
+import { apiClient } from '@/shared/services/apiClient';
 
 export async function getHealth(): Promise<HealthResponse> {
   const { data } = await apiClient.get<HealthResponse>('/health/');
@@ -419,7 +419,7 @@ export default function SystemPage(): JSX.Element {
 import { Layout, Menu, Button, Typography, Flex } from 'antd';
 import { BulbOutlined, MoonOutlined } from '@ant-design/icons';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { useSettingsStore } from '../stores/settingsStore';
+import { useSettingsStore } from '.@/features/settings/store/settingsStore';
 
 const { Header, Content } = Layout;
 
@@ -477,9 +477,9 @@ export default function AppShell(): JSX.Element {
 ```typescript
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import AppShell from '../layouts/AppShell';
-import ChatPage from '../pages/ChatPage';
-import RagPage from '../pages/RagPage';
-import SystemPage from '../pages/SystemPage';
+import ChatPage from '@/features/chat/pages/ChatPage';
+import RagPage from '@/features/rag/pages/RagPage';
+import SystemPage from '@/features/system/pages/SystemPage';
 
 export const router = createBrowserRouter([
   {
@@ -514,7 +514,7 @@ import { createRoot } from 'react-dom/client';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import App from './app/App';
-import { useSettingsStore } from './stores/settingsStore';
+import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { lightTheme, darkTheme } from './app/theme';
 
 function Root(): JSX.Element {
@@ -560,9 +560,9 @@ git commit -m "feat: app shell with antd theme and routing"
 ```typescript
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { ConversationMeta, ChatMessage } from '../types/chat';
-import { sendChatMessage, sendChatStream } from '../services/chatService';
-import { normalizeError } from '../services/apiClient';
+import type { ConversationMeta, ChatMessage } from '@/features/chat/types';
+import { sendChatMessage, sendChatStream } from '@/features/chat/services/chatService';
+import { normalizeError } from '@/shared/services/apiClient';
 
 function uuid(): string {
   return crypto.randomUUID();
@@ -966,7 +966,7 @@ import { Button, Input, Flex, Typography, message as antMessage } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { Conversations } from '@ant-design/x';
 import type { ConversationsProps } from '@ant-design/x';
-import { useChatStore } from '../../stores/chatStore';
+import { useChatStore } from '../@/features/chat/store/chatStore';
 
 type ConversationItem = NonNullable<ConversationsProps['items']>[number];
 
@@ -1072,7 +1072,7 @@ import { Bubble, Sender, Welcome, Prompts } from '@ant-design/x';
 import type { BubbleProps } from '@ant-design/x';
 import { RobotOutlined, UserOutlined } from '@ant-design/icons';
 import { Flex, Switch, Typography, Alert } from 'antd';
-import { useChatStore } from '../../stores/chatStore';
+import { useChatStore } from '../@/features/chat/store/chatStore';
 import MarkdownContent from './MarkdownContent';
 
 const SUGGESTED_PROMPTS = [
@@ -1211,8 +1211,8 @@ export default function ChatMain(): JSX.Element {
 
 ```typescript
 import { Layout } from 'antd';
-import ConversationSidebar from '../components/chat/ConversationSidebar';
-import ChatMain from '../components/chat/ChatMain';
+import ConversationSidebar from '@/features/chat/components/ConversationSidebar';
+import ChatMain from '@/features/chat/components/ChatMain';
 
 const { Sider, Content } = Layout;
 
@@ -1272,9 +1272,9 @@ git commit -m "feat: chat UI with Bubble/Sender/Conversations and Markdown rende
 ```typescript
 import { Form, Input, InputNumber, Button, Card } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
-import { ragRetrieve } from '../../services/ragService';
-import { normalizeError } from '../../services/apiClient';
-import type { RagResult } from '../../types/api';
+import { ragRetrieve } from '../@/features/rag/services/ragService';
+import { normalizeError } from '../@/shared/services/apiClient';
+import type { RagResult } from '../@/shared/types/api';
 
 type FormValues = {
   query: string;
@@ -1339,7 +1339,7 @@ export default function RagQueryPanel({ onResults, loading, onLoadingChange, onE
 
 ```typescript
 import { Card, Tag, Empty, Typography, Flex } from 'antd';
-import type { RagResult } from '../../types/api';
+import type { RagResult } from '../@/shared/types/api';
 
 type Props = { results: RagResult[] };
 
@@ -1387,9 +1387,9 @@ export default function RagResultList({ results }: Props): JSX.Element {
 ```typescript
 import { useState } from 'react';
 import { Flex, Typography, Alert } from 'antd';
-import RagQueryPanel from '../components/rag/RagQueryPanel';
-import RagResultList from '../components/rag/RagResultList';
-import type { RagResult } from '../types/api';
+import RagQueryPanel from '@/features/rag/components/RagQueryPanel';
+import RagResultList from '@/features/rag/components/RagResultList';
+import type { RagResult } from '@/shared/types/api';
 
 export default function RagPage(): JSX.Element {
   const [results, setResults] = useState<RagResult[]>([]);
@@ -1480,8 +1480,8 @@ import { useEffect, useState, useCallback } from 'react';
 import { Flex, Typography, Button, Switch } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import HealthStatusCard, { type CheckResult } from '../components/system/HealthStatusCard';
-import { getHealth, getReady } from '../services/healthService';
-import { normalizeError } from '../services/apiClient';
+import { getHealth, getReady } from '@/features/system/services/healthService';
+import { normalizeError } from '@/shared/services/apiClient';
 
 export default function SystemPage(): JSX.Element {
   const [health, setHealth] = useState<CheckResult>({ status: 'loading', message: '检查中...' });

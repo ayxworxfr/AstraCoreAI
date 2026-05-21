@@ -5,32 +5,25 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
-from dotenv import load_dotenv
 import yaml
+from dotenv import load_dotenv
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from astracore.sdk.model_capabilities import LLMCapabilities, infer_model_capabilities
-
-_DEFAULT_MODELS: dict[str, str] = {
-    "deepseek": "deepseek-v4-flash",
-    "openai": "gpt-4o-mini",
-    "anthropic": "claude-sonnet-4-6",
-}
-
-_DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
 
 
 class LLMProfileConfig(BaseModel):
     """Configuration for one selectable LLM profile."""
 
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     label: str | None = None
-    provider: Literal["deepseek", "openai", "anthropic"]
+    protocol: Literal["anthropic", "openai", "responses"]
     api_key: str = ""
     api_key_env: str | None = None
     base_url: str | None = None
     extra_headers: dict[str, str] = Field(default_factory=dict)
-    api_type: Literal["chat_completions", "responses"] = "chat_completions"
     model: str
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=8192, ge=1)
@@ -43,7 +36,7 @@ class LLMProfileConfig(BaseModel):
             return data
 
         inferred = infer_model_capabilities(
-            provider=str(data.get("provider", "")),
+            protocol=str(data.get("protocol", "")),
             model=str(data.get("model", "")),
             base_url=data.get("base_url") if isinstance(data.get("base_url"), str) else None,
         ).model_dump()
@@ -58,9 +51,7 @@ class LLMProfileConfig(BaseModel):
         return merged
 
     @model_validator(mode="after")
-    def _apply_provider_defaults(self) -> "LLMProfileConfig":
-        if self.provider == "deepseek" and self.base_url is None:
-            self.base_url = _DEEPSEEK_DEFAULT_BASE_URL
+    def _load_api_key_from_env(self) -> "LLMProfileConfig":
         if not self.api_key and self.api_key_env:
             self.api_key = os.getenv(self.api_key_env, "").strip()
         if not self.api_key:
@@ -77,11 +68,15 @@ class LLMConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_profiles(self) -> "LLMConfig":
         profile_ids = [profile.id for profile in self.profiles]
-        duplicate_ids = sorted({profile_id for profile_id in profile_ids if profile_ids.count(profile_id) > 1})
+        duplicate_ids = sorted(
+            {profile_id for profile_id in profile_ids if profile_ids.count(profile_id) > 1}
+        )
         if duplicate_ids:
             raise ValueError(f"Duplicate LLM profile id: {', '.join(duplicate_ids)}")
         if self.default_profile not in profile_ids:
-            raise ValueError(f"default_profile '{self.default_profile}' does not match any LLM profile")
+            raise ValueError(
+                f"default_profile '{self.default_profile}' does not match any LLM profile"
+            )
         return self
 
     def get_profile(self, profile_id: str | None = None) -> LLMProfileConfig:
@@ -248,7 +243,7 @@ class AstraCoreConfig(BaseModel):
           default_profile: claude-sonnet
           profiles:
             - id: claude-sonnet
-              provider: anthropic
+              protocol: anthropic
               api_key_env: ANTHROPIC_API_KEY
               model: claude-sonnet-4-6
     """

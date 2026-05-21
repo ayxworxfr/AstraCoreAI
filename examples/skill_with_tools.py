@@ -18,8 +18,8 @@ from uuid import UUID
 
 from dotenv import load_dotenv
 
-from astracore.core.ports.llm import StreamEventType
-from astracore.runtime.observability.logger import get_logger, setup_logging
+from astracore.shared.ports.llm import StreamEventType
+from astracore.shared.observability.logger import get_logger, setup_logging
 from astracore.sdk import AstraCoreClient, Conversation
 
 load_dotenv()

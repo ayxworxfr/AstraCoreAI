@@ -1,10 +1,12 @@
 """Tests for NativeWorkflowOrchestrator — create, execute, pause, resume, checkpoint."""
-import pytest
+
 from uuid import uuid4
 
-from astracore.adapters.workflow.native import NativeWorkflowOrchestrator
-from astracore.core.domain.agent import AgentRole, AgentTask, AgentTaskStatus
-from astracore.core.ports.workflow import WorkflowStatus
+import pytest
+
+from astracore.infrastructure.workflow.native import NativeWorkflowOrchestrator
+from astracore.modules.agent.domain import AgentRole, AgentTask, AgentTaskStatus
+from astracore.modules.agent.ports.workflow import WorkflowStatus
 
 
 def _task(description: str = "do something") -> AgentTask:
@@ -12,6 +14,7 @@ def _task(description: str = "do something") -> AgentTask:
 
 
 # ---------- create_workflow ----------
+
 
 async def test_create_workflow_returns_workflow_state():
     oc = NativeWorkflowOrchestrator()
@@ -29,6 +32,7 @@ async def test_create_workflow_with_context():
 
 
 # ---------- execute_workflow ----------
+
 
 async def test_execute_workflow_completes_all_tasks():
     oc = NativeWorkflowOrchestrator()
@@ -56,6 +60,7 @@ async def test_execute_workflow_skips_already_completed_tasks():
 
 # ---------- get_workflow_state ----------
 
+
 async def test_get_workflow_state_returns_current_state():
     oc = NativeWorkflowOrchestrator()
     wf = await oc.create_workflow("wf", [_task()])
@@ -71,6 +76,7 @@ async def test_get_workflow_state_raises_for_unknown_id():
 
 # ---------- pause_workflow ----------
 
+
 async def test_pause_workflow_sets_paused_status():
     oc = NativeWorkflowOrchestrator()
     wf = await oc.create_workflow("wf", [_task()])
@@ -80,6 +86,7 @@ async def test_pause_workflow_sets_paused_status():
 
 
 # ---------- resume_workflow ----------
+
 
 async def test_resume_workflow_completes_after_pause():
     oc = NativeWorkflowOrchestrator()
@@ -99,6 +106,7 @@ async def test_resume_workflow_raises_when_not_paused():
 
 # ---------- save_checkpoint — no-op without Redis ----------
 
+
 async def test_save_checkpoint_is_noop_without_redis():
     oc = NativeWorkflowOrchestrator()  # no redis_url
     wf = await oc.create_workflow("wf", [_task()])
@@ -112,6 +120,7 @@ async def test_save_checkpoint_unknown_id_is_noop():
 
 
 # ---------- load_checkpoint — in-memory fallback ----------
+
 
 async def test_load_checkpoint_falls_back_to_in_memory():
     oc = NativeWorkflowOrchestrator()

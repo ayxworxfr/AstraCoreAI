@@ -8,8 +8,8 @@ import asyncio
 
 from dotenv import load_dotenv
 
-from astracore.core.domain.memory import MemoryScope, MemoryType
-from astracore.runtime.observability.logger import get_logger, setup_logging
+from astracore.modules.memory.domain import MemoryScope, MemoryType
+from astracore.shared.observability.logger import get_logger, setup_logging
 from astracore.sdk import AstraCoreClient
 
 load_dotenv()

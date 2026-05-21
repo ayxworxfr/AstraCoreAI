@@ -45,17 +45,34 @@ make fe-preview
 ```text
 frontend/
   src/
-    app/          # 应用入口与路由
-    pages/        # Chat / RAG / Skills / System 页面
-    components/   # 页面组件（chat / rag / skills / system）
-    services/     # API、SSE、Skill、系统信息与运行参数请求封装
-    stores/       # Zustand（chatStore / skillStore / settingsStore）
-    types/        # 类型定义
-    styles/       # 全局样式
+    app/          # App 根组件、路由、主题
+    features/     # 按产品能力组织页面、组件、状态、服务和类型
+      chat/
+        components/
+        pages/
+        services/
+        store/
+        types.ts
+      memory/
+      projects/
+      rag/
+      settings/
+      skills/
+      system/
+    layouts/      # 跨页面布局
+    shared/       # 跨 feature 复用组件、API 基础设施、类型和工具函数
+      components/
+      services/
+      types/
+      utils/
+    global.css    # 全局样式
 ```
 
 ## 6. 说明
 
+- 新功能优先放到 `src/features/<capability>/` 下，不再新增顶层 `pages/`、`components/`、`services/`、`stores/`、`types/` 目录。
+- 只有多个 feature 复用的代码才放到 `src/shared/`；feature 私有组件和 API 调用不要提前抽到 shared。
+- 跨 feature import 优先使用 `@/` 别名，例如 `@/features/chat/store/chatStore`。
 - 前端默认通过 Vite 代理访问后端：
   - `/api` -> `http://127.0.0.1:8000`
   - `/health` -> `http://127.0.0.1:8000`

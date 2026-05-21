@@ -1,12 +1,13 @@
 # AstraCore AI
 
-**企业级 Python AI 框架，基于 Clean Architecture 构建**
+**企业级 Python AI 框架，基于能力模块化 + Clean Architecture 构建**
 
-AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architecture + Ports & Adapters 原则构建。它为 LLM、工具执行、记忆管理、RAG 和多 Agent 编排提供统一接口。
+AstraCore AI 是一个生产级、可扩展的 AI 框架，基于能力模块化、Clean Architecture 与 Ports & Adapters 原则构建。它为 LLM、工具执行、记忆管理、RAG 和多 Agent 编排提供统一接口。
 
 ## 特性
 
-- **Clean Architecture**：Ports & Adapters 模式，Domain 层零外部依赖
+- **能力模块化架构**：后端按 `modules/<capability>` 组织，前端按 `features/<capability>` 组织，业务边界在目录结构中可见
+- **Clean Architecture**：能力模块内部保留 domain / application / ports 分层，基础设施实现统一放在 `infrastructure/`
 - **多模型 Profile 支持**：通过 `config/config.yaml` 管理多个模型 profile，内置能力注册表自动推导 thinking/tools/temperature/anthropic_blocks
 - **工具执行**：原生工具并行/串行调用，带安全白名单与 XSS 检测
 - **MCP 工具集成**：通过 fastmcp 接入任意 MCP 服务器（内置 filesystem、shell，支持自定义）
@@ -26,7 +27,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于 Clean Architec
 ## 测试状态
 
 ```
-131 passed, 1 warning in the current local Hatch env
+147 passed in the current local Hatch env
 ruff: 0 errors             ✅
 ```
 
@@ -105,7 +106,7 @@ async def main():
             print(chunk, end="", flush=True)
 
         # 需要工具/思考/技能路由等原始事件时，用 stream_events
-        from astracore.core.ports.llm import StreamEventType
+        from astracore.shared.ports.llm import StreamEventType
         async for event in conv.stream_events("列出当前目录下的文件"):
             if event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
                 print(f"→ 调用工具: {event.tool_call.name}")
@@ -159,30 +160,33 @@ make fe-dev
 
 ```
 src/astracore/
-├── core/
-│   ├── domain/          # 纯领域模型（Session、Message、ChatContext、Agent）
-│   ├── application/     # 用例（RAG、ToolLoop、MultiAgent）
-│   └── ports/           # 适配器接口（LLM、Memory、Retriever、Tool、Workflow）
-├── adapters/
-│   ├── llm/             # Anthropic（流式累积）、OpenAI 适配器
-│   ├── tools/           # 工具执行与注册（native、MCP、composite）
-│   ├── memory/          # HybridMemoryAdapter（Redis + SQLite 持久化）
-│   ├── retrieval/       # ChromaDB 适配器（run_in_executor + upsert）
-│   └── workflow/        # NativeWorkflowOrchestrator（Redis checkpoint）
+├── app/
+│   ├── factory.py       # FastAPI 应用工厂、生命周期、路由注册
+│   └── middleware/      # HTTP 中间件
+├── modules/
+│   ├── agent/           # 多 Agent 编排领域、用例和 workflow port
+│   ├── chat/            # Chat API、Conversation API、Pipeline、会话领域模型
+│   ├── memory/          # 结构化 Memory API、领域模型、Engine、Store port
+│   ├── projects/        # Project API
+│   ├── rag/             # RAG API、检索领域模型、Pipeline、Retriever port、种子文档
+│   ├── settings/        # 用户设置 API
+│   ├── skills/          # Skill API、路由、提示渲染、内置 Skill 种子
+│   ├── system/          # Health / System API
+│   └── tools/           # 内置工具注册和 Tool port
+├── infrastructure/
+│   ├── db/              # SQLAlchemy models / session
+│   ├── llm/             # Anthropic、OpenAI 适配器
+│   ├── memory/          # HybridMemoryAdapter、SQLMemoryStore
+│   ├── retrieval/       # ChromaDB 适配器
+│   ├── tools/           # native、MCP、composite、parallel agent 工具实现
+│   └── workflow/        # NativeWorkflowOrchestrator
 ├── mcp_servers/
 │   └── shell_server.py  # 内置 MCP Shell Server（受控命令执行）
-├── runtime/
+├── shared/
+│   ├── observability/   # 结构化日志、指标
 │   ├── policy/          # PolicyEngine（tenacity retry + asyncio timeout）
-│   ├── observability/   # 结构化日志、指标端口
+│   ├── ports/           # 跨模块共享端口（LLM、Audit、Metrics）
 │   └── security/        # SecurityValidator（XSS、长度、内容过滤）
-├── service/
-│   ├── api/             # FastAPI 路由（Chat Run、RAG、Skills、Settings、System）
-│   ├── middleware/      # HTTP 中间件
-│   ├── chat_pipeline.py       # 共享 chat 执行引擎（Command + Pipeline 模式）
-│   ├── builtin_tools.py       # 内置工具注册与组合
-│   ├── skill_router.py        # Skill 自动路由（off/vector/llm 三种模式）
-│   ├── seeds.py               # 内置 Skill 种子同步
-│   └── prompt_utils.py        # 系统提示工具函数（时间、占位符渲染）
 └── sdk/
     ├── client.py              # 主 SDK 客户端（AstraCoreClient + Conversation 门面）
     ├── config.py              # Pydantic v2 YAML 配置模型
@@ -194,11 +198,11 @@ config/
 └── config.docker.yaml   # Docker 部署配置
 
 frontend/
-├── src/app             # 应用入口与路由
-├── src/pages           # Chat / Memory / RAG / Skills / System 页面
-├── src/components      # 复用 UI 组件（chat / rag / skills / system）
-├── src/stores          # Zustand（chatStore / skillStore / settingsStore）
-└── src/services        # API、SSE、Skill 与系统信息通信
+├── src/app             # 应用根组件、路由、主题
+├── src/features        # 按产品能力组织页面、组件、状态、服务和类型
+├── src/layouts         # 跨页面布局
+├── src/shared          # 跨 feature 复用组件、服务、类型和工具
+└── src/main.tsx
 ```
 
 ## 配置
@@ -211,7 +215,7 @@ llm:
   profiles:
     - id: claude-sonnet
       label: Claude Sonnet
-      provider: anthropic
+      protocol: anthropic
       base_url: https://api.anthropic.com
       api_key_env: ANTHROPIC_API_KEY
       model: claude-sonnet-4-6
@@ -293,17 +297,17 @@ make clean-rag    # 清空 ChromaDB 数据
 
 ## 核心设计原则
 
-1. **框架优先**：所有能力作为可复用接口暴露
-2. **端口优先**：先定义契约，再实现
+1. **能力边界优先**：新业务代码先归入 `modules/<capability>` / `features/<capability>`，不按 controller/service/store 这类技术层横向堆放
+2. **端口优先**：先定义契约，再在 `infrastructure/` 中实现
 3. **策略集中化**：预算、重试、超时统一在策略引擎管理
-4. **双形态交付**：SDK 和 Service 共享同一应用层
+4. **双形态交付**：SDK 和 HTTP Service 共享同一 ChatPipeline
 5. **可演进编排**：默认 Native，可适配 LangGraph
 
 ## 技术栈
 
 - **语言**：Python 3.11+
 - **项目管理**：Hatch
-- **架构**：Clean Architecture + Ports & Adapters
+- **架构**：能力模块化 + Clean Architecture + Ports & Adapters
 - **Web 框架**：FastAPI + uvicorn
 - **数据验证**：Pydantic 2.x（YAML 配置模型 + discriminated union）
 - **LLM Providers**：Anthropic Messages 协议、OpenAI 兼容协议（DeepSeek/GLM 等可通过 profile 接入）
@@ -327,8 +331,8 @@ make clean-rag    # 清空 ChromaDB 数据
 
 ## 文件统计
 
-- **78 个 Python 源模块**：覆盖 Domain / Application / Ports / Adapters / Runtime / Service / SDK 全栈
-- **测试覆盖**：131 个测试，覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略、Skill、Memory、MCP、流式会话安全等核心链路
+- **Python 源模块**：覆盖 app / modules / infrastructure / shared / sdk 全栈
+- **测试覆盖**：147 个测试，覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略、Skill、Memory、MCP、流式会话安全等核心链路
 - **7 个完整示例**：可直接通过 SDK 运行，无需 HTTP 服务
 - **双形态交付**：SDK + Service 共享同一 ChatPipeline 执行引擎
 
@@ -342,6 +346,7 @@ MIT
 
 ## 设计文档
 
+- [Docs 顶层目录索引](./docs/README.md)
 - [AstraCore AI 设计文档](./docs/AstraCoreAI设计文档.md)
 - [开发进度规划](./docs/开发进度规划.md)
 - [工具循环踩坑记录](./docs/工具循环踩坑记录.md)

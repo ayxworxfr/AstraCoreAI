@@ -376,7 +376,7 @@ GET /api/v1/system/   → {
   llm: {
     default_profile,
     profiles: [{
-      id, label, provider, model, base_url, api_key_configured, max_tokens,
+      id, label, protocol, model, base_url, api_key_configured, max_tokens,
       capabilities: { tools, thinking, temperature, anthropic_blocks }
     }]
   },

@@ -8,19 +8,19 @@ from uuid import uuid4
 
 from sqlalchemy.pool import NullPool
 
-from astracore.adapters.db.session import get_engine
-from astracore.core.domain.chat_context import ChatContext
-from astracore.core.domain.message import Message, MessageRole, ToolCall, ToolResult
-from astracore.core.domain.session import SessionState
-from astracore.core.ports.llm import StreamEvent, StreamEventType
-from astracore.core.ports.memory import MemoryAdapter
-from astracore.runtime.policy.engine import PolicyEngine
-from astracore.service.api.chat import (
+from astracore.infrastructure.db.session import get_engine
+from astracore.modules.chat.api import (
     _ACTIVE_RUNS,
     _ActiveRun,
     _broadcast_run_event,
 )
-from astracore.service.chat_pipeline import ChatPipeline
+from astracore.modules.chat.domain.chat_context import ChatContext
+from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
+from astracore.modules.chat.domain.session import SessionState
+from astracore.modules.chat.pipeline import ChatPipeline
+from astracore.modules.memory.ports.memory import MemoryAdapter
+from astracore.shared.policy.engine import PolicyEngine
+from astracore.shared.ports.llm import StreamEvent, StreamEventType
 
 
 async def test_save_session_safe_swallows_cancelled_error() -> None:

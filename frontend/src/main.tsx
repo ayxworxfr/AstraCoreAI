@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import App from './app/App';
-import { useSettingsStore } from './stores/settingsStore';
+import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { lightTheme, darkTheme } from './app/theme';
 import 'simplebar-react/dist/simplebar.min.css';
 import './global.css';

@@ -159,7 +159,7 @@ def get_session(db_url: str) -> AsyncSession:
 
 async def init_db(db_url: str) -> None:
     """Create all tables if they don't exist (idempotent)."""
-    from astracore.adapters.db.models import Base
+    from astracore.infrastructure.db.models import Base
 
     engine = get_engine(db_url)
     async with engine.begin() as conn:
@@ -215,24 +215,24 @@ Replace `_get_db()`:
 def _get_db(self) -> Any:
     """Lazy load database engine."""
     if self._db_engine is None:
-        from astracore.adapters.db.session import get_engine
+        from astracore.infrastructure.db.session import get_engine
         self._db_engine = get_engine(self.db_url)
     return self._db_engine
 ```
 
-Replace all imports of `astracore.adapters.memory.models` with `astracore.adapters.db.models`:
+Replace all imports of `astracore.infrastructure.memory.models` with `astracore.infrastructure.db.models`:
 ```python
 # in save_long_term:
-from astracore.adapters.db.models import MemoryEntryRow
+from astracore.infrastructure.db.models import MemoryEntryRow
 
 # in load_long_term:
-from astracore.adapters.db.models import MemoryEntryRow
+from astracore.infrastructure.db.models import MemoryEntryRow
 
 # in search_memory:
-from astracore.adapters.db.models import MemoryEntryRow
+from astracore.infrastructure.db.models import MemoryEntryRow
 
 # in ensure_schema:
-from astracore.adapters.db.models import Base
+from astracore.infrastructure.db.models import Base
 ```
 
 - [ ] **Step 3: Delete `src/astracore/adapters/memory/models.py`**
@@ -332,8 +332,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from astracore.adapters.db.models import SkillRow
-from astracore.adapters.db.session import get_session
+from astracore.infrastructure.db.models import SkillRow
+from astracore.infrastructure.db.session import get_session
 from astracore.sdk.config import AstraCoreConfig
 
 router = APIRouter()
@@ -464,8 +464,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from astracore.adapters.db.models import UserSettingsRow
-from astracore.adapters.db.session import get_session
+from astracore.infrastructure.db.models import UserSettingsRow
+from astracore.infrastructure.db.session import get_session
 from astracore.sdk.config import AstraCoreConfig
 
 router = APIRouter()
@@ -595,8 +595,8 @@ async def seed_builtin_skills(db_url: str) -> None:
 
     from sqlalchemy import select
 
-    from astracore.adapters.db.models import SkillRow
-    from astracore.adapters.db.session import get_session
+    from astracore.infrastructure.db.models import SkillRow
+    from astracore.infrastructure.db.session import get_session
 
     async with get_session(db_url) as db:
         result = await db.execute(select(SkillRow).where(SkillRow.is_builtin == True))  # noqa: E712
@@ -636,7 +636,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from astracore.service.api import chat, health, rag, settings, skills
-from astracore.service.seeds import seed_builtin_skills, seed_documents
+from astracore.modules.skills.seeds import seed_builtin_skills, seed_documents
 
 logger = logging.getLogger(__name__)
 
@@ -644,7 +644,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Any:
     """Application lifespan manager."""
-    from astracore.adapters.db.session import init_db
+    from astracore.infrastructure.db.session import init_db
     from astracore.sdk.config import AstraCoreConfig
 
     cfg = AstraCoreConfig()
@@ -725,20 +725,20 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from astracore.adapters.db.models import SkillRow, UserSettingsRow
-from astracore.adapters.db.session import get_session
-from astracore.adapters.llm.anthropic import AnthropicAdapter
-from astracore.adapters.llm.openai import OpenAIAdapter
-from astracore.adapters.memory.hybrid import HybridMemoryAdapter
+from astracore.infrastructure.db.models import SkillRow, UserSettingsRow
+from astracore.infrastructure.db.session import get_session
+from astracore.infrastructure.llm.anthropic import AnthropicAdapter
+from astracore.infrastructure.llm.openai import OpenAIAdapter
+from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.core.application.chat import ChatUseCase
-from astracore.core.application.tool_loop import ToolLoopUseCase
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.session import SessionState
-from astracore.core.ports.llm import LLMAdapter, StreamEventType
-from astracore.runtime.policy.engine import PolicyEngine
+from astracore.modules.chat.application.tool_loop import ToolLoopUseCase
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.chat.domain.session import SessionState
+from astracore.shared.ports.llm import LLMAdapter, StreamEventType
+from astracore.shared.policy.engine import PolicyEngine
 from astracore.sdk.config import AstraCoreConfig
-from astracore.service.api import rag as rag_api
-from astracore.service.builtin_tools import build_tool_adapter
+from astracore.modules.rag import api as rag_api
+from astracore.modules.tools.builtin import build_tool_adapter
 
 router = APIRouter()
 
@@ -751,7 +751,7 @@ def _get_settings() -> AstraCoreConfig:
 @lru_cache(maxsize=1)
 def _get_llm_adapter() -> LLMAdapter:
     cfg = _get_settings().llm
-    if cfg.provider == "anthropic":
+    if cfg.protocol == "anthropic":
         return AnthropicAdapter(
             api_key=cfg.api_key,
             default_model=cfg.model,
@@ -1078,8 +1078,8 @@ export type ChatRequest = {
 - [ ] **Step 3: Create `services/skillService.ts`**
 
 ```typescript
-import type { CreateSkillRequest, Skill, UpdateSkillRequest, UserSettings } from '../types/skill';
-import { apiClient } from './apiClient';
+import type { CreateSkillRequest, Skill, UpdateSkillRequest, UserSettings } from '@/features/skills/types';
+import { apiClient } from '@/shared/services/apiClient';
 
 export async function listSkills(): Promise<Skill[]> {
   const { data } = await apiClient.get<Skill[]>('/api/v1/skills/');
@@ -1131,7 +1131,7 @@ git commit -m "feat: add skill types and service layer"
 
 ```typescript
 import { create } from 'zustand';
-import { normalizeError } from '../services/apiClient';
+import { normalizeError } from '@/shared/services/apiClient';
 import {
   createSkill,
   deleteSkill,
@@ -1139,8 +1139,8 @@ import {
   listSkills,
   saveSettings,
   updateSkill,
-} from '../services/skillService';
-import type { CreateSkillRequest, Skill, UpdateSkillRequest, UserSettings } from '../types/skill';
+} from '@/features/skills/services/skillService';
+import type { CreateSkillRequest, Skill, UpdateSkillRequest, UserSettings } from '@/features/skills/types';
 
 type SkillStore = {
   skills: Skill[];
@@ -1271,7 +1271,7 @@ git commit -m "feat: add skill store and activeSkillId to chat store"
 ```tsx
 import { EditOutlined, DeleteOutlined, LockOutlined } from '@ant-design/icons';
 import { Card, Tag, Tooltip, Popconfirm, Typography } from 'antd';
-import type { Skill } from '../../types/skill';
+import type { Skill } from '../@/features/skills/types';
 
 type Props = {
   skill: Skill;
@@ -1340,7 +1340,7 @@ export default function SkillCard({ skill, onEdit, onDelete, onView }: Props): J
 import { useEffect } from 'react';
 import { Modal, Form, Input, Alert } from 'antd';
 import RagMarkdownEditor from '../rag/RagMarkdownEditor';
-import type { CreateSkillRequest, Skill } from '../../types/skill';
+import type { CreateSkillRequest, Skill } from '../@/features/skills/types';
 
 type Props = {
   open: boolean;
@@ -1421,8 +1421,8 @@ import { BookOutlined, DownOutlined } from '@ant-design/icons';
 import { Button, Dropdown, Spin } from 'antd';
 import type { MenuProps } from 'antd';
 import { useEffect } from 'react';
-import { useChatStore } from '../../stores/chatStore';
-import { useSkillStore } from '../../stores/skillStore';
+import { useChatStore } from '../@/features/chat/store/chatStore';
+import { useSkillStore } from '../@/features/skills/store/skillStore';
 
 export default function SkillSelector({ disabled }: { disabled: boolean }): JSX.Element {
   const { skills, fetchSkills } = useSkillStore();
@@ -1504,10 +1504,10 @@ import {
   Typography,
 } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
-import SkillCard from '../components/skills/SkillCard';
-import SkillModal from '../components/skills/SkillModal';
-import { useSkillStore } from '../stores/skillStore';
-import type { CreateSkillRequest, Skill, UpdateSkillRequest } from '../types/skill';
+import SkillCard from '@/features/skills/components/SkillCard';
+import SkillModal from '@/features/skills/components/SkillModal';
+import { useSkillStore } from '@/features/skills/store/skillStore';
+import type { CreateSkillRequest, Skill, UpdateSkillRequest } from '@/features/skills/types';
 
 export default function SkillsPage(): JSX.Element {
   const {
@@ -1675,10 +1675,10 @@ git commit -m "feat: add SkillsPage with global settings and skill management"
 ```tsx
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import AppShell from '../layouts/AppShell';
-import ChatPage from '../pages/ChatPage';
-import RagPage from '../pages/RagPage';
-import SkillsPage from '../pages/SkillsPage';
-import SystemPage from '../pages/SystemPage';
+import ChatPage from '@/features/chat/pages/ChatPage';
+import RagPage from '@/features/rag/pages/RagPage';
+import SkillsPage from '@/features/skills/pages/SkillsPage';
+import SystemPage from '@/features/system/pages/SystemPage';
 
 export const router = createBrowserRouter([
   {

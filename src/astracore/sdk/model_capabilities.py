@@ -17,12 +17,12 @@ _DEFAULT_CAPABILITIES = LLMCapabilities()
 
 def infer_model_capabilities(
     *,
-    provider: str,
+    protocol: str,
     model: str,
     base_url: str | None = None,
 ) -> LLMCapabilities:
-    """Infer capabilities from provider/model/endpoint conventions."""
-    normalized_provider = provider.lower()
+    """Infer capabilities from API protocol/model/endpoint conventions."""
+    normalized_protocol = protocol.lower()
     normalized_model = model.lower()
     normalized_base_url = (base_url or "").lower()
 
@@ -44,7 +44,7 @@ def infer_model_capabilities(
 
     if normalized_model == "deepseek-v4-flash":
         uses_anthropic_protocol = (
-            normalized_provider == "anthropic" or "/anthropic" in normalized_base_url
+            normalized_protocol == "anthropic" or "/anthropic" in normalized_base_url
         )
         if uses_anthropic_protocol:
             return LLMCapabilities(

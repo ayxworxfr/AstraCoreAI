@@ -6,11 +6,11 @@ from uuid import uuid4
 
 import pytest
 
-from astracore.adapters.db.models import ChatRunRow
-from astracore.adapters.db.session import get_engine, get_session, init_db
-from astracore.core.domain.chat_context import ChatContext
-from astracore.core.domain.message import Message, MessageRole
-from astracore.service.api import chat
+from astracore.infrastructure.db.models import ChatRunRow
+from astracore.infrastructure.db.session import get_engine, get_session, init_db
+from astracore.modules.chat import api as chat
+from astracore.modules.chat.domain.chat_context import ChatContext
+from astracore.modules.chat.domain.message import Message, MessageRole
 
 
 class _MemoryStub:

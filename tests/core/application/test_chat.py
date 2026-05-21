@@ -1,14 +1,16 @@
 """Tests for ChatPipeline — session restore (no token double-count), LLM call, save."""
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from astracore.core.domain.chat_context import ChatContext
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.ports.llm import StreamEvent, StreamEventType
-from astracore.core.ports.memory import MemoryAdapter
-from astracore.runtime.policy.engine import PolicyEngine
-from astracore.service.chat_pipeline import ChatPipeline
+import pytest
+
+from astracore.modules.chat.domain.chat_context import ChatContext
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.chat.pipeline import ChatPipeline
+from astracore.modules.memory.ports.memory import MemoryAdapter
+from astracore.shared.policy.engine import PolicyEngine
+from astracore.shared.ports.llm import StreamEvent, StreamEventType
 
 
 @pytest.fixture
@@ -82,7 +84,9 @@ async def test_execute_saves_session_after_response(pipeline, ctx, mock_memory):
     mock_memory.save_short_term.assert_called_once()
 
 
-async def test_execute_includes_user_message_in_llm_call(pipeline, session_id, mock_llm, mock_profile):
+async def test_execute_includes_user_message_in_llm_call(
+    pipeline, session_id, mock_llm, mock_profile
+):
     captured: list[Message] = []
 
     async def capturing_stream(messages, temperature=None, **kwargs):

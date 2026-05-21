@@ -1,11 +1,13 @@
 """Tests for RAGPipeline — retrieve_and_inject, index, delete."""
-import pytest
+
 from unittest.mock import AsyncMock
 
-from astracore.core.application.rag import RAGPipeline
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.retrieval import Citation, RetrievedChunk
-from astracore.core.ports.retriever import IndexResult
+import pytest
+
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.rag.application.pipeline import RAGPipeline
+from astracore.modules.rag.domain import Citation, RetrievedChunk
+from astracore.modules.rag.ports.retriever import IndexResult
 
 
 def _chunk(content: str, score: float = 0.9, source_id: str = "doc1") -> RetrievedChunk:
@@ -21,9 +23,7 @@ def mock_retriever():
     r = AsyncMock()
     r.retrieve.return_value = []
     r.rerank.return_value = []
-    r.index_document.return_value = IndexResult(
-        document_id="d1", chunks_indexed=1, success=True
-    )
+    r.index_document.return_value = IndexResult(document_id="d1", chunks_indexed=1, success=True)
     r.delete_document.return_value = True
     return r
 
@@ -34,6 +34,7 @@ def rag(mock_retriever):
 
 
 # ---------- retrieve_and_inject ----------
+
 
 async def test_retrieve_and_inject_returns_original_when_no_chunks(rag, mock_retriever):
     mock_retriever.retrieve.return_value = []
@@ -79,6 +80,7 @@ async def test_retrieve_and_inject_passes_top_k_to_rerank(rag, mock_retriever):
 
 # ---------- index_document ----------
 
+
 async def test_index_document_returns_true_on_success(rag):
     result = await rag.index_document("doc1", "Some text content")
     assert result is True
@@ -93,6 +95,7 @@ async def test_index_document_returns_false_on_failure(rag, mock_retriever):
 
 
 # ---------- delete_document ----------
+
 
 async def test_delete_document_delegates_to_retriever(rag, mock_retriever):
     result = await rag.delete_document("doc1")

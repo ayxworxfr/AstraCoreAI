@@ -1,8 +1,9 @@
 """Tests for HybridMemoryAdapter — two-layer (Redis + SQLite) design."""
+
 from uuid import uuid4
 
-from astracore.adapters.memory.hybrid import HybridMemoryAdapter
-from astracore.core.domain.message import Message, MessageRole
+from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
+from astracore.modules.chat.domain.message import Message, MessageRole
 
 _DB_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -35,6 +36,7 @@ def _attach_memory_db(adapter: HybridMemoryAdapter) -> dict:
 
 # ---------- save / load short-term ----------
 
+
 async def test_save_and_load_short_term_roundtrip():
     adapter = _make_adapter()
     _attach_memory_db(adapter)
@@ -64,6 +66,7 @@ async def test_save_short_term_overwrites_previous():
 
 
 # ---------- Redis disable ----------
+
 
 def test_disable_redis_sets_flag():
     a = HybridMemoryAdapter("redis://localhost:6379", _DB_URL)

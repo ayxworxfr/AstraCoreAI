@@ -1,6 +1,7 @@
 """Tests for SessionState, ContextWindow, TokenBudget domain models."""
-from astracore.core.domain.message import Message, MessageRole
-from astracore.core.domain.session import ContextWindow, SessionState, TokenBudget
+
+from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.chat.domain.session import ContextWindow, SessionState, TokenBudget
 
 
 def _msg(content: str) -> Message:
@@ -8,6 +9,7 @@ def _msg(content: str) -> Message:
 
 
 # ---------- TokenBudget ----------
+
 
 def test_token_budget_add_and_available():
     budget = TokenBudget(max_input_tokens=1000)
@@ -29,6 +31,7 @@ def test_token_budget_not_exceeded_when_below_limit():
 
 
 # ---------- ContextWindow.truncate_to_budget ----------
+
 
 def test_truncate_to_budget_noop_when_under_limit():
     cw = ContextWindow()
@@ -65,6 +68,7 @@ def test_truncate_to_budget_empty_after_total_truncation():
 
 
 # ---------- SessionState.restore_messages ----------
+
 
 def test_restore_messages_does_not_double_count():
     session = SessionState()

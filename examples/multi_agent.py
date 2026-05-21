@@ -10,7 +10,7 @@ import asyncio
 
 from dotenv import load_dotenv
 
-from astracore.runtime.observability.logger import get_logger, setup_logging
+from astracore.shared.observability.logger import get_logger, setup_logging
 from astracore.sdk import AstraCoreClient
 
 load_dotenv()

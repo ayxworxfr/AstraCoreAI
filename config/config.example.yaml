@@ -3,7 +3,7 @@ llm:
   profiles:
     - id: claude-sonnet
       label: Claude Sonnet
-      provider: anthropic
+      protocol: anthropic
       base_url: https://api.anthropic.com
       api_key_env: ANTHROPIC_API_KEY
       model: claude-sonnet-4-6
@@ -11,7 +11,7 @@ llm:
 
     - id: deepseek-v4-flash
       label: DeepSeek Chat
-      provider: deepseek
+      protocol: openai
       base_url: https://api.deepseek.com
       api_key_env: DEEPSEEK_API_KEY
       model: deepseek-v4-flash
@@ -19,10 +19,9 @@ llm:
 
     - id: gpt-5-5
       label: GPT-5.5
-      provider: openai
+      protocol: responses
       base_url: https://anyrouter.top/v1
       api_key_env: ANTHROPIC_PROXY_API_KEY
-      api_type: responses
       model: gpt-5.5
       max_tokens: 8192
 

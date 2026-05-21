@@ -1,6 +1,6 @@
 """启动 AstraCore AI 服务。
 
-等价于：uvicorn astracore.service.api.app:create_app --factory --port 8000
+等价于：uvicorn astracore.app.factory:create_app --factory --port 8000
 
 用法：
     python examples/run_service.py              # 默认 0.0.0.0:8000
@@ -28,7 +28,7 @@ def test_main() -> None:
     args = parser.parse_args()
 
     uvicorn.run(
-        "astracore.service.api.app:create_app",
+        "astracore.app.factory:create_app",
         factory=True,
         host=args.host,
         port=args.port,

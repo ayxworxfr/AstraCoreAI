@@ -1,20 +1,21 @@
 """Tests for ToolLoopUseCase — tool execution, security block, max_iterations, build_defs."""
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from astracore.core.application.tool_loop import ToolLoopUseCase
-from astracore.core.domain.message import MessageRole, ToolCall
-from astracore.core.domain.session import SessionState
-from astracore.core.ports.llm import LLMResponse, StreamEvent, StreamEventType
-from astracore.core.ports.tool import (
+from astracore.modules.chat.application.tool_loop import ToolLoopUseCase
+from astracore.modules.chat.domain.message import MessageRole, ToolCall
+from astracore.modules.chat.domain.session import SessionState
+from astracore.modules.tools.ports.tool import (
     ToolDefinition,
     ToolExecutionResult,
     ToolParameter,
     ToolParameterType,
 )
-from astracore.runtime.policy.engine import PolicyConfig, PolicyEngine
-from astracore.runtime.policy.rules import SecurityRule
+from astracore.shared.policy.engine import PolicyConfig, PolicyEngine
+from astracore.shared.policy.rules import SecurityRule
+from astracore.shared.ports.llm import LLMResponse, StreamEvent, StreamEventType
 
 
 def _tool_def(name: str = "search") -> ToolDefinition:
@@ -33,9 +34,7 @@ def _tool_def(name: str = "search") -> ToolDefinition:
 
 
 def _exec_result(name: str = "search", output: str = "results") -> ToolExecutionResult:
-    return ToolExecutionResult(
-        tool_name=name, success=True, output=output, execution_time_ms=10.0
-    )
+    return ToolExecutionResult(tool_name=name, success=True, output=output, execution_time_ms=10.0)
 
 
 @pytest.fixture
@@ -53,8 +52,11 @@ def mock_tools():
     t.execute = AsyncMock(return_value=_exec_result())
 
     async def _fake_execute_streaming(tool_name, arguments, context=None):
-        from astracore.core.ports.tool import ToolExecutionResult
-        yield ToolExecutionResult(tool_name=tool_name, success=True, output="results", execution_time_ms=10.0)
+        from astracore.modules.tools.ports.tool import ToolExecutionResult
+
+        yield ToolExecutionResult(
+            tool_name=tool_name, success=True, output="results", execution_time_ms=10.0
+        )
 
     t.execute_streaming = _fake_execute_streaming
     t.is_timeout_managed.return_value = False
@@ -73,9 +75,8 @@ def loop_uc(mock_llm, mock_tools):
 
 # ---------- execute_with_tools ----------
 
-async def test_execute_with_tools_breaks_immediately_when_no_tool_calls(
-    loop_uc, mock_llm
-):
+
+async def test_execute_with_tools_breaks_immediately_when_no_tool_calls(loop_uc, mock_llm):
     session = SessionState()
     await loop_uc.execute_with_tools(session)
     assert mock_llm.generate.call_count == 1
@@ -129,9 +130,7 @@ async def test_execute_with_tools_blocked_result_is_error_message(mock_llm, mock
 
 async def test_execute_with_tools_respects_max_iterations(mock_llm, mock_tools):
     tool_call = ToolCall(name="search", arguments={"query": "loop"})
-    mock_llm.generate.return_value = LLMResponse(
-        content="", tool_calls=[tool_call], model="test"
-    )
+    mock_llm.generate.return_value = LLMResponse(content="", tool_calls=[tool_call], model="test")
     uc = ToolLoopUseCase(mock_llm, mock_tools, PolicyEngine(), max_iterations=3)
     session = SessionState()
     await uc.execute_with_tools(session)
@@ -139,13 +138,9 @@ async def test_execute_with_tools_respects_max_iterations(mock_llm, mock_tools):
     assert mock_llm.generate.call_count == 3
 
 
-async def test_execute_with_tools_skips_tool_execution_on_final_iteration(
-    mock_llm, mock_tools
-):
+async def test_execute_with_tools_skips_tool_execution_on_final_iteration(mock_llm, mock_tools):
     tool_call = ToolCall(name="search", arguments={"query": "loop"})
-    mock_llm.generate.return_value = LLMResponse(
-        content="", tool_calls=[tool_call], model="test"
-    )
+    mock_llm.generate.return_value = LLMResponse(content="", tool_calls=[tool_call], model="test")
     uc = ToolLoopUseCase(mock_llm, mock_tools, PolicyEngine(), max_iterations=1)
     session = SessionState()
 
@@ -231,6 +226,7 @@ async def test_execute_stream_with_tools_parallel_results_ordered(mock_tools):
 
 
 # ---------- _build_tool_definitions ----------
+
 
 def test_build_tool_definitions_shape(loop_uc, mock_tools):
     defs = loop_uc._build_tool_definitions()

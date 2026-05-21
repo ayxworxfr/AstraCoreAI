@@ -209,7 +209,7 @@ Service 层将一次前端对话发送抽象为 `ChatRunRow`，避免浏览器�
 - **结构化配置**：`config/config.yaml` 保存 `llm.default_profile`、`llm.profiles`、`mcp.servers`、记忆与检索配置；`.env` 只保存密钥。
 - **Profile 路由**：Chat API 和 SDK 使用 `model_profile` 指定 profile id，不直接暴露上游模型名。
 - **适配器缓存**：`ChatPipeline` 按 profile id 缓存 `LLMAdapter`，`ToolLoopUseCase` 每次调用时按需创建（轻量）；Service 通过 `lru_cache` 单例持有 pipeline 实例，SDK 在 `__init__` 中直接构建，MCP 启动后通过 `_build_pipeline()` 原子重建。
-- **能力推导**：`model_capabilities.py` 按 `provider`、`model`、`base_url` 内置推导 `tools`、`thinking`、`temperature`、`anthropic_blocks`。
+- **能力推导**：`model_capabilities.py` 按 `protocol`、`model`、`base_url` 内置推导 `tools`、`thinking`、`temperature`、`anthropic_blocks`。
 - **能力覆盖**：只有代理或新模型行为与内置表不一致时，才在 YAML 的 `capabilities` 写局部覆盖。
 
 ## 6. 与 LangGraph 的兼容策略

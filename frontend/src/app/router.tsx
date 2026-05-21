@@ -1,10 +1,10 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import AppShell from '../layouts/AppShell';
-import ChatPage from '../pages/ChatPage';
-import MemoryPage from '../pages/MemoryPage';
-import RagPage from '../pages/RagPage';
-import SkillsPage from '../pages/SkillsPage';
-import SystemPage from '../pages/SystemPage';
+import ChatPage from '@/features/chat/pages/ChatPage';
+import MemoryPage from '@/features/memory/pages/MemoryPage';
+import RagPage from '@/features/rag/pages/RagPage';
+import SkillsPage from '@/features/skills/pages/SkillsPage';
+import SystemPage from '@/features/system/pages/SystemPage';
 
 export const router = createBrowserRouter([
   {

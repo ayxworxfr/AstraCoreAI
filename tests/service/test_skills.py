@@ -1,7 +1,7 @@
 """Skill seed and prompt rendering tests."""
 
-from astracore.service import seeds
-from astracore.service.prompt_utils import render_skill_prompt
+from astracore.modules.skills import seeds
+from astracore.modules.skills.prompt_utils import render_skill_prompt
 
 
 def test_render_skill_prompt_injects_current_beijing_time() -> None:
@@ -14,7 +14,7 @@ def test_render_skill_prompt_injects_current_beijing_time() -> None:
     assert "{{current_time_info}}" not in rendered
     assert "【当前时间信息】" in rendered
     assert "北京时间：" in rendered
-    assert "当用户提到\"今天\"时" in rendered
+    assert '当用户提到"今天"时' in rendered
 
 
 def test_builtin_skills_are_ordered_by_frontmatter_order(tmp_path, monkeypatch) -> None:

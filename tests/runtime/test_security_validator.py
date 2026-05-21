@@ -1,7 +1,8 @@
 """Tests for InputValidator (XSS patterns, length) and ContentFilter."""
+
 import pytest
 
-from astracore.runtime.security.validator import ContentFilter, InputValidator
+from astracore.shared.security.validator import ContentFilter, InputValidator
 
 
 @pytest.fixture
@@ -10,6 +11,7 @@ def validator():
 
 
 # ---------- InputValidator.validate_user_input ----------
+
 
 def test_validate_accepts_normal_input(validator):
     ok, err = validator.validate_user_input("Hello, how are you?")
@@ -40,12 +42,12 @@ def test_validate_rejects_javascript_protocol(validator):
 
 
 def test_validate_rejects_onerror_attribute(validator):
-    ok, _ = validator.validate_user_input('<img onerror=alert(1)>')
+    ok, _ = validator.validate_user_input("<img onerror=alert(1)>")
     assert ok is False
 
 
 def test_validate_rejects_onclick_attribute(validator):
-    ok, _ = validator.validate_user_input('<button onclick=evil()>')
+    ok, _ = validator.validate_user_input("<button onclick=evil()>")
     assert ok is False
 
 
@@ -55,6 +57,7 @@ def test_validate_accepts_input_at_exactly_max_length(validator):
 
 
 # ---------- InputValidator.sanitize_metadata ----------
+
 
 def test_sanitize_redacts_password():
     v = InputValidator()
@@ -82,6 +85,7 @@ def test_sanitize_preserves_nonsensitive_fields():
 
 
 # ---------- ContentFilter ----------
+
 
 def test_content_filter_blocks_added_term():
     f = ContentFilter()

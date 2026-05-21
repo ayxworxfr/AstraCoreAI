@@ -4,7 +4,7 @@ import importlib
 import sys
 from pathlib import Path
 
-from astracore.adapters.tools.mcp import build_server_configs
+from astracore.infrastructure.tools.mcp import build_server_configs
 from astracore.sdk.config import FilesystemServerConfig, ShellServerConfig
 
 
@@ -12,10 +12,12 @@ def test_build_server_configs_expands_home_paths(monkeypatch, tmp_path) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
 
-    configs = build_server_configs([
-        FilesystemServerConfig(paths=["~/develope"]),
-        ShellServerConfig(allow_dirs=["~/develope"]),
-    ])
+    configs = build_server_configs(
+        [
+            FilesystemServerConfig(paths=["~/develope"]),
+            ShellServerConfig(allow_dirs=["~/develope"]),
+        ]
+    )
 
     expected = str(home / "develope")
     assert configs[0].args[-1] == expected

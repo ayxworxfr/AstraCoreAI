@@ -64,7 +64,7 @@ git commit -m "chore: install @uiw/react-md-editor"
 ```tsx
 import MDEditor from '@uiw/react-md-editor';
 import '@uiw/react-md-editor/markdown-editor.css';
-import { useSettingsStore } from '../../stores/settingsStore';
+import { useSettingsStore } from '../.@/features/settings/store/settingsStore';
 
 type Props = {
   value: string;
@@ -123,8 +123,8 @@ git commit -m "feat: add RagMarkdownEditor wrapper with dark/light theme sync"
 import { useState } from 'react';
 import { Form, Input, Button, Flex, message } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
-import { ragIndex } from '../../services/ragService';
-import { normalizeError } from '../../services/apiClient';
+import { ragIndex } from '../@/features/rag/services/ragService';
+import { normalizeError } from '../@/shared/services/apiClient';
 import RagMarkdownEditor from './RagMarkdownEditor';
 
 type FormValues = {

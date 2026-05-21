@@ -1,11 +1,12 @@
 """Tests for AnthropicAdapter — _convert_messages and generate_stream tool arg accumulation."""
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from astracore.adapters.llm.anthropic import AnthropicAdapter
-from astracore.core.domain.message import Message, MessageRole, ToolCall, ToolResult
-from astracore.core.ports.llm import StreamEventType
+from astracore.infrastructure.llm.anthropic import AnthropicAdapter
+from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
+from astracore.shared.ports.llm import StreamEventType
 
 
 @pytest.fixture
@@ -14,6 +15,7 @@ def adapter():
 
 
 # ---------- _convert_messages ----------
+
 
 def test_convert_messages_skips_system_role(adapter):
     msgs = [
@@ -56,10 +58,12 @@ def test_convert_messages_formats_tool_calls(adapter):
 def test_convert_messages_formats_tool_results(adapter):
     tc = ToolCall(id="tc_1", name="search", arguments={"q": "python"})
     tr = ToolResult(tool_call_id="tc_1", name="search", content="results here")
-    result = adapter._convert_messages([
-        Message(role=MessageRole.ASSISTANT, content="", tool_calls=[tc]),
-        Message(role=MessageRole.TOOL, content="", tool_results=[tr]),
-    ])
+    result = adapter._convert_messages(
+        [
+            Message(role=MessageRole.ASSISTANT, content="", tool_calls=[tc]),
+            Message(role=MessageRole.TOOL, content="", tool_results=[tr]),
+        ]
+    )
 
     assert result[1]["role"] == "user"
     content = result[1]["content"]
@@ -70,9 +74,11 @@ def test_convert_messages_formats_tool_results(adapter):
 
 def test_convert_messages_skips_orphan_tool_results(adapter):
     tr = ToolResult(tool_call_id="missing_tool_use", name="search", content="results here")
-    result = adapter._convert_messages([
-        Message(role=MessageRole.TOOL, content="", tool_results=[tr]),
-    ])
+    result = adapter._convert_messages(
+        [
+            Message(role=MessageRole.TOOL, content="", tool_results=[tr]),
+        ]
+    )
     assert result == []
 
 
@@ -182,6 +188,7 @@ async def test_generate_omits_temperature_when_profile_disables_it():
 
 # ---------- generate_stream — helpers ----------
 
+
 def _event(type_: str, **kwargs) -> MagicMock:
     e = MagicMock()
     e.type = type_
@@ -224,6 +231,7 @@ class _FakeStreamCtx:
 
 
 # ---------- generate_stream — tests ----------
+
 
 async def test_generate_stream_accumulates_tool_arguments(adapter):
     """input_json_delta chunks must be merged into a single complete ToolCall."""
