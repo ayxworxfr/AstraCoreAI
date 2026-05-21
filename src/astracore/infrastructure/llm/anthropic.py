@@ -73,7 +73,11 @@ class AnthropicAdapter(LLMAdapter):
                     kwargs["base_url"] = self._base_url
                 if self._extra_headers:
                     kwargs["default_headers"] = self._extra_headers
-                self._client = AsyncAnthropic(**kwargs)
+                client = AsyncAnthropic(**kwargs)
+                # SDK 会从 ANTHROPIC_AUTH_TOKEN 读 bearer token，并与 X-Api-Key 同时发送，
+                # 导致第三方 anthropic 兼容端点（如 DeepSeek）拿错 key 后 401。
+                client.auth_token = None
+                self._client = client
             except ImportError as e:
                 raise ImportError(
                     "anthropic package not installed. Install with: pip install anthropic"
