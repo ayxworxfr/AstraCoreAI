@@ -4,7 +4,7 @@ llm:
     - id: claude-sonnet
       label: Claude Sonnet
       protocol: anthropic
-      base_url: https://anyrouter.top/v1
+      base_url: https://anyrouter.top
       api_key_env: ANTHROPIC_PROXY_API_KEY
       model: claude-sonnet-4-6
       extra_headers:
@@ -14,9 +14,11 @@ llm:
     - id: claude-opus
       label: Claude Opus
       protocol: anthropic
-      base_url: https://llm-proxy.oa.com/aws
+      base_url: https://anyrouter.top
       api_key_env: ANTHROPIC_PROXY_API_KEY
-      model: claude-opus-4-6
+      model: claude-opus-4-7
+      extra_headers:
+        anthropic-beta: context-1m-2025-08-07
       max_tokens: 16384
 
     - id: deepseek-chat

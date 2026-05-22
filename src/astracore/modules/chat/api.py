@@ -6,8 +6,6 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any, Literal
-
-from astracore.modules.chat.domain.chat_options import ChatOptions
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request
@@ -21,6 +19,7 @@ from astracore.infrastructure.db.session import get_session
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
 from astracore.modules.chat.domain.chat_context import ChatContext
+from astracore.modules.chat.domain.chat_options import ChatOptions
 from astracore.modules.chat.domain.message import MessageRole
 from astracore.modules.chat.pipeline import ChatPipeline
 from astracore.modules.memory.application.engine import MemoryEngine

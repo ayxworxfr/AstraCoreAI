@@ -87,7 +87,10 @@ test = "pytest {args:tests}"
 test-cov = "pytest --cov=src/astracore --cov-report=term-missing {args:tests}"
 type-check = "mypy src/astracore"
 lint = "ruff check src/astracore tests"
-format = "ruff format src/astracore tests"
+format = [
+    "ruff check src/astracore tests --fix",
+    "ruff format src/astracore tests",
+]
 check = ["lint", "type-check"]
 
 [tool.pytest.ini_options]

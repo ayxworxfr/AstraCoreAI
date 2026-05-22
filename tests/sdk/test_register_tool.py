@@ -6,9 +6,7 @@ import pytest
 
 from astracore.infrastructure.tools.composite import CompositeToolAdapter
 from astracore.infrastructure.tools.native import NativeToolAdapter
-from astracore.modules.tools.ports.tool import ToolParameter, ToolParameterType
 from astracore.sdk.client import AstraCoreClient
-
 
 # ---------------------------------------------------------------------------
 # Helpers
