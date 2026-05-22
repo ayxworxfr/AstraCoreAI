@@ -1,5 +1,6 @@
 """Policy engine for unified governance."""
 
+from astracore.shared.policy.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from astracore.shared.policy.engine import PolicyConfig, PolicyEngine
 from astracore.shared.policy.rules import (
     BudgetRule,
@@ -10,6 +11,8 @@ from astracore.shared.policy.rules import (
 )
 
 __all__ = [
+    "CircuitBreaker",
+    "CircuitBreakerOpenError",
     "PolicyEngine",
     "PolicyConfig",
     "BudgetRule",

@@ -6,6 +6,8 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any, Literal
+
+from astracore.modules.chat.domain.chat_options import ChatOptions
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request
@@ -199,6 +201,19 @@ class ChatRequest(BaseModel):
     skill_id: UUID | None = None
     disable_skill: bool = False
 
+    def to_options(self) -> ChatOptions:
+        return ChatOptions(
+            model_profile=self.model_profile,
+            temperature=self.temperature,
+            use_tools=self.use_tools,
+            enable_thinking=self.enable_thinking,
+            thinking_budget=self.thinking_budget,
+            enable_rag=self.enable_rag,
+            enable_web=self.enable_web,
+            skill_id=self.skill_id,
+            disable_skill=self.disable_skill,
+        )
+
 
 class ChatResponse(BaseModel):
     session_id: UUID
@@ -273,13 +288,16 @@ def _run_row_to_messages(row: ChatRunRow) -> list[MessageItem]:
     return messages
 
 
+_VISIBLE_RUN_STATUSES = {"done", "cancelled", "error"}
+
+
 async def _load_done_runs(session_id: UUID) -> list[ChatRunRow]:
     async with get_session(_get_settings().memory.db_url) as db:
         result = await db.execute(
             select(ChatRunRow)
             .where(
                 ChatRunRow.session_id == str(session_id),
-                ChatRunRow.status == "done",
+                ChatRunRow.status.in_(_VISIBLE_RUN_STATUSES),
             )
             .order_by(ChatRunRow.created_at.asc())
         )
@@ -577,7 +595,7 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
             user_message=ctx.message,
             assistant_content=accumulated_content,
             source_run_id=run_id,
-            llm_adapter=_get_chat_pipeline()._get_llm_adapter(ctx.profile),
+            llm_adapter=_get_chat_pipeline().get_llm_adapter(ctx.profile),
             model=ctx.profile.model,
         )
     except Exception:
@@ -598,16 +616,8 @@ async def _run_chat_in_background(
         ctx = await _get_chat_pipeline().prepare(
             message=request.message,
             session_id=session_id,
+            options=request.to_options(),
             tool_adapter=tool_adapter,
-            model_profile=request.model_profile,
-            temperature=request.temperature,
-            use_tools=request.use_tools,
-            enable_thinking=request.enable_thinking,
-            thinking_budget=request.thinking_budget,
-            enable_rag=request.enable_rag,
-            enable_web=request.enable_web,
-            skill_id=request.skill_id,
-            disable_skill=request.disable_skill,
         )
         if ctx.anchor_skill or ctx.routed_skills:
             logger.info(
@@ -808,16 +818,8 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
         ctx = await _get_chat_pipeline().prepare(
             message=request.message,
             session_id=session_id,
+            options=request.to_options(),
             tool_adapter=_resolve_tool_adapter(http_request),
-            model_profile=request.model_profile,
-            temperature=request.temperature,
-            use_tools=request.use_tools,
-            enable_thinking=request.enable_thinking,
-            thinking_budget=request.thinking_budget,
-            enable_rag=request.enable_rag,
-            enable_web=request.enable_web,
-            skill_id=request.skill_id,
-            disable_skill=request.disable_skill,
         )
         content = await _get_chat_pipeline().execute(ctx)
         await _update_run_row(
@@ -833,7 +835,7 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
                 user_message=request.message,
                 assistant_content=content,
                 source_run_id=row.id,
-                llm_adapter=_get_chat_pipeline()._get_llm_adapter(ctx.profile),
+                llm_adapter=_get_chat_pipeline().get_llm_adapter(ctx.profile),
                 model=ctx.profile.model,
             )
         except Exception:

@@ -78,6 +78,8 @@ dependencies = [
     "pytest-cov",
     "mypy",
     "ruff",
+    "httpx-sse>=0.4.0",
+    "fastmcp>=3.0.0",
 ]
 
 [tool.hatch.envs.default.scripts]

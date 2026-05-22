@@ -4,6 +4,8 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+from pydantic import BaseModel
+
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
@@ -237,9 +239,19 @@ class OpenAIAdapter(LLMAdapter):
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float = 0.7,
+        response_format: type[BaseModel] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Generate a complete response."""
+        """Generate a complete response.
+
+        When *response_format* is provided and the protocol is ``openai`` / ``deepseek``
+        (i.e. Chat Completions), ``response_format`` is set to ``json_schema`` so the
+        model is constrained to output valid JSON matching the Pydantic schema.
+        The JSON string is returned in ``LLMResponse.content``.
+
+        The Responses API (``protocol == "responses"``) does not support structured
+        output; *response_format* is ignored for that protocol.
+        """
         client = self._get_client()
         model = model or self.default_model
         max_tokens = max_tokens or self.max_tokens
@@ -261,9 +273,20 @@ class OpenAIAdapter(LLMAdapter):
             "temperature": temperature,
         }
 
-        tools = self._tools_for_openai(kwargs)
-        if tools:
-            request_params["tools"] = tools
+        if response_format is not None:
+            schema = response_format.model_json_schema()
+            request_params["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_format.__name__,
+                    "schema": schema,
+                    "strict": True,
+                },
+            }
+        else:
+            tools = self._tools_for_openai(kwargs)
+            if tools:
+                request_params["tools"] = tools
 
         response = await client.chat.completions.create(**request_params)
 
@@ -271,7 +294,7 @@ class OpenAIAdapter(LLMAdapter):
         content = choice.message.content or ""
         tool_calls: list[ToolCall] = []
 
-        if choice.message.tool_calls:
+        if response_format is None and choice.message.tool_calls:
             for tc in choice.message.tool_calls:
                 tool_calls.append(
                     ToolCall(

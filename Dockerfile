@@ -29,8 +29,7 @@ COPY pyproject.toml README.md ./
 COPY src/ ./src/
 COPY config/ ./config/
 
-RUN pip install --no-cache-dir -e ".[anthropic,openai]" \
-    && pip install --no-cache-dir chromadb
+RUN pip install --no-cache-dir -e ".[anthropic,openai,vector]"
 
 # Copy built frontend from Stage 1
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
@@ -54,4 +53,4 @@ USER appuser
 
 EXPOSE 8000
 
-CMD ["python", "-m", "uvicorn", "astracore.service.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "astracore.app.factory:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

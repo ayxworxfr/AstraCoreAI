@@ -22,12 +22,18 @@ class AgentTaskStatus(StrEnum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
+    SKIPPED = "skipped"
     FAILED = "failed"
-    REQUIRES_APPROVAL = "requires_approval"
 
 
 class AgentTask(BaseModel):
-    """Agent task definition."""
+    """Agent task definition.
+
+    ``depends_on`` lists task_ids that must complete before this task runs.
+    ``condition`` is an optional Python expression evaluated against a
+    ``task_results`` dict (task_id → result string); if it evaluates to
+    falsy the task is skipped rather than executed.
+    """
 
     task_id: UUID = Field(default_factory=uuid4)
     role: AgentRole
@@ -38,32 +44,30 @@ class AgentTask(BaseModel):
     result: str | None = None
     error: str | None = None
     parent_task_id: UUID | None = None
+    depends_on: list[UUID] = Field(default_factory=list)
+    condition: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
 
     def mark_in_progress(self) -> None:
-        """Mark task as in progress."""
         self.status = AgentTaskStatus.IN_PROGRESS
         self.updated_at = datetime.now(UTC)
 
     def mark_completed(self, result: str) -> None:
-        """Mark task as completed."""
         self.status = AgentTaskStatus.COMPLETED
         self.result = result
         self.completed_at = datetime.now(UTC)
         self.updated_at = datetime.now(UTC)
 
-    def mark_failed(self, error: str) -> None:
-        """Mark task as failed."""
-        self.status = AgentTaskStatus.FAILED
-        self.error = error
+    def mark_skipped(self) -> None:
+        self.status = AgentTaskStatus.SKIPPED
         self.updated_at = datetime.now(UTC)
 
-    def require_approval(self) -> None:
-        """Mark task as requiring approval."""
-        self.status = AgentTaskStatus.REQUIRES_APPROVAL
+    def mark_failed(self, error: str) -> None:
+        self.status = AgentTaskStatus.FAILED
+        self.error = error
         self.updated_at = datetime.now(UTC)
 
 

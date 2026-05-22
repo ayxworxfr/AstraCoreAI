@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from astracore.modules.tools.ports.tool import (
+    MutableToolAdapter,
     ToolAdapter,
     ToolDefinition,
     ToolExecutionResult,
@@ -16,26 +17,44 @@ from astracore.shared.ports.llm import StreamEvent
 logger = get_logger(__name__)
 
 
-class CompositeToolAdapter(ToolAdapter):
+class CompositeToolAdapter(MutableToolAdapter):
     """Delegates tool execution to the correct child adapter.
 
     Tools are deduplicated by name; adapters listed first take priority when
     the same tool name appears in multiple adapters.
 
+    The routing map is built eagerly at construction time and updated lazily
+    when a tool is found during execution that was registered after construction
+    (e.g. via a NativeToolAdapter that is also held as ``_user_adapter``).
+
     Usage::
 
-        adapter = CompositeToolAdapter([native_adapter, mcp_adapter])
-        # All tools from both adapters are visible to the LLM.
+        adapter = CompositeToolAdapter([builtin_adapter, user_adapter, mcp_adapter])
+        # All tools from all adapters are visible to the LLM.
     """
 
     def __init__(self, adapters: list[ToolAdapter]) -> None:
         self._adapters = adapters
-        # Build tool_name -> adapter routing map (first-seen wins)
         self._routing: dict[str, ToolAdapter] = {}
         for adapter in adapters:
             for defn in adapter.get_definitions():
                 if defn.name not in self._routing:
                     self._routing[defn.name] = adapter
+
+    # ------------------------------------------------------------------
+    # Routing helpers
+    # ------------------------------------------------------------------
+
+    def _find_adapter(self, tool_name: str) -> ToolAdapter | None:
+        """Look up adapter for *tool_name*, updating the cache on a miss."""
+        adapter = self._routing.get(tool_name)
+        if adapter is not None:
+            return adapter
+        for a in self._adapters:
+            if any(d.name == tool_name for d in a.get_definitions()):
+                self._routing[tool_name] = a
+                return a
+        return None
 
     # ------------------------------------------------------------------
     # ToolAdapter interface
@@ -47,7 +66,7 @@ class CompositeToolAdapter(ToolAdapter):
         arguments: dict[str, Any],
         context: dict[str, Any] | None = None,
     ) -> ToolExecutionResult:
-        adapter = self._routing.get(tool_name)
+        adapter = self._find_adapter(tool_name)
         if adapter is None:
             return ToolExecutionResult(
                 tool_name=tool_name,
@@ -72,7 +91,7 @@ class CompositeToolAdapter(ToolAdapter):
         arguments: dict[str, Any],
         context: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent | ToolExecutionResult]:
-        adapter = self._routing.get(tool_name)
+        adapter = self._find_adapter(tool_name)
         if adapter is None:
             yield ToolExecutionResult(
                 tool_name=tool_name,
@@ -86,7 +105,7 @@ class CompositeToolAdapter(ToolAdapter):
             yield item
 
     def is_timeout_managed(self, tool_name: str) -> bool:
-        adapter = self._routing.get(tool_name)
+        adapter = self._find_adapter(tool_name)
         return adapter.is_timeout_managed(tool_name) if adapter is not None else False
 
     def get_definitions(self) -> list[ToolDefinition]:
@@ -98,6 +117,10 @@ class CompositeToolAdapter(ToolAdapter):
                     result.append(defn)
                     seen.add(defn.name)
         return result
+
+    # ------------------------------------------------------------------
+    # MutableToolAdapter interface
+    # ------------------------------------------------------------------
 
     def register_tool(
         self,
@@ -113,7 +136,6 @@ class CompositeToolAdapter(ToolAdapter):
         for adapter in self._adapters:
             if isinstance(adapter, NativeToolAdapter):
                 adapter.register_tool(name, func, description, parameters, requires_confirmation)
-                # Update routing map
                 self._routing[name] = adapter
                 return
         raise NotImplementedError(

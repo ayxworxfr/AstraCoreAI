@@ -143,7 +143,7 @@ class AgentConfig(BaseModel):
 
     max_tool_result_chars: int = Field(default=20_000, ge=100)
     max_tool_iterations: int = Field(default=10, ge=0)  # 0 = 不限轮次
-    tool_timeout_s: float = Field(default=120.0, ge=1.0)
+    tool_timeout_s: float = Field(default=120.0, ge=0)  # 0 = 永不超时
     enable_spawn_agents: bool = True
     """Whether to expose the spawn_agents tool to the LLM.
     Set to false to disable parallel multi-agent execution entirely."""

@@ -3,7 +3,7 @@
 # Usage: make <command>
 # ============================================================
 
-.PHONY: help setup install deps rag-deps dev api stop sdk-chat fe-install fe-dev fe-build fe-preview test test-cov lint type-check check fmt clean clean-rag clean-old-hatch docker-cache-model docker-build docker-up docker-down docker-restart docker-logs docker-clean
+.PHONY: help setup install deps rag-deps dev api stop sdk-chat fe-install fe-dev fe-build fe-preview test test-cov lint type-check check fmt clean clean-rag clean-old-hatch docker-cache-model docker-build docker-up docker-down docker-restart docker-logs docker-clean eval
 
 .DEFAULT_GOAL := help
 
@@ -67,6 +67,17 @@ else
 	-@pkill -f "server-filesystem" >/dev/null 2>&1 || true
 endif
 	@echo "$(GREEN)✅ 完成$(NC)"
+
+CASES  ?= examples/eval_cases.json
+OUTPUT ?=
+JUDGE  ?=
+
+eval: ## 运行 Agent 评估（make eval [CASES=cases.json] [OUTPUT=report.json] [JUDGE=claude-sonnet]）
+	@echo "$(GREEN)🧪 运行 Agent Eval: $(CASES)$(NC)"
+	@$(HATCH) run python -m astracore.eval \
+		--cases $(CASES) \
+		$(if $(OUTPUT),--output $(OUTPUT),) \
+		$(if $(JUDGE),--judge-profile $(JUDGE),)
 
 sdk-chat: ## 运行基础 SDK 对话示例
 	@echo "$(GREEN)💬 运行基础对话示例...$(NC)"

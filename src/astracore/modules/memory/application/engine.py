@@ -5,8 +5,10 @@ import re
 from collections import defaultdict
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
+
+from pydantic import BaseModel, Field
 
 from astracore.modules.chat.domain.message import Message, MessageRole
 from astracore.modules.memory.domain import (
@@ -21,6 +23,23 @@ from astracore.modules.memory.ports.store import MemoryStore
 from astracore.shared.ports.llm import LLMAdapter
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+
+
+class _MemoryDecision(BaseModel):
+    """LLM 结构化输出：记忆抽取决策。"""
+
+    should_remember: bool
+    scope: Literal["session", "project", "user", "global"] = "session"
+    type: Literal[
+        "fact", "preference", "decision", "constraint", "state", "plan", "summary", "lesson"
+    ] = "fact"
+    subject: str = ""
+    content: str = ""
+    summary: str = ""
+    importance: int = Field(default=3, ge=1, le=5)
+    confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    action: str = ""
+
 
 _TYPE_TITLES: dict[MemoryType, str] = {
     MemoryType.CONSTRAINT: "Constraints",
@@ -48,7 +67,7 @@ _DEFAULT_SCOPE_LIMITS: dict[MemoryScope, int] = {
     MemoryScope.SESSION: 6,
     MemoryScope.PROJECT: 6,
     MemoryScope.USER: 4,
-    MemoryScope.GLOBAL: 0,
+    MemoryScope.GLOBAL: 4,
 }
 
 _SESSION_COMPACT_THRESHOLD = 12
@@ -227,6 +246,13 @@ class MemoryEngine:
                 limit=min(max_items, _DEFAULT_SCOPE_LIMITS[MemoryScope.USER]),
             )
         )
+        memories.extend(
+            await self._store.list_memories(
+                scope=MemoryScope.GLOBAL,
+                status=MemoryStatus.ACTIVE,
+                limit=min(max_items, _DEFAULT_SCOPE_LIMITS[MemoryScope.GLOBAL]),
+            )
+        )
         if not memories:
             return ""
 
@@ -344,12 +370,8 @@ class MemoryEngine:
                         "只记住未来仍有用的信息，例如：用户稳定偏好、项目路径、项目状态、明确决策、"
                         "长期约束、后续计划、重要事实或可复用经验。\n"
                         "不要记住寒暄、一次性问题、临时命令、普通解释、敏感密钥、完整代码块或低价值细节。\n"
-                        "必须只返回 JSON 对象，不要使用 Markdown。\n"
-                        "JSON 字段：should_remember(boolean), scope(session|project|user|global), "
-                        "type(fact|preference|decision|constraint|state|plan|summary|lesson), "
-                        "subject(string), content(string), summary(string), importance(1-5), confidence(0-1)。\n"
-                        "如果能判断写入动作，可额外返回 action(create|update|merge|ignore|archive|conflict)。\n"
-                        '如果不需要记忆，返回 {"should_remember": false}。'
+                        "如果能判断写入动作，action 字段填 create|update|merge|ignore|archive|conflict。\n"
+                        "如果不需要记忆，将 should_remember 设为 false，其余字段可留空。"
                     ),
                 ),
                 Message(
@@ -363,6 +385,7 @@ class MemoryEngine:
             ],
             model=model,
             temperature=0.0,
+            response_format=_MemoryDecision,
         )
         decision = self._parse_memory_decision(response.content)
         if decision is None:

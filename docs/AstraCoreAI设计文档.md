@@ -212,6 +212,62 @@ Service 层将一次前端对话发送抽象为 `ChatRunRow`，避免浏览器�
 - **能力推导**：`model_capabilities.py` 按 `protocol`、`model`、`base_url` 内置推导 `tools`、`thinking`、`temperature`、`anthropic_blocks`。
 - **能力覆盖**：只有代理或新模型行为与内置表不一致时，才在 YAML 的 `capabilities` 写局部覆盖。
 
+### 5.9 Hook/Callback 系统
+
+`HookRegistry`（`shared/observability/hooks.py`）为 LLM 调用和工具执行提供四个切入点：
+
+| 钩子 | 触发时机 | 输入 payload | 输出 |
+|------|---------|-------------|------|
+| `before_llm` | LLM generate 之前 | `LLMCallInput(messages, model, tools, kwargs)` | 可返回修改后的 `LLMCallInput` 或 None |
+| `after_llm` | LLM generate 完成后 | `LLMCallOutput(content, tool_calls, metadata, duration_ms)` | 可返回修改后的 `LLMCallOutput` 或 None |
+| `before_tool` | 工具执行之前 | `ToolCallInput(tool_call_id, tool_name, arguments)` | 可返回修改后的 `ToolCallInput` 或 None（**返回值影响实际执行参数**） |
+| `after_tool` | 工具执行完成后 | `ToolCallOutput(tool_call_id, tool_name, content, is_error, duration_ms, metadata)` | 可返回修改后的 `ToolCallOutput` 或 None |
+
+**执行语义**：列表中钩子依次执行，当前钩子返回非 None 则替换 payload 传给下一个钩子；每个钩子异常独立捕获（`_logger.exception`）不影响其他钩子和主流程；支持 async/sync 混合。
+
+**接入方式**：`ChatPipeline(hooks=registry)` 或 `AstraCoreClient(hooks=registry)`，内部透传至 `ToolLoopUseCase`。
+
+### 5.10 轻量级链路追踪（Tracer）
+
+`Tracer`（`shared/observability/tracing.py`）通过 `register_hooks(registry)` 将自身的 4 个内部钩子注入 `HookRegistry`，无侵入式实现 Span 追踪。
+
+- **`Span` 数据类**：`span_id`（UUID）、`operation`（`llm.call` / `tool.call`）、`parent_span_id`（LLM span 为父）、单调时钟 `start_time/end_time`、`attributes`（model、tool_name、duration_ms 等）、`status`（`ok` / `error`）
+- **父子关系**：`before_llm` 开启 LLM span；`before_tool` 开启 Tool span 并将当前 LLM span id 设为 `parent_span_id`
+- **输出**：`_logger.debug("SPAN %s", json.dumps(span.to_dict()))` — 结构化 JSON，可被任意日志聚合器（ELK、Loki 等）解析
+- **零外部依赖**：无需安装 opentelemetry-sdk，适合轻量部署场景
+
+### 5.11 DAG 工作流引擎
+
+`NativeWorkflowOrchestrator`（`infrastructure/workflow/native.py`）实现基于有向无环图的真正并行工作流。
+
+**核心数据结构**
+
+- `AgentTask.depends_on: list[UUID]` — 该任务依赖的前序任务 ID 列表
+- `AgentTask.condition: str | None` — Python 表达式，在受限命名空间（`task_results`、`context`，无 builtins）中求值，falsy → 任务标记 `SKIPPED`
+- `WorkflowState.task_results: dict[str, str]` — 任务 ID → 结果文本的累积字典，供后续任务 condition 和 executor 使用
+- `TaskExecutor = Callable[[AgentTask, dict[str, str]], Awaitable[str]]` — 可注入的任务执行函数
+
+**执行流程**
+
+```
+create_workflow(name, tasks, executor)
+    ↓
+_topo_layers(tasks)          # Kahn 算法 → list[list[AgentTask]]（按依赖层分组）
+    ↓
+for layer in layers:
+    asyncio.gather(*[_run_task(t) for t in layer])   # 同层并行
+        ↓
+        condition eval → SKIPPED / execute
+        executor(task, task_results) → result
+        task_results[task_id] = result
+    ↓
+mark_completed / mark_failed
+```
+
+**失败语义**：任意任务 `executor` 抛出异常 → 任务 `FAILED`，工作流立即标记 `FAILED` 并跳过剩余层。
+
+**SDK 集成**：`client.workflow.run(name, tasks)` 构造一个以 `ChatPipeline.execute` 为后端的 `TaskExecutor`，前序任务结果自动拼接为"已完成任务的结果"注入下一任务的 user message；每个任务使用独立 `session_id`，避免历史上下文干扰。
+
 ## 6. 与 LangGraph 的兼容策略
 
 保持框架主线为 A，不受 LangGraph 绑定，同时保证后续可低成本接入。
@@ -317,11 +373,15 @@ sequenceDiagram
 
 ## 12. 迭代里程碑（一次性并行推进）
 
-- `M1`: 核心协议定型，Provider + Tool 最小闭环
-- `M2`: 记忆、预算、策略层完成并接入可观测
-- `M3`: RAG 与引用体系完成，建立评估基线
-- `M4`: 多 Agent 协作、审批、恢复机制完成
-- `M5`: SDK 与 Service Skeleton 打包发布，补齐示例与文档
+- `M1`: 核心协议定型，Provider + Tool 最小闭环 ✅
+- `M2`: 记忆、预算、策略层完成并接入可观测 ✅
+- `M3`: RAG 与引用体系完成，建立评估基线 ✅
+- `M4`: 多 Agent 协作、并行 spawn_agents ✅
+- `M5`: SDK 全功能对齐、ChatPipeline 统一执行引擎、Skill 系统、MCP 集成、工具循环健壮性、Conversation 门面 ✅
+- `M5+`: Hook/Callback 系统（before/after_llm/tool）、轻量级 Span 追踪（无 OTel）、DAG 工作流引擎（Kahn 拓扑 + 层级并行 + 条件跳过）、SDK WorkflowClient ✅
+- `M6`: 可靠性与安全 — 熔断器、API Key 鉴权、限流
+- `M7`: 可观测与性能 — SLO/指标/压测基线
+- `M8`: 发布工程化 — 版本策略、回滚预案、运维文档
 
 ## 13. 风险与控制
 

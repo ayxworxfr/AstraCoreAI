@@ -4,6 +4,8 @@ import json as _json_stdlib
 from collections.abc import AsyncIterator
 from typing import Any
 
+from pydantic import BaseModel
+
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
@@ -184,9 +186,17 @@ class AnthropicAdapter(LLMAdapter):
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float = 0.7,
+        response_format: type[BaseModel] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Generate a complete response."""
+        """Generate a complete response.
+
+        When *response_format* is provided the Anthropic tool_use trick is used:
+        a single synthetic tool ``__structured_output__`` is injected with the
+        Pydantic model's JSON schema, and ``tool_choice`` forces the model to call
+        it.  The tool's ``input`` dict is serialised and returned in
+        ``LLMResponse.content`` as a JSON string.
+        """
         client = self._get_client()
         model = model or self.default_model
         max_tokens = max_tokens or self.max_tokens
@@ -205,7 +215,17 @@ class AnthropicAdapter(LLMAdapter):
         if system:
             request_params["system"] = system
 
-        if "tools" in kwargs:
+        if response_format is not None:
+            schema = response_format.model_json_schema()
+            request_params["tools"] = [
+                {
+                    "name": "__structured_output__",
+                    "description": "Output structured data as specified.",
+                    "input_schema": schema,
+                }
+            ]
+            request_params["tool_choice"] = {"type": "tool", "name": "__structured_output__"}
+        elif "tools" in kwargs:
             request_params["tools"] = kwargs["tools"]
 
         response = await client.messages.create(**request_params)
@@ -217,13 +237,16 @@ class AnthropicAdapter(LLMAdapter):
             if block.type == "text":
                 content_text += block.text
             elif block.type == "tool_use":
-                tool_calls.append(
-                    ToolCall(
-                        id=block.id,
-                        name=block.name,
-                        arguments=block.input,
+                if response_format is not None and block.name == "__structured_output__":
+                    content_text = _json_stdlib.dumps(block.input, ensure_ascii=False)
+                else:
+                    tool_calls.append(
+                        ToolCall(
+                            id=block.id,
+                            name=block.name,
+                            arguments=block.input,
+                        )
                     )
-                )
 
         return LLMResponse(
             content=content_text,

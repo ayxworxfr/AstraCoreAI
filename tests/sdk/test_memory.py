@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from astracore.infrastructure.db.session import get_engine, init_db
+from astracore.infrastructure.db.session import get_engine
 from astracore.modules.memory.domain import MemoryScope, MemoryStatus, MemoryType
 from astracore.sdk.client import AstraCoreClient
 from astracore.sdk.config import AstraCoreConfig, LLMConfig, LLMProfileConfig, MemoryConfig
@@ -15,7 +15,6 @@ from astracore.sdk.config import AstraCoreConfig, LLMConfig, LLMProfileConfig, M
 async def sdk_client(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'sdk-memory.db'}"
     get_engine.cache_clear()
-    await init_db(db_url)
     config = AstraCoreConfig(
         llm=LLMConfig(
             default_profile="test",
@@ -31,10 +30,8 @@ async def sdk_client(tmp_path):
         ),
         memory=MemoryConfig(redis_url="redis://localhost:6379/0", db_url=db_url),
     )
-    client = AstraCoreClient(config=config)
-
-    yield client
-
+    async with AstraCoreClient(config=config) as client:
+        yield client
     get_engine.cache_clear()
 
 

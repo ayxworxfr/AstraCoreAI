@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from astracore.modules.chat.domain.session import SessionState
+from astracore.shared.policy.circuit_breaker import CircuitBreaker
 from astracore.shared.policy.rules import (
     BudgetRule,
     RetryRule,
@@ -45,8 +46,13 @@ class PolicyConfig(BaseModel):
 class PolicyEngine:
     """Central policy enforcement engine."""
 
-    def __init__(self, config: PolicyConfig | None = None):
+    def __init__(
+        self,
+        config: PolicyConfig | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
+    ):
         self.config = config or PolicyConfig()
+        self.circuit_breaker = circuit_breaker
 
     def apply_budget_policy(self, session: SessionState) -> SessionState:
         """Apply token budget policy to session."""
@@ -102,9 +108,13 @@ class PolicyEngine:
 
         Respects retry_on_status_codes: only retries on matching HTTP status codes
         or generic exceptions without a status_code attribute.
+
+        Circuit breaker (if configured) is checked before each attempt.
+        Success records a hit; any exception records a failure.
         """
         rules = self.config.retry
         predicate = _make_retry_predicate(rules.retry_on_status_codes)
+        cb = self.circuit_breaker
 
         @retry(
             stop=stop_after_attempt(rules.max_retries),
@@ -117,7 +127,17 @@ class PolicyEngine:
             reraise=True,
         )
         async def _attempt() -> Any:
-            return await func(*args, **kwargs)
+            if cb is not None:
+                cb.check()
+            try:
+                result = await func(*args, **kwargs)
+                if cb is not None:
+                    cb.record_success()
+                return result
+            except Exception:
+                if cb is not None:
+                    cb.record_failure()
+                raise
 
         return await _attempt()
 

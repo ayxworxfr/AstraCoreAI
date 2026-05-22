@@ -26,6 +26,7 @@ from astracore.infrastructure.memory.store import SQLMemoryStore
 from astracore.infrastructure.tools.composite import CompositeToolAdapter
 from astracore.modules.chat.application.tool_loop import ToolLoopUseCase
 from astracore.modules.chat.domain.chat_context import ChatContext
+from astracore.modules.chat.domain.chat_options import ChatOptions
 from astracore.modules.chat.domain.message import Message, MessageRole
 from astracore.modules.chat.domain.session import SessionState
 from astracore.modules.memory.application.engine import MemoryEngine
@@ -34,6 +35,7 @@ from astracore.modules.skills.prompt_utils import render_skill_prompt
 from astracore.modules.skills.router import SkillRouter
 from astracore.modules.tools.ports.tool import ToolAdapter
 from astracore.sdk.config import AstraCoreConfig, LLMProfileConfig
+from astracore.shared.observability.hooks import HookRegistry
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.policy.engine import PolicyEngine
 from astracore.shared.ports.llm import LLMAdapter, StreamEvent, StreamEventType
@@ -141,6 +143,7 @@ class ChatPipeline:
         tool_adapter: ToolAdapter,
         skill_router: SkillRouter | None = None,
         memory_engine: MemoryEngine | None = None,
+        hooks: HookRegistry | None = None,
     ) -> None:
         self._config = config
         self._memory = memory
@@ -149,13 +152,14 @@ class ChatPipeline:
         self._default_tool_adapter = tool_adapter
         self._skill_router = skill_router
         self._memory_engine = memory_engine or MemoryEngine(SQLMemoryStore(config.memory.db_url))
+        self._hooks = hooks
         self._llm_adapters: dict[str, LLMAdapter] = {}
 
     # ------------------------------------------------------------------
     # LLM / tool-loop factories (cached by profile id)
     # ------------------------------------------------------------------
 
-    def _get_llm_adapter(self, profile: LLMProfileConfig) -> LLMAdapter:
+    def get_llm_adapter(self, profile: LLMProfileConfig) -> LLMAdapter:
         if profile.id not in self._llm_adapters:
             if profile.protocol == "anthropic":
                 self._llm_adapters[profile.id] = AnthropicAdapter(
@@ -194,7 +198,7 @@ class ChatPipeline:
             extra_context["allowed_tools"] = allowed_tools
         extra_context["tool_adapter"] = tool_adapter
         return ToolLoopUseCase(
-            llm_adapter=self._get_llm_adapter(profile),
+            llm_adapter=self.get_llm_adapter(profile),
             tool_adapter=tool_adapter,
             policy_engine=self._policy,
             max_iterations=cfg.max_tool_iterations,
@@ -202,6 +206,7 @@ class ChatPipeline:
             tool_timeout_s=cfg.tool_timeout_s,
             profile_id=profile.id,
             extra_context=extra_context or None,
+            hooks=self._hooks,
         )
 
     # ------------------------------------------------------------------
@@ -354,25 +359,18 @@ class ChatPipeline:
         self,
         message: str,
         session_id: UUID,
+        options: ChatOptions | None = None,
         *,
         tool_adapter: ToolAdapter | None = None,
-        model_profile: str | None = None,
-        temperature: float | None = None,
-        use_tools: bool = False,
-        enable_thinking: bool = False,
-        thinking_budget: int = 8000,
-        enable_rag: bool = False,
-        enable_web: bool = False,
-        skill_id: UUID | None = None,
-        disable_skill: bool = False,
     ) -> ChatContext:
-        """Resolve all parameters and return an immutable ``ChatContext``.
+        """Resolve all options and return an immutable ``ChatContext``.
 
         This is the **only** method that issues DB queries for business logic.
         ``stream()`` and ``execute()`` consume the context as pure data.
         """
-        profile = self._config.llm.get_profile(model_profile)
-        if (use_tools or enable_web) and not profile.capabilities.tools:
+        opts = options or ChatOptions()
+        profile = self._config.llm.get_profile(opts.model_profile)
+        if (opts.use_tools or opts.enable_web) and not profile.capabilities.tools:
             raise ValueError(f"LLM profile '{profile.id}' does not support tool calling")
 
         # 1. Compose system prompt (skill + global instruction + RAG context in one pass)
@@ -384,21 +382,21 @@ class ChatPipeline:
             anchor_id,
         ) = await self._build_system_prompt(
             session_id=session_id,
-            skill_id=skill_id,
-            disable_skill=disable_skill,
-            enable_rag=enable_rag,
+            skill_id=opts.skill_id,
+            disable_skill=opts.disable_skill,
+            enable_rag=opts.enable_rag,
             message=message,
         )
 
         # 2. Resolve temperature and context window size
-        resolved_temp = await self._resolve_temperature(temperature, profile)
+        resolved_temp = await self._resolve_temperature(opts.temperature, profile)
         context_max = int(await self._get_setting("context_max_messages") or "20")
 
         # 3. Build LLM kwargs
         llm_kwargs: dict[str, Any] = {}
-        if enable_thinking and profile.capabilities.thinking:
+        if opts.enable_thinking and profile.capabilities.thinking:
             llm_kwargs["enable_thinking"] = True
-            llm_kwargs["thinking_budget"] = thinking_budget
+            llm_kwargs["thinking_budget"] = opts.thinking_budget
 
         # 4. Resolve tool adapter: per-call override takes precedence
         base_adapter = tool_adapter if tool_adapter is not None else self._default_tool_adapter
@@ -416,20 +414,20 @@ class ChatPipeline:
             effective_adapter = CompositeToolAdapter([ref_adapter, base_adapter])
 
         # 6. Determine execution mode and allowed tools
-        needs_tool_loop = use_tools or enable_web or skill_has_refs
+        needs_tool_loop = opts.use_tools or opts.enable_web or skill_has_refs
         allowed_tools: frozenset[str]
         mode: Literal["normal", "tool_loop"]
         if needs_tool_loop:
             mode = "tool_loop"
-            if not use_tools and not enable_web:
+            if not opts.use_tools and not opts.enable_web:
                 # Reference-only mode: expose only get_skill_reference.
                 allowed_tools = frozenset({"get_skill_reference"})
             else:
                 all_tools = frozenset(d.name for d in effective_adapter.get_definitions())
                 excluded: set[str] = set()
-                if not enable_rag:
+                if not opts.enable_rag:
                     excluded.add("search_knowledge_base")
-                if not enable_web:
+                if not opts.enable_web:
                     excluded.add("web_search")
                 allowed_tools = all_tools - excluded
         else:
@@ -505,7 +503,7 @@ class ChatPipeline:
         accumulated_content = ""
         assistant_metadata: dict[str, Any] = {}
         try:
-            async for event in self._get_llm_adapter(ctx.profile).generate_stream(
+            async for event in self.get_llm_adapter(ctx.profile).generate_stream(
                 messages=llm_messages,
                 temperature=ctx.temperature,
                 **ctx.llm_kwargs,
@@ -576,7 +574,7 @@ class ChatPipeline:
             yield StreamEvent(event_type=StreamEventType.DONE, metadata={"source": "tool_loop"})
 
             summary_text = ""
-            async for event in self._get_llm_adapter(ctx.profile).generate_stream(
+            async for event in self.get_llm_adapter(ctx.profile).generate_stream(
                 messages=_build_summary_fallback_messages(
                     safe_messages, hit_iteration_limit=hit_limit
                 ),

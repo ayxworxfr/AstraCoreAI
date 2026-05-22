@@ -9,6 +9,14 @@ from typing import Any
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
 from astracore.modules.chat.domain.session import SessionState
 from astracore.modules.tools.ports.tool import ToolAdapter, ToolExecutionResult
+from astracore.shared.observability.hooks import (
+    HookRegistry,
+    LLMCallInput,
+    LLMCallOutput,
+    ShortCircuit,
+    ToolCallInput,
+    ToolCallOutput,
+)
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.policy.engine import PolicyEngine
 from astracore.shared.ports.llm import LLMAdapter, StreamEvent, StreamEventType
@@ -33,6 +41,7 @@ class ToolLoopUseCase:
         tool_timeout_s: float = 120.0,
         profile_id: str | None = None,
         extra_context: dict[str, Any] | None = None,
+        hooks: HookRegistry | None = None,
     ):
         self.llm = llm_adapter
         self.tools = tool_adapter
@@ -42,6 +51,7 @@ class ToolLoopUseCase:
         self.tool_timeout_s = tool_timeout_s
         self.profile_id = profile_id
         self._extra_context: dict[str, Any] = extra_context or {}
+        self._hooks = hooks
 
     @property
     def unlimited(self) -> bool:
@@ -130,33 +140,124 @@ class ToolLoopUseCase:
             for t in self.tools.get_definitions()
         ]
 
+    # ------------------------------------------------------------------
+    # Hook helpers
+    # ------------------------------------------------------------------
+
+    async def _fire_before_llm(
+        self,
+        messages: list[Message],
+        model: str | None,
+        tools: list[dict[str, Any]] | None,
+        kwargs: dict[str, Any],
+    ) -> LLMCallInput | ShortCircuit:
+        payload = LLMCallInput(
+            messages=messages,  # type: ignore[arg-type]
+            model=model,
+            tools=tools,
+            kwargs=kwargs,
+        )
+        if self._hooks:
+            return await self._hooks.run_before_llm(payload)
+        return payload
+
+    async def _fire_after_llm(
+        self,
+        content: str,
+        tool_calls: list[Any],
+        metadata: dict[str, Any],
+        duration_ms: int,
+    ) -> LLMCallOutput:
+        payload = LLMCallOutput(
+            content=content,
+            tool_calls=tool_calls,
+            metadata=metadata,
+            duration_ms=duration_ms,
+        )
+        if self._hooks:
+            payload = await self._hooks.run_after_llm(payload)
+        return payload
+
+    async def _fire_before_tool(self, tool_call: ToolCall) -> ToolCallInput | ShortCircuit:
+        payload = ToolCallInput(
+            tool_call_id=tool_call.id,
+            tool_name=tool_call.name,
+            arguments=tool_call.arguments,
+        )
+        if self._hooks:
+            return await self._hooks.run_before_tool(payload)
+        return payload
+
+    async def _fire_after_tool(
+        self,
+        tool_result: ToolResult,
+        duration_ms: int,
+    ) -> ToolCallOutput:
+        payload = ToolCallOutput(
+            tool_call_id=tool_result.tool_call_id,
+            tool_name=tool_result.name,
+            content=tool_result.content,
+            is_error=tool_result.is_error,
+            duration_ms=duration_ms,
+            metadata=tool_result.metadata or {},
+        )
+        if self._hooks:
+            payload = await self._hooks.run_after_tool(payload)
+        return payload
+
+    # ------------------------------------------------------------------
+    # Tool execution
+    # ------------------------------------------------------------------
+
     async def _execute_one_tool(self, tool_call: ToolCall) -> ToolResult:
         """Execute a single tool call (non-streaming). Used for parallel gather."""
-        if not self.policy.check_security_policy(tool_call.name, tool_call.arguments):
+        hook_result = await self._fire_before_tool(tool_call)
+
+        if isinstance(hook_result, ShortCircuit):
+            sc_out = hook_result.result
             return ToolResult(
-                tool_call_id=tool_call.id,
-                name=tool_call.name,
+                tool_call_id=sc_out.tool_call_id,  # type: ignore[attr-defined]
+                name=sc_out.tool_name,  # type: ignore[attr-defined]
+                content=sc_out.content,  # type: ignore[attr-defined]
+                is_error=sc_out.is_error,  # type: ignore[attr-defined]
+            )
+
+        hook_input = hook_result
+
+        if not self.policy.check_security_policy(hook_input.tool_name, hook_input.arguments):
+            result = ToolResult(
+                tool_call_id=hook_input.tool_call_id,
+                name=hook_input.tool_name,
                 content="Tool execution blocked by security policy",
                 is_error=True,
             )
+            await self._fire_after_tool(result, duration_ms=0)
+            return result
+
+        t0 = time.monotonic()
         try:
             exec_result = await asyncio.wait_for(
                 self.tools.execute(
-                    tool_name=tool_call.name,
-                    arguments=tool_call.arguments,
+                    tool_name=hook_input.tool_name,
+                    arguments=hook_input.arguments,
                     context={**self._extra_context, "profile_id": self.profile_id},
                 ),
-                timeout=self.tool_timeout_s,
+                timeout=self.tool_timeout_s or None,
             )
         except TimeoutError:
-            return ToolResult(
-                tool_call_id=tool_call.id,
-                name=tool_call.name,
-                content=f"[超时] 工具 '{tool_call.name}' 执行超过 {self.tool_timeout_s:.0f}s，已中止。请换用更精确的参数重试。",
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            result = ToolResult(
+                tool_call_id=hook_input.tool_call_id,
+                name=hook_input.tool_name,
+                content=f"[超时] 工具 '{hook_input.tool_name}' 执行超过 {self.tool_timeout_s:.0f}s，已中止。请换用更精确的参数重试。",
                 is_error=True,
             )
-        return ToolResult(
-            tool_call_id=tool_call.id,
+            await self._fire_after_tool(result, duration_ms=duration_ms)
+            return result
+
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        result = ToolResult(
+            tool_call_id=hook_input.tool_call_id,
             name=exec_result.tool_name,
             content=self._truncate_tool_result(
                 exec_result.output or exec_result.error or "Tool execution failed"
@@ -164,6 +265,8 @@ class ToolLoopUseCase:
             is_error=not exec_result.success,
             metadata=exec_result.metadata,
         )
+        await self._fire_after_tool(result, duration_ms=duration_ms)
+        return result
 
     async def _run_tool_to_queue(
         self,
@@ -172,18 +275,58 @@ class ToolLoopUseCase:
         queue: asyncio.Queue[Any],
     ) -> None:
         """Execute a single streaming tool call, pushing events and a final sentinel to queue."""
-        if not self.policy.check_security_policy(tool_call.name, tool_call.arguments):
-            blocked = "Tool execution blocked by security policy"
+        hook_result = await self._fire_before_tool(tool_call)
+
+        if isinstance(hook_result, ShortCircuit):
+            sc_out = hook_result.result
+            result = ToolResult(
+                tool_call_id=sc_out.tool_call_id,  # type: ignore[attr-defined]
+                name=sc_out.tool_name,  # type: ignore[attr-defined]
+                content=sc_out.content,  # type: ignore[attr-defined]
+                is_error=sc_out.is_error,  # type: ignore[attr-defined]
+            )
             await queue.put(
                 (
                     idx,
                     StreamEvent(
                         event_type=StreamEventType.TOOL_RESULT,
-                        content=tool_call.name,
+                        content=result.name,
                         metadata={
-                            "tool": tool_call.name,
-                            "tool_call_id": tool_call.id,
-                            "input": tool_call.arguments,
+                            "tool": result.name,
+                            "tool_call_id": result.tool_call_id,
+                            "input": {},
+                            "result": result.content,
+                            "is_error": result.is_error,
+                            "duration_ms": 0,
+                        },
+                    ),
+                    None,
+                )
+            )
+            await queue.put((idx, _TOOL_DONE, result))
+            return
+
+        hook_input = hook_result
+
+        if not self.policy.check_security_policy(hook_input.tool_name, hook_input.arguments):
+            blocked = "Tool execution blocked by security policy"
+            result = ToolResult(
+                tool_call_id=hook_input.tool_call_id,
+                name=hook_input.tool_name,
+                content=blocked,
+                is_error=True,
+            )
+            await self._fire_after_tool(result, duration_ms=0)
+            await queue.put(
+                (
+                    idx,
+                    StreamEvent(
+                        event_type=StreamEventType.TOOL_RESULT,
+                        content=hook_input.tool_name,
+                        metadata={
+                            "tool": hook_input.tool_name,
+                            "tool_call_id": hook_input.tool_call_id,
+                            "input": hook_input.arguments,
                             "result": blocked,
                             "is_error": True,
                             "duration_ms": 0,
@@ -192,32 +335,21 @@ class ToolLoopUseCase:
                     None,
                 )
             )
-            await queue.put(
-                (
-                    idx,
-                    _TOOL_DONE,
-                    ToolResult(
-                        tool_call_id=tool_call.id,
-                        name=tool_call.name,
-                        content=blocked,
-                        is_error=True,
-                    ),
-                )
-            )
+            await queue.put((idx, _TOOL_DONE, result))
             return
 
         tool_start_time = time.monotonic()
         exec_result: ToolExecutionResult | None = None
         timeout_cm = (
             contextlib.nullcontext()
-            if self.tools.is_timeout_managed(tool_call.name)
-            else asyncio.timeout(self.tool_timeout_s)
+            if self.tools.is_timeout_managed(hook_input.tool_name)
+            else asyncio.timeout(self.tool_timeout_s or None)
         )
         try:
             async with timeout_cm:
                 async for item in self.tools.execute_streaming(
-                    tool_name=tool_call.name,
-                    arguments=tool_call.arguments,
+                    tool_name=hook_input.tool_name,
+                    arguments=hook_input.arguments,
                     context={**self._extra_context, "profile_id": self.profile_id},
                 ):
                     if isinstance(item, StreamEvent):
@@ -227,19 +359,26 @@ class ToolLoopUseCase:
         except TimeoutError:
             duration_ms = int((time.monotonic() - tool_start_time) * 1000)
             timeout_msg = (
-                f"[超时] 工具 '{tool_call.name}' 执行超过 {self.tool_timeout_s:.0f}s，"
+                f"[超时] 工具 '{hook_input.tool_name}' 执行超过 {self.tool_timeout_s:.0f}s，"
                 "已中止。请换用更精确的参数重试。"
             )
+            result = ToolResult(
+                tool_call_id=hook_input.tool_call_id,
+                name=hook_input.tool_name,
+                content=timeout_msg,
+                is_error=True,
+            )
+            await self._fire_after_tool(result, duration_ms=duration_ms)
             await queue.put(
                 (
                     idx,
                     StreamEvent(
                         event_type=StreamEventType.TOOL_RESULT,
-                        content=tool_call.name,
+                        content=hook_input.tool_name,
                         metadata={
-                            "tool": tool_call.name,
-                            "tool_call_id": tool_call.id,
-                            "input": tool_call.arguments,
+                            "tool": hook_input.tool_name,
+                            "tool_call_id": hook_input.tool_call_id,
+                            "input": hook_input.arguments,
                             "result": timeout_msg,
                             "is_error": True,
                             "duration_ms": duration_ms,
@@ -248,23 +387,12 @@ class ToolLoopUseCase:
                     None,
                 )
             )
-            await queue.put(
-                (
-                    idx,
-                    _TOOL_DONE,
-                    ToolResult(
-                        tool_call_id=tool_call.id,
-                        name=tool_call.name,
-                        content=timeout_msg,
-                        is_error=True,
-                    ),
-                )
-            )
+            await queue.put((idx, _TOOL_DONE, result))
             return
 
         if exec_result is None:
             exec_result = ToolExecutionResult(
-                tool_name=tool_call.name,
+                tool_name=hook_input.tool_name,
                 success=False,
                 output="",
                 error="Tool returned no result",
@@ -275,6 +403,13 @@ class ToolLoopUseCase:
         content = self._truncate_tool_result(
             exec_result.output or exec_result.error or "Tool execution failed"
         )
+        result = ToolResult(
+            tool_call_id=hook_input.tool_call_id,
+            name=exec_result.tool_name,
+            content=content,
+            is_error=not exec_result.success,
+        )
+        await self._fire_after_tool(result, duration_ms=duration_ms)
         await queue.put(
             (
                 idx,
@@ -283,8 +418,8 @@ class ToolLoopUseCase:
                     content=exec_result.tool_name,
                     metadata={
                         "tool": exec_result.tool_name,
-                        "tool_call_id": tool_call.id,
-                        "input": tool_call.arguments,
+                        "tool_call_id": hook_input.tool_call_id,
+                        "input": hook_input.arguments,
                         "result": content,
                         "is_error": not exec_result.success,
                         "duration_ms": duration_ms,
@@ -293,18 +428,11 @@ class ToolLoopUseCase:
                 None,
             )
         )
-        await queue.put(
-            (
-                idx,
-                _TOOL_DONE,
-                ToolResult(
-                    tool_call_id=tool_call.id,
-                    name=exec_result.tool_name,
-                    content=content,
-                    is_error=not exec_result.success,
-                ),
-            )
-        )
+        await queue.put((idx, _TOOL_DONE, result))
+
+    # ------------------------------------------------------------------
+    # Non-streaming loop
+    # ------------------------------------------------------------------
 
     async def execute_with_tools(
         self,
@@ -321,14 +449,38 @@ class ToolLoopUseCase:
         while self.unlimited or iterations < self.max_iterations:
             iterations += 1
             is_last = (not self.unlimited) and (iterations == self.max_iterations)
-            # 最后一轮不传工具，强制 LLM 给文本答案，避免产生无对应 tool_result 的 tool_use
             tools_for_llm = None if is_last else (tool_definitions if tool_definitions else None)
 
-            response = await self.policy.apply_retry_policy(
-                self.llm.generate,
-                messages=self._inject_guidance(session.get_messages(), iterations),
+            injected_messages = self._inject_guidance(session.get_messages(), iterations)
+            before_result = await self._fire_before_llm(
+                messages=injected_messages,
                 model=model,
                 tools=tools_for_llm,
+                kwargs={},
+            )
+            if isinstance(before_result, ShortCircuit):
+                sc_out = before_result.result
+                session.add_message(
+                    Message(
+                        role=MessageRole.ASSISTANT,
+                        content=sc_out.content,  # type: ignore[attr-defined]
+                        tool_calls=[],
+                    )
+                )
+                break
+
+            t0 = time.monotonic()
+            response = await self.policy.apply_retry_policy(
+                self.llm.generate,
+                messages=injected_messages,
+                model=model,
+                tools=tools_for_llm,
+            )
+            await self._fire_after_llm(
+                content=response.content,
+                tool_calls=response.tool_calls,
+                metadata={},
+                duration_ms=int((time.monotonic() - t0) * 1000),
             )
 
             assistant_msg = Message(
@@ -343,7 +495,6 @@ class ToolLoopUseCase:
             if not self.unlimited and iterations >= self.max_iterations:
                 break
 
-            # Parallel execution: all tool calls in this round run concurrently
             tool_results: list[ToolResult] = list(
                 await asyncio.gather(*[self._execute_one_tool(tc) for tc in response.tool_calls])
             )
@@ -353,6 +504,10 @@ class ToolLoopUseCase:
             )
 
         return session
+
+    # ------------------------------------------------------------------
+    # Streaming loop
+    # ------------------------------------------------------------------
 
     async def execute_stream_with_tools(
         self,
@@ -375,28 +530,45 @@ class ToolLoopUseCase:
         while self.unlimited or iterations < self.max_iterations:
             iterations += 1
             is_last = (not self.unlimited) and (iterations == self.max_iterations)
-            # 最后一轮不传工具，强制 LLM 给文本答案，避免产生无对应 tool_result 的 tool_use
             tools_for_llm = None if is_last else (tool_definitions if tool_definitions else None)
 
-            # 通知前端新一轮开始，携带轮次编号
             yield StreamEvent(
                 event_type=StreamEventType.ROUND_START,
                 metadata={"round": iterations},
             )
             round_start_time = time.monotonic()
 
+            injected_messages = self._inject_guidance(session.get_messages(), iterations)
+            before_result = await self._fire_before_llm(
+                messages=injected_messages,
+                model=model,
+                tools=tools_for_llm,
+                kwargs=llm_kwargs,
+            )
+            if isinstance(before_result, ShortCircuit):
+                sc_out = before_result.result
+                sc_content = sc_out.content  # type: ignore[attr-defined]
+                yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content=sc_content)
+                yield StreamEvent(
+                    event_type=StreamEventType.THINKING_STOP,
+                    metadata={"duration_ms": 0},
+                )
+                session.add_message(
+                    Message(role=MessageRole.ASSISTANT, content=sc_content, tool_calls=[])
+                )
+                break
+
             accumulated_content = ""
             accumulated_tool_calls = []
             assistant_metadata: dict[str, Any] = {}
 
             buffered_events = await self._collect_llm_stream(
-                messages=self._inject_guidance(session.get_messages(), iterations),
+                messages=injected_messages,
                 model=model,
                 tools=tools_for_llm,
                 **llm_kwargs,
             )
             for event in buffered_events:
-                # 只累积文本，不要把 thinking 内容混入
                 if event.event_type == StreamEventType.TEXT_DELTA and event.content:
                     accumulated_content += event.content
                 if event.event_type == StreamEventType.DONE:
@@ -407,10 +579,17 @@ class ToolLoopUseCase:
                     accumulated_tool_calls.append(event.tool_call)
                 yield event
 
-            # 本轮 LLM 生成结束，告知前端耗时
+            llm_duration_ms = int((time.monotonic() - round_start_time) * 1000)
+            await self._fire_after_llm(
+                content=accumulated_content,
+                tool_calls=accumulated_tool_calls,
+                metadata=assistant_metadata,
+                duration_ms=llm_duration_ms,
+            )
+
             yield StreamEvent(
                 event_type=StreamEventType.THINKING_STOP,
-                metadata={"duration_ms": int((time.monotonic() - round_start_time) * 1000)},
+                metadata={"duration_ms": llm_duration_ms},
             )
 
             session.add_message(
@@ -427,8 +606,6 @@ class ToolLoopUseCase:
             if not self.unlimited and iterations >= self.max_iterations:
                 break
 
-            # Parallel streaming: all tool calls in this round run as concurrent tasks,
-            # pushing events into a shared queue; outer generator drains and yields them.
             queue: asyncio.Queue[Any] = asyncio.Queue()
             tasks = [
                 asyncio.create_task(self._run_tool_to_queue(tc, i, queue))

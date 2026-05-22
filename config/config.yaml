@@ -1,5 +1,5 @@
 llm:
-  default_profile: gpt-5-5
+  default_profile: deepseek-chat
   profiles:
     - id: claude-sonnet
       label: Claude Sonnet
@@ -45,7 +45,7 @@ llm:
 
 agent:
   max_tool_result_chars: 20000
-  max_tool_iterations: 0
+  max_tool_iterations: 8
   tool_timeout_s: 60
   enable_spawn_agents: false
 

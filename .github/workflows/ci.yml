@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache hatch environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/hatch
+          key: hatch-${{ runner.os }}-py3.11-${{ hashFiles('pyproject.toml') }}
+          restore-keys: hatch-${{ runner.os }}-py3.11-
+
+      - run: pip install hatch
+
+      - name: Ruff check
+        run: hatch run lint
+
+      - name: Ruff format check
+        run: hatch run ruff format --check src/astracore tests
+
+  type-check:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache hatch environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/hatch
+          key: hatch-${{ runner.os }}-py3.11-${{ hashFiles('pyproject.toml') }}
+          restore-keys: hatch-${{ runner.os }}-py3.11-
+
+      - run: pip install hatch
+
+      - name: MyPy
+        run: hatch run type-check
+
+  test:
+    name: Test / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      ANTHROPIC_API_KEY: test-key
+      OPENAI_API_KEY: test-key
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache hatch environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/hatch
+          key: hatch-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: hatch-${{ runner.os }}-py${{ matrix.python-version }}-
+
+      - run: pip install hatch
+
+      - name: Run tests
+        run: hatch run test-cov -- --cov-report=xml
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build (includes TypeScript check)
+        run: npm run build
+        working-directory: frontend

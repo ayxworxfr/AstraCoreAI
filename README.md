@@ -22,6 +22,14 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于能力模块化
 - **策略引擎**：tenacity retry + asyncio timeout 实际生效，Token 预算 O(n) 截断
 - **双形态交付**：SDK 嵌入 + FastAPI 服务 HTTP 访问，两者共享同一 `ChatPipeline` 执行引擎
 - **前端 SPA 控制台**：React + Vite + Zustand 会话式 Playground，含模型 Profile 切换、Skill 管理、RAG 调试、系统运行参数配置
+- **Hook/Callback 系统**：`HookRegistry` 提供 `before_llm`、`after_llm`、`before_tool`、`after_tool` 四个切入点；列表链式执行，钩子返回修改值即替换原值，返回 None 则透传；每个钩子异常独立捕获不影响主流程；支持同步与 async 钩子
+- **Hook 短路（ShortCircuit）**：`before_llm` / `before_tool` 钩子可返回 `ShortCircuit(result=...)` 直接跳过 LLM 调用或工具执行，用于缓存命中、mock 注入、guardrail 拦截
+- **熔断器（CircuitBreaker）**：三态（closed / open / half_open）状态机，连续失败达阈值后快速拒绝请求，等待 `recovery_time_s` 后探测恢复；通过 `PolicyEngine(circuit_breaker=...)` 接入 LLM 调用链路
+- **Structured Output**：`LLMAdapter.generate(response_format=MyModel)` 强制 LLM 输出 Pydantic 模型对应的 JSON；Anthropic 走 tool_use 技巧，OpenAI 走 `json_schema` 响应格式；`MemoryEngine` 记忆抽取已切换为结构化输出，不再依赖 json_repair 兜底
+- **轻量级链路追踪**：`Tracer` 通过 `register_hooks(registry)` 自动接入 HookRegistry，以 `Span` 数据类记录 LLM 调用与工具调用的时延、状态、属性，结构化 JSON 写入 DEBUG 日志，无 OTel 依赖
+- **DAG 工作流引擎**：`NativeWorkflowOrchestrator` 实现真正的 DAG 执行——Kahn 算法拓扑排序 → 按层 `asyncio.gather` 并行执行；`AgentTask.depends_on` 声明依赖，`condition` 字段支持对 `task_results` 求值的条件跳过（SKIPPED 状态）；`TaskExecutor` 可注入任意异步函数，SDK 中默认注入 `ChatPipeline.execute`
+- **SDK WorkflowClient**：`client.workflow.run(name, tasks)` 一行启动 DAG 工作流；前序任务结果自动作为上下文注入后续任务提示；每个任务可通过 `metadata` 独立覆盖 `model_profile`、`use_tools` 等参数
+- **Agent Eval 评估框架**：`EvalRunner` 并发执行 `EvalCase` 列表，支持 LLM-as-judge 相关性评分（0-1）与工具调用顺序精确匹配；`EvalReport.summary()` 一键打印通过率；`python -m astracore.eval --cases cases.json` CLI 直接运行
 - **安全基线**：CORS 环境变量白名单、输入验证预编译、敏感字段脱敏
 
 ## 测试状态
@@ -179,16 +187,21 @@ src/astracore/
 │   ├── memory/          # HybridMemoryAdapter、SQLMemoryStore
 │   ├── retrieval/       # ChromaDB 适配器
 │   ├── tools/           # native、MCP、composite、parallel agent 工具实现
-│   └── workflow/        # NativeWorkflowOrchestrator
+│   └── workflow/        # NativeWorkflowOrchestrator（DAG 拓扑排序 + 并行执行）
 ├── mcp_servers/
 │   └── shell_server.py  # 内置 MCP Shell Server（受控命令执行）
+├── eval/
+│   ├── dataset.py       # EvalCase 数据类
+│   ├── report.py        # EvalResult / EvalReport
+│   ├── runner.py        # EvalRunner（并发执行 + LLM-as-judge + 工具精确匹配）
+│   └── __main__.py      # python -m astracore.eval CLI
 ├── shared/
-│   ├── observability/   # 结构化日志、指标
-│   ├── policy/          # PolicyEngine（tenacity retry + asyncio timeout）
-│   ├── ports/           # 跨模块共享端口（LLM、Audit、Metrics）
+│   ├── observability/   # 结构化日志、指标、HookRegistry（ShortCircuit 短路 + before/after_llm/tool）、Tracer（Span 链路追踪）
+│   ├── policy/          # PolicyEngine（tenacity retry + asyncio timeout）、CircuitBreaker（熔断器）
+│   ├── ports/           # 跨模块共享端口（LLM / response_format 结构化输出、Audit、Metrics）
 │   └── security/        # SecurityValidator（XSS、长度、内容过滤）
 └── sdk/
-    ├── client.py              # 主 SDK 客户端（AstraCoreClient + Conversation 门面）
+    ├── client.py              # 主 SDK 客户端（AstraCoreClient + Conversation + WorkflowClient 门面）
     ├── config.py              # Pydantic v2 YAML 配置模型
     └── model_capabilities.py  # 内置模型能力注册表
 
@@ -295,6 +308,60 @@ make clean-rag    # 清空 ChromaDB 数据
 - **服务运行**：`python examples/run_service.py [--port 8080] [--reload]` — 启动 FastAPI HTTP 服务
 - **前端调试台**：`frontend/`
 
+### Hook + Tracing 用法
+
+```python
+from astracore.sdk import AstraCoreClient
+from astracore.shared.observability.hooks import HookRegistry
+from astracore.shared.observability.tracing import Tracer
+
+registry = HookRegistry()
+
+# 注册自定义钩子（观察 / 修改）
+def log_llm_call(payload):
+    print(f"[before_llm] model={payload.model} messages={len(payload.messages)}")
+    # 返回 None 不修改，返回新 payload 则替换
+
+registry.before_llm.append(log_llm_call)
+
+# 自动追踪（Span JSON 写入 DEBUG 日志）
+tracer = Tracer(session_id="my-session")
+tracer.register_hooks(registry)
+
+async with AstraCoreClient(hooks=registry) as client:
+    result = await client.chat("你好")
+    print(result.content)
+```
+
+### DAG Workflow 用法
+
+```python
+from astracore.sdk import AstraCoreClient
+from astracore.modules.agent.domain import AgentTask, AgentRole
+
+async with AstraCoreClient() as client:
+    t1 = AgentTask(role=AgentRole.EXECUTOR, description="搜索 Python asyncio 最佳实践")
+    t2 = AgentTask(
+        role=AgentRole.EXECUTOR,
+        description="基于搜索结果，写一份 500 字技术总结",
+        depends_on=[t1.task_id],  # 等 t1 完成后执行
+    )
+    t3 = AgentTask(
+        role=AgentRole.REVIEWER,
+        description="审校总结，给出改进意见",
+        depends_on=[t2.task_id],
+        condition="len(task_results) >= 2",  # 条件不满足则跳过
+    )
+
+    state = await client.workflow.run(
+        "asyncio-research",
+        [t1, t2, t3],
+        use_tools=True,
+    )
+    print(state.result)         # {"completed_tasks": 3, "skipped_tasks": 0}
+    print(state.task_results)   # {task_id: result_text, ...}
+```
+
 ## 核心设计原则
 
 1. **能力边界优先**：新业务代码先归入 `modules/<capability>` / `features/<capability>`，不按 controller/service/store 这类技术层横向堆放
@@ -324,8 +391,9 @@ make clean-rag    # 清空 ChromaDB 数据
 - [x] M2：记忆、预算、策略、可观测性
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
-- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 131 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ Memory 自动抽取 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatPipeline 统一执行）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅ 并行多 Agent（spawn_agents）✅ Command + Pipeline 模式重构 ✅ Conversation 门面（多轮会话自动管理 session_id）✅ SKILL_MATCH 事件（SDK 技能路由透传）✅
-- [ ] M6：可靠性与安全 — 熔断器、API Key 鉴权、限流
+- [x] M5：质量闭环 — 后端优化 ✅ 单元测试 131 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ Memory 自动抽取 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatPipeline 统一执行）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅ 并行多 Agent（spawn_agents）✅ Command + Pipeline 模式重构 ✅ Conversation 门面（多轮会话自动管理 session_id）✅ SKILL_MATCH 事件（SDK 技能路由透传）✅ Hook/Callback 系统（before/after_llm/tool 四切入点）✅ 轻量级 Span 链路追踪（无 OTel 依赖）✅ DAG 工作流引擎（拓扑排序 + 层级并行 + 条件跳过）✅ SDK WorkflowClient ✅
+- [x] M5+：Hook ShortCircuit 短路拦截 ✅ CircuitBreaker 熔断器（三态状态机 + PolicyEngine 集成）✅ Structured Output（LLMAdapter response_format + Anthropic tool_use + OpenAI json_schema + MemoryEngine 切换）✅ Agent Eval 评估框架（EvalRunner + LLM-as-judge + 工具精确匹配 + JSON 报告 + CLI）✅
+- [ ] M6：可靠性与安全 — API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档
 

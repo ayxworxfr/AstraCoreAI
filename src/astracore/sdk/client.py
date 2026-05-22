@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -15,7 +16,11 @@ from astracore.infrastructure.db.session import get_session, init_db
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
 from astracore.infrastructure.retrieval.chroma import ChromaRetrieverAdapter
+from astracore.infrastructure.workflow.native import NativeWorkflowOrchestrator
+from astracore.modules.agent.domain import AgentTask
+from astracore.modules.agent.ports.workflow import WorkflowState
 from astracore.modules.chat.domain.chat_context import ChatContext
+from astracore.modules.chat.domain.chat_options import ChatOptions
 from astracore.modules.chat.pipeline import ChatPipeline
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.modules.memory.domain import (
@@ -29,8 +34,9 @@ from astracore.modules.memory.domain import (
 from astracore.modules.rag.application.pipeline import RAGPipeline
 from astracore.modules.skills.router import SkillRouter
 from astracore.modules.skills.seeds import seed_builtin_skills
-from astracore.modules.tools.ports.tool import ToolAdapter, ToolParameter
+from astracore.modules.tools.ports.tool import MutableToolAdapter, ToolParameter
 from astracore.sdk.config import AstraCoreConfig
+from astracore.shared.observability.hooks import HookRegistry
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.policy.engine import PolicyEngine
 from astracore.shared.ports.llm import StreamEvent, StreamEventType
@@ -59,29 +65,25 @@ class Conversation:
     Create via :meth:`AstraCoreClient.conversation` — do not instantiate directly::
 
         async with AstraCoreClient() as client:
-            conv = client.conversation(use_tools=True)
-            result = await conv.send("你好")
-            async for chunk in conv.stream("继续"):
-                ...
+            async with client.conversation(options=ChatOptions(use_tools=True)) as conv:
+                result = await conv.send("你好")
+                async for chunk in conv.stream("继续"):
+                    ...
+
+    Per-turn overrides use ``dataclasses.replace`` field names::
+
+        result = await conv.send("你好", temperature=0.2)
     """
 
     def __init__(
         self,
         client: AstraCoreClient,
         *,
-        skill_id: UUID | None = None,
-        use_tools: bool = False,
-        enable_rag: bool = False,
-        enable_web: bool = False,
-        enable_thinking: bool = False,
-        thinking_budget: int = 8000,
-        model_profile: str | None = None,
-        temperature: float | None = None,
-        disable_skill: bool = False,
         session_id: UUID | None = None,
         project_id: str | None = None,
         project_locked: bool = False,
         project_source: str = "sdk",
+        options: ChatOptions | None = None,
     ) -> None:
         self._client = client
         self._session_id = session_id or uuid4()
@@ -89,22 +91,17 @@ class Conversation:
         self._project_locked = project_locked
         self._project_source = project_source
         self._project_bound = False
-        self._defaults: dict[str, Any] = {
-            "skill_id": skill_id,
-            "use_tools": use_tools,
-            "enable_rag": enable_rag,
-            "enable_web": enable_web,
-            "enable_thinking": enable_thinking,
-            "thinking_budget": thinking_budget,
-            "model_profile": model_profile,
-            "temperature": temperature,
-            "disable_skill": disable_skill,
-        }
+        self._defaults = options or ChatOptions()
 
     @property
     def session_id(self) -> UUID:
         """Stable session identifier for this conversation."""
         return self._session_id
+
+    @property
+    def default_options(self) -> ChatOptions:
+        """Per-conversation default options."""
+        return self._defaults
 
     async def bind_project(
         self,
@@ -135,16 +132,23 @@ class Conversation:
             source=self._project_source,
         )
 
+    def _effective_options(self, **overrides: Any) -> ChatOptions:
+        """Merge per-conversation defaults with per-turn field overrides."""
+        if not overrides:
+            return self._defaults
+        return dataclasses.replace(self._defaults, **overrides)
+
     async def send(self, message: str, **overrides: Any) -> ChatResult:
         """Send a message and return the complete response.
 
-        Keyword overrides temporarily replace the conversation defaults for this turn only.
+        Keyword arguments are ``ChatOptions`` field names that override the
+        conversation defaults for this turn only.
         """
         await self._ensure_project_binding()
         return await self._client.chat(
             message,
             session_id=self._session_id,
-            **{**self._defaults, **overrides},
+            options=self._effective_options(**overrides),
         )
 
     async def stream(self, message: str, **overrides: Any) -> AsyncIterator[str]:
@@ -157,27 +161,30 @@ class Conversation:
         async for event in self._client.chat_stream(
             message,
             session_id=self._session_id,
-            **{**self._defaults, **overrides},
+            options=self._effective_options(**overrides),
         ):
             if event.event_type == StreamEventType.TEXT_DELTA and event.content:
                 yield event.content
 
     async def stream_events(self, message: str, **overrides: Any) -> AsyncIterator[StreamEvent]:
-        """Stream all raw :class:`StreamEvent` objects for this turn.
-
-        Use this when you need access to tool-call, thinking, or skill-match events.
-        """
+        """Stream all raw :class:`StreamEvent` objects for this turn."""
         await self._ensure_project_binding()
         async for event in self._client.chat_stream(
             message,
             session_id=self._session_id,
-            **{**self._defaults, **overrides},
+            options=self._effective_options(**overrides),
         ):
             yield event
 
     async def clear(self) -> None:
         """Delete all memory for this conversation."""
         await self._client.clear_session(self._session_id)
+
+    async def __aenter__(self) -> Conversation:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.clear()
 
 
 class AstraCoreClient:
@@ -186,57 +193,37 @@ class AstraCoreClient:
     Must be used as an async context manager::
 
         async with AstraCoreClient() as client:
-            conv = client.conversation()
-            result = await conv.send("你好")
+            async with client.conversation() as conv:
+                result = await conv.send("你好")
 
     Config is loaded from ``config/config.yaml`` by default (same source as the HTTP service).
-    MCP tool adapters require async setup and are only available inside the context manager.
+    All heavy resources (ChromaDB, Redis, MCP) are initialized inside the context manager —
+    constructing the client itself is always fast and never raises.
     """
 
-    def __init__(self, config: AstraCoreConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: AstraCoreConfig | None = None,
+        hooks: HookRegistry | None = None,
+    ) -> None:
         self.config = config or AstraCoreConfig()
-        cfg = self.config
+        self._hooks = hooks
+        self._initialized = False
+        self._mcp_adapter: Any = None
 
-        memory = HybridMemoryAdapter(
-            redis_url=cfg.memory.redis_url,
-            db_url=cfg.memory.db_url,
-        )
-        rag_pipeline = RAGPipeline(
-            retriever=ChromaRetrieverAdapter(
-                collection_name=cfg.retrieval.collection_name,
-                persist_directory=cfg.retrieval.persist_directory,
-            )
-        )
-        self._memory = memory
+        # Lightweight: just stores the DB URL, no network connection until queries run
+        cfg = self.config
         self._memory_engine = MemoryEngine(SQLMemoryStore(cfg.memory.db_url))
         self.memory = MemoryClient(self._memory_engine)
         self.projects = ProjectClient(self._memory_engine)
-        self._rag_pipeline = rag_pipeline
-        self._tool_adapter: ToolAdapter = self._new_native_adapter()
-        self._mcp_adapter: Any = None
-        self._skill_router: SkillRouter | None = (
-            SkillRouter(config=cfg, db_url=cfg.memory.db_url)
-            if cfg.skill_routing.mode != "off"
-            else None
-        )
-        self._pipeline = self._build_pipeline()
 
-    def _new_native_adapter(self) -> ToolAdapter:
-        from astracore.modules.tools.builtin import build_tool_adapter  # noqa: PLC0415
-
-        return build_tool_adapter()
-
-    def _build_pipeline(self) -> ChatPipeline:
-        cfg = self.config
-        return ChatPipeline(
-            config=cfg,
-            memory=self._memory,
-            rag_pipeline=self._rag_pipeline,
-            policy=PolicyEngine(),
-            tool_adapter=self._tool_adapter,
-            skill_router=self._skill_router,
-            memory_engine=self._memory_engine,
-        )
+        # Heavy fields — declared for type checkers, assigned in _start()
+        self._memory: HybridMemoryAdapter
+        self._rag_pipeline: RAGPipeline
+        self._user_adapter: MutableToolAdapter
+        self._tool_adapter: MutableToolAdapter
+        self._skill_router: SkillRouter | None
+        self._pipeline: ChatPipeline
 
     # ------------------------------------------------------------------
     # Async context manager lifecycle
@@ -250,11 +237,39 @@ class AstraCoreClient:
         await self._stop()
 
     async def _start(self) -> None:
-        await init_db(self.config.memory.db_url)
-        try:
-            await seed_builtin_skills(
-                self.config.memory.db_url, extra_skill_dirs=self.config.skills.extra_dirs
+        cfg = self.config
+
+        # Heavy resource initialization — kept here so __init__ never raises
+        self._memory = HybridMemoryAdapter(
+            redis_url=cfg.memory.redis_url,
+            db_url=cfg.memory.db_url,
+        )
+        self._rag_pipeline = RAGPipeline(
+            retriever=ChromaRetrieverAdapter(
+                collection_name=cfg.retrieval.collection_name,
+                persist_directory=cfg.retrieval.persist_directory,
             )
+        )
+
+        from astracore.infrastructure.tools.composite import CompositeToolAdapter  # noqa: PLC0415
+        from astracore.infrastructure.tools.native import NativeToolAdapter  # noqa: PLC0415
+        from astracore.modules.tools.builtin import build_tool_adapter  # noqa: PLC0415
+
+        builtin_adapter = build_tool_adapter()
+        self._user_adapter = NativeToolAdapter()
+        self._tool_adapter = CompositeToolAdapter([builtin_adapter, self._user_adapter])
+
+        self._skill_router = (
+            SkillRouter(config=cfg, db_url=cfg.memory.db_url)
+            if cfg.skill_routing.mode != "off"
+            else None
+        )
+        self._pipeline = self._build_pipeline()
+
+        # Async initialization
+        await init_db(cfg.memory.db_url)
+        try:
+            await seed_builtin_skills(cfg.memory.db_url, extra_skill_dirs=cfg.skills.extra_dirs)
         except Exception:
             logger.warning("内置 Skill 种子写入失败，继续启动")
 
@@ -264,27 +279,26 @@ class AstraCoreClient:
             except Exception:
                 logger.warning("SkillRouter precompute 失败，继续启动")
 
-        if self.config.mcp.servers:
+        if cfg.mcp.servers:
             try:
-                from astracore.infrastructure.tools.composite import (
-                    CompositeToolAdapter,  # noqa: PLC0415
-                )
                 from astracore.infrastructure.tools.mcp import (  # noqa: PLC0415
                     MCPToolAdapter,
                     build_server_configs,
                 )
 
-                mcp_configs = build_server_configs(self.config.mcp.servers)
+                mcp_configs = build_server_configs(cfg.mcp.servers)
                 self._mcp_adapter = MCPToolAdapter(mcp_configs)
                 await asyncio.wait_for(self._mcp_adapter.start(), timeout=30)
                 self._tool_adapter = CompositeToolAdapter(
-                    [self._new_native_adapter(), self._mcp_adapter]
+                    [builtin_adapter, self._user_adapter, self._mcp_adapter]
                 )
                 logger.info("MCP tool adapter started with %d server(s)", len(mcp_configs))
                 self._pipeline = self._build_pipeline()
             except Exception:
                 logger.warning("MCP 适配器启动失败，回退到内置工具")
                 self._mcp_adapter = None
+
+        self._initialized = True
 
     async def _stop(self) -> None:
         if self._mcp_adapter is not None:
@@ -293,6 +307,27 @@ class AstraCoreClient:
             except Exception:
                 logger.warning("MCP 适配器停止时出错")
 
+    def _build_pipeline(self) -> ChatPipeline:
+        cfg = self.config
+        return ChatPipeline(
+            config=cfg,
+            memory=self._memory,
+            rag_pipeline=self._rag_pipeline,
+            policy=PolicyEngine(),
+            tool_adapter=self._tool_adapter,
+            skill_router=self._skill_router,
+            memory_engine=self._memory_engine,
+            hooks=self._hooks,
+        )
+
+    def _require_initialized(self) -> None:
+        if not self._initialized:
+            raise RuntimeError(
+                "AstraCoreClient must be used as an async context manager:\n"
+                "    async with AstraCoreClient() as client:\n"
+                "        ..."
+            )
+
     # ------------------------------------------------------------------
     # Conversation facade
     # ------------------------------------------------------------------
@@ -300,43 +335,51 @@ class AstraCoreClient:
     def conversation(
         self,
         *,
-        skill_id: UUID | None = None,
-        use_tools: bool = False,
-        enable_rag: bool = False,
-        enable_web: bool = False,
-        enable_thinking: bool = False,
-        thinking_budget: int = 8000,
-        model_profile: str | None = None,
-        temperature: float | None = None,
-        disable_skill: bool = False,
         session_id: UUID | None = None,
         project_id: str | None = None,
         project_locked: bool = False,
         project_source: str = "sdk",
+        model_profile: str | None = None,
+        temperature: float | None = None,
+        use_tools: bool = False,
+        enable_thinking: bool = False,
+        thinking_budget: int = 8000,
+        enable_rag: bool = False,
+        enable_web: bool = False,
+        skill_id: UUID | None = None,
+        disable_skill: bool = False,
     ) -> Conversation:
         """Create a :class:`Conversation` for multi-turn chat.
 
-        All parameters become per-conversation defaults and can be overridden
-        per-turn via keyword arguments to :meth:`Conversation.send` or
-        :meth:`Conversation.stream`.
+        ``options`` sets per-conversation defaults; individual fields can be
+        overridden per-turn via keyword arguments to :meth:`Conversation.send`,
+        :meth:`Conversation.stream`, or :meth:`Conversation.stream_events`.
 
         Pass ``session_id`` to resume an existing session; omit to start a new one.
+
+        Supports ``async with`` for automatic session cleanup::
+
+            async with client.conversation(use_tools=True) as conv:
+                result = await conv.send("hello")
         """
+        self._require_initialized()
         return Conversation(
             self,
-            skill_id=skill_id,
-            use_tools=use_tools,
-            enable_rag=enable_rag,
-            enable_web=enable_web,
-            enable_thinking=enable_thinking,
-            thinking_budget=thinking_budget,
-            model_profile=model_profile,
-            temperature=temperature,
-            disable_skill=disable_skill,
             session_id=session_id,
             project_id=project_id,
             project_locked=project_locked,
             project_source=project_source,
+            options=ChatOptions(
+                model_profile=model_profile,
+                temperature=temperature,
+                use_tools=use_tools,
+                enable_thinking=enable_thinking,
+                thinking_budget=thinking_budget,
+                enable_rag=enable_rag,
+                enable_web=enable_web,
+                skill_id=skill_id,
+                disable_skill=disable_skill,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -363,19 +406,22 @@ class AstraCoreClient:
         For multi-turn conversations prefer :meth:`conversation` which manages
         ``session_id`` automatically.
         """
+        self._require_initialized()
         _session_id = session_id or uuid4()
         ctx = await self._pipeline.prepare(
             message=message,
             session_id=_session_id,
-            model_profile=model_profile,
-            temperature=temperature,
-            use_tools=use_tools,
-            enable_thinking=enable_thinking,
-            thinking_budget=thinking_budget,
-            enable_rag=enable_rag,
-            enable_web=enable_web,
-            skill_id=skill_id,
-            disable_skill=disable_skill,
+            options=ChatOptions(
+                model_profile=model_profile,
+                temperature=temperature,
+                use_tools=use_tools,
+                enable_thinking=enable_thinking,
+                thinking_budget=thinking_budget,
+                enable_rag=enable_rag,
+                enable_web=enable_web,
+                skill_id=skill_id,
+                disable_skill=disable_skill,
+            ),
         )
         if ctx.anchor_skill or ctx.routed_skills:
             yield StreamEvent(
@@ -387,7 +433,6 @@ class AstraCoreClient:
             if event.event_type == StreamEventType.TEXT_DELTA and event.content:
                 accumulated += event.content
             yield event
-        # Stream completed naturally — extract memories from this turn.
         await self._extract_memories_safe(ctx, accumulated)
 
     async def chat(
@@ -410,19 +455,22 @@ class AstraCoreClient:
         For multi-turn conversations prefer :meth:`conversation` which manages
         ``session_id`` automatically.
         """
+        self._require_initialized()
         _session_id = session_id or uuid4()
         ctx = await self._pipeline.prepare(
             message=message,
             session_id=_session_id,
-            model_profile=model_profile,
-            temperature=temperature,
-            use_tools=use_tools,
-            enable_thinking=enable_thinking,
-            thinking_budget=thinking_budget,
-            enable_rag=enable_rag,
-            enable_web=enable_web,
-            skill_id=skill_id,
-            disable_skill=disable_skill,
+            options=ChatOptions(
+                model_profile=model_profile,
+                temperature=temperature,
+                use_tools=use_tools,
+                enable_thinking=enable_thinking,
+                thinking_budget=thinking_budget,
+                enable_rag=enable_rag,
+                enable_web=enable_web,
+                skill_id=skill_id,
+                disable_skill=disable_skill,
+            ),
         )
         content = await self._pipeline.execute(ctx)
         await self._extract_memories_safe(ctx, content)
@@ -446,6 +494,7 @@ class AstraCoreClient:
         metadata: dict[str, Any] | None = None,
     ) -> bool:
         """Index a document for RAG retrieval."""
+        self._require_initialized()
         return await self._rag_pipeline.index_document(
             document_id=document_id,
             text=text,
@@ -454,6 +503,7 @@ class AstraCoreClient:
 
     async def retrieve(self, query: str, top_k: int = 5) -> list[Any]:
         """Retrieve relevant chunks from the knowledge base."""
+        self._require_initialized()
         return await self._rag_pipeline.retrieve_with_citations(query=query, top_k=top_k)
 
     # ------------------------------------------------------------------
@@ -462,6 +512,7 @@ class AstraCoreClient:
 
     async def list_skills(self) -> list[dict[str, Any]]:
         """Return all skills sorted by sort_order."""
+        self._require_initialized()
         async with get_session(self.config.memory.db_url) as db:
             result = await db.execute(select(SkillRow).order_by(SkillRow.sort_order))
             rows = result.scalars().all()
@@ -488,10 +539,8 @@ class AstraCoreClient:
         parameters: list[ToolParameter],
     ) -> None:
         """Register a custom tool available during tool-loop calls."""
-        register = getattr(self._tool_adapter, "register_tool", None)
-        if not callable(register):
-            raise TypeError("Current tool adapter does not support dynamic registration")
-        cast(Any, register)(
+        self._require_initialized()
+        self._tool_adapter.register_tool(
             name=name,
             func=func,
             description=description,
@@ -499,11 +548,21 @@ class AstraCoreClient:
         )
 
     # ------------------------------------------------------------------
+    # Workflow
+    # ------------------------------------------------------------------
+
+    @property
+    def workflow(self) -> WorkflowClient:
+        """Return the :class:`WorkflowClient` for DAG workflow execution."""
+        return WorkflowClient(self)
+
+    # ------------------------------------------------------------------
     # Session management
     # ------------------------------------------------------------------
 
     async def clear_session(self, session_id: UUID) -> None:
         """Delete all memory for a session, including structured memories."""
+        self._require_initialized()
         await self._memory.delete_session_memory(session_id)
         await self._memory_engine.delete_conversation_memories(session_id)
 
@@ -526,7 +585,7 @@ class AstraCoreClient:
                     user_message=ctx.message,
                     assistant_content=assistant_content,
                     source_run_id=str(uuid4()),
-                    llm_adapter=self._pipeline._get_llm_adapter(ctx.profile),
+                    llm_adapter=self._pipeline.get_llm_adapter(ctx.profile),
                     model=ctx.profile.model,
                 )
             )
@@ -534,6 +593,77 @@ class AstraCoreClient:
             logger.warning("结构化记忆提取被取消，session_id=%s", ctx.session_id)
         except Exception:
             logger.warning("结构化记忆提取失败，session_id=%s", ctx.session_id)
+
+
+# ------------------------------------------------------------------
+# WorkflowClient
+# ------------------------------------------------------------------
+
+
+class WorkflowClient:
+    """SDK facade for DAG workflow execution.
+
+    Usage::
+
+        async with AstraCoreClient() as client:
+            from astracore.modules.agent.domain import AgentTask, AgentRole
+            from uuid import uuid4
+
+            t1 = AgentTask(role=AgentRole.EXECUTOR, description="Step 1: research X")
+            t2 = AgentTask(role=AgentRole.EXECUTOR, description="Step 2: summarise X",
+                           depends_on=[t1.task_id])
+            state = await client.workflow.run("my-pipeline", [t1, t2])
+            print(state.result)
+    """
+
+    def __init__(self, client: AstraCoreClient) -> None:
+        self._client = client
+
+    async def run(
+        self,
+        name: str,
+        tasks: list[AgentTask],
+        *,
+        session_id: UUID | None = None,
+        use_tools: bool = False,
+        model_profile: str | None = None,
+        temperature: float | None = None,
+        enable_rag: bool = False,
+    ) -> WorkflowState:
+        """Execute a DAG workflow.
+
+        Each task is run via the chat pipeline sharing a single session so that
+        context from earlier tasks is visible to later ones through conversation
+        memory. Pass ``session_id`` to resume a previous workflow session.
+
+        Per-task overrides can be stored in ``task.metadata``:
+        - ``"use_tools"`` (bool)
+        - ``"model_profile"`` (str)
+        - ``"temperature"`` (float)
+        """
+        workflow_session_id = session_id or uuid4()
+        orchestrator = NativeWorkflowOrchestrator()
+        pipeline = self._client._pipeline
+
+        async def executor(task: AgentTask, task_results: dict[str, str]) -> str:
+            message = task.description
+            if task_results:
+                lines = [f"[Task {tid}]\n{result}" for tid, result in task_results.items()]
+                message = message + "\n\n---\n[已完成任务的结果]\n" + "\n\n".join(lines)
+
+            ctx = await pipeline.prepare(
+                message=message,
+                session_id=workflow_session_id,
+                use_tools=bool(task.metadata.get("use_tools", use_tools)),
+                model_profile=task.metadata.get("model_profile") or model_profile,
+                temperature=task.metadata.get("temperature") or temperature,
+                enable_rag=bool(task.metadata.get("enable_rag", enable_rag)),
+                disable_skill=True,
+            )
+            return await pipeline.execute(ctx)
+
+        wf = await orchestrator.create_workflow(name=name, tasks=tasks)
+        return await orchestrator.execute_workflow(wf.workflow_id, executor=executor)
 
 
 # ------------------------------------------------------------------

@@ -1,6 +1,7 @@
 """SDK client for AstraCore AI."""
 
-# AstraCoreConfig is always safe to import eagerly (no circular dependency).
+# AstraCoreConfig and ChatOptions are always safe to import eagerly (no circular dependency).
+from astracore.modules.chat.domain.chat_options import ChatOptions
 from astracore.sdk.config import AstraCoreConfig
 
 # AstraCoreClient and ChatResult are loaded lazily to avoid a circular import:
@@ -10,13 +11,22 @@ from astracore.sdk.config import AstraCoreConfig
 
 
 def __getattr__(name: str) -> object:
-    if name in ("AstraCoreClient", "ChatResult", "Conversation", "MemoryClient", "ProjectClient"):
+    _client_names = {
+        "AstraCoreClient",
+        "ChatResult",
+        "Conversation",
+        "MemoryClient",
+        "ProjectClient",
+        "WorkflowClient",
+    }
+    if name in _client_names:
         from astracore.sdk.client import (  # noqa: PLC0415
             AstraCoreClient,
             ChatResult,
             Conversation,
             MemoryClient,
             ProjectClient,
+            WorkflowClient,
         )
 
         globals()["AstraCoreClient"] = AstraCoreClient
@@ -24,6 +34,7 @@ def __getattr__(name: str) -> object:
         globals()["Conversation"] = Conversation
         globals()["MemoryClient"] = MemoryClient
         globals()["ProjectClient"] = ProjectClient
+        globals()["WorkflowClient"] = WorkflowClient
         return globals()[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -31,8 +42,10 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "AstraCoreClient",
     "AstraCoreConfig",
+    "ChatOptions",
     "ChatResult",
     "Conversation",
     "MemoryClient",
     "ProjectClient",
+    "WorkflowClient",
 ]

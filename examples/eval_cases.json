@@ -1,0 +1,64 @@
+[
+  {
+    "input": "你好，请介绍一下你自己",
+    "expected_output": "AI助手",
+    "tags": ["basic", "greeting"]
+  },
+  {
+    "input": "1 + 1 等于几？",
+    "expected_output": "2",
+    "tags": ["math"]
+  },
+  {
+    "input": "纽约现在几点？",
+    "expected_output": "纽约当前时间",
+    "use_tools": true,
+    "expected_tool_calls": ["get_current_time"],
+    "tags": ["tool", "time"]
+  },
+  {
+    "input": "用 Python 写一个快速排序函数",
+    "expected_output": "def quicksort",
+    "tags": ["code", "python"]
+  },
+  {
+    "_comment": "Workflow 样例 1：串行两步，先写函数再写测试",
+    "input": "",
+    "workflow_name": "code-then-test",
+    "workflow_tasks": [
+      {
+        "role": "executor",
+        "description": "用 Python 实现一个二分查找函数 binary_search(arr, target)，要求有完整的文档字符串。"
+      },
+      {
+        "role": "executor",
+        "description": "基于上一步实现的 binary_search 函数，写 pytest 单元测试，覆盖：找到元素、找不到元素、空列表三种场景。",
+        "depends_on": [0]
+      }
+    ],
+    "expected_output": "二分查找的实现和对应的pytest测试用例",
+    "tags": ["workflow", "code"]
+  },
+  {
+    "_comment": "Workflow 样例 2：并行两步 + 汇总，模拟研究→总结流程",
+    "input": "",
+    "workflow_name": "research-summary",
+    "workflow_tasks": [
+      {
+        "role": "executor",
+        "description": "用三句话介绍 Python asyncio 的核心概念：事件循环、协程、Task。"
+      },
+      {
+        "role": "executor",
+        "description": "用三句话介绍 Python asyncio 的常见陷阱：阻塞调用、忘记 await、任务泄漏。"
+      },
+      {
+        "role": "reviewer",
+        "description": "将以上两部分内容整合成一份简洁的 asyncio 使用指南，不超过 200 字。",
+        "depends_on": [0, 1]
+      }
+    ],
+    "expected_output": "asyncio的核心概念和常见陷阱的使用指南",
+    "tags": ["workflow", "research"]
+  }
+]

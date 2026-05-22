@@ -1,10 +1,12 @@
 """LLM adapter port interface."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -68,9 +70,16 @@ class LLMAdapter(ABC):
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float = 0.7,
+        response_format: type[BaseModel] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Generate a complete response."""
+        """Generate a complete response.
+
+        When *response_format* is a Pydantic model class the adapter forces the LLM
+        to output valid JSON conforming to that schema.  The result is returned as a
+        JSON string in ``LLMResponse.content``; callers can parse it with
+        ``MyModel.model_validate_json(response.content)``.
+        """
         pass
 
     @abstractmethod
