@@ -6,7 +6,7 @@ from astracore.shared.ports.metrics import MetricsReporter
 class SimpleMetricsReporter(MetricsReporter):
     """Simple in-memory metrics reporter."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._metrics: dict[str, list[tuple[float, dict[str, str] | None]]] = {}
 
     async def increment(

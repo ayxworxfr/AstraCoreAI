@@ -391,6 +391,7 @@ class AstraCoreClient:
         message: str,
         *,
         session_id: UUID | None = None,
+        options: ChatOptions | None = None,
         model_profile: str | None = None,
         temperature: float | None = None,
         use_tools: bool = False,
@@ -411,7 +412,8 @@ class AstraCoreClient:
         ctx = await self._pipeline.prepare(
             message=message,
             session_id=_session_id,
-            options=ChatOptions(
+            options=options
+            or ChatOptions(
                 model_profile=model_profile,
                 temperature=temperature,
                 use_tools=use_tools,
@@ -440,6 +442,7 @@ class AstraCoreClient:
         message: str,
         *,
         session_id: UUID | None = None,
+        options: ChatOptions | None = None,
         model_profile: str | None = None,
         temperature: float | None = None,
         use_tools: bool = False,
@@ -460,7 +463,8 @@ class AstraCoreClient:
         ctx = await self._pipeline.prepare(
             message=message,
             session_id=_session_id,
-            options=ChatOptions(
+            options=options
+            or ChatOptions(
                 model_profile=model_profile,
                 temperature=temperature,
                 use_tools=use_tools,
@@ -654,11 +658,13 @@ class WorkflowClient:
             ctx = await pipeline.prepare(
                 message=message,
                 session_id=workflow_session_id,
-                use_tools=bool(task.metadata.get("use_tools", use_tools)),
-                model_profile=task.metadata.get("model_profile") or model_profile,
-                temperature=task.metadata.get("temperature") or temperature,
-                enable_rag=bool(task.metadata.get("enable_rag", enable_rag)),
-                disable_skill=True,
+                options=ChatOptions(
+                    use_tools=bool(task.metadata.get("use_tools", use_tools)),
+                    model_profile=task.metadata.get("model_profile") or model_profile,
+                    temperature=task.metadata.get("temperature") or temperature,
+                    enable_rag=bool(task.metadata.get("enable_rag", enable_rag)),
+                    disable_skill=True,
+                ),
             )
             return await pipeline.execute(ctx)
 
@@ -831,7 +837,7 @@ class ProjectClient:
     def __init__(self, engine: MemoryEngine) -> None:
         self._engine = engine
 
-    async def list(self) -> list[Project]:
+    async def list_all(self) -> list[Project]:
         """List all projects."""
         return await self._engine.list_projects()
 

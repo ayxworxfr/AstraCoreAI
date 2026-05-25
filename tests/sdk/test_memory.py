@@ -153,7 +153,7 @@ async def test_sdk_projects_list(sdk_client: AstraCoreClient) -> None:
     await sdk_client.projects.create(name="Project A")
     await sdk_client.projects.create(name="Project B")
 
-    projects = await sdk_client.projects.list()
+    projects = await sdk_client.projects.list_all()
 
     names = {p.name for p in projects}
     assert {"Project A", "Project B"}.issubset(names)

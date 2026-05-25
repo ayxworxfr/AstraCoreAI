@@ -13,6 +13,7 @@ per-turn overrides on top of per-conversation defaults without touching unset fi
 from __future__ import annotations
 
 import dataclasses
+from typing import Any
 from uuid import UUID
 
 
@@ -55,7 +56,7 @@ class ChatOptions:
     skill_id: UUID | None = None
     disable_skill: bool = False
 
-    def apply(self, **overrides: object) -> ChatOptions:
+    def apply(self, **overrides: Any) -> ChatOptions:
         """Return a new ``ChatOptions`` with the given fields replaced.
 
         Convenience wrapper around ``dataclasses.replace`` so callers don't need

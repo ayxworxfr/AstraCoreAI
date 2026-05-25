@@ -1,6 +1,7 @@
 """SQLAlchemy ORM models (dialect-agnostic: SQLite + PostgreSQL)."""
 
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -29,7 +30,7 @@ class MemoryEntryRow(Base):
     session_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     memory_type: Mapped[str] = mapped_column(String(64), nullable=False, default="long_term")
-    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -47,7 +48,7 @@ class ProjectRow(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
-    root_paths: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    root_paths: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -109,7 +110,7 @@ class StructuredMemoryRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
     locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -193,7 +194,7 @@ class ChatSessionRow(Base):
     __tablename__ = "chat_sessions"
 
     session_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    messages: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    messages: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -210,11 +211,11 @@ class ChatRunRow(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     session_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
-    request: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    request: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     user_message: Mapped[str] = mapped_column(Text, nullable=False)
     assistant_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    thinking_blocks: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-    tool_activity: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    thinking_blocks: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
+    tool_activity: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     error: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

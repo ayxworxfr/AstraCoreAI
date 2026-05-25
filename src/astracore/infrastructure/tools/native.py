@@ -17,7 +17,7 @@ from astracore.modules.tools.ports.tool import (
 class NativeToolAdapter(MutableToolAdapter):
     """Native Python function tool adapter."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._tools: dict[str, Callable[..., Any]] = {}
         self._definitions: dict[str, ToolDefinition] = {}
 

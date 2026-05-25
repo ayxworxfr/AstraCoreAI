@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from astracore.shared.observability.logger import get_logger
 
@@ -144,13 +144,13 @@ class HookRegistry:
     # ------------------------------------------------------------------
 
     async def run_before_llm(self, payload: LLMCallInput) -> LLMCallInput | ShortCircuit:
-        return await self._run_hooks(self.before_llm, payload)
+        return cast(LLMCallInput | ShortCircuit, await self._run_hooks(self.before_llm, payload))
 
     async def run_after_llm(self, payload: LLMCallOutput) -> LLMCallOutput:
-        return await self._run_hooks(self.after_llm, payload)
+        return cast(LLMCallOutput, await self._run_hooks(self.after_llm, payload))
 
     async def run_before_tool(self, payload: ToolCallInput) -> ToolCallInput | ShortCircuit:
-        return await self._run_hooks(self.before_tool, payload)
+        return cast(ToolCallInput | ShortCircuit, await self._run_hooks(self.before_tool, payload))
 
     async def run_after_tool(self, payload: ToolCallOutput) -> ToolCallOutput:
-        return await self._run_hooks(self.after_tool, payload)
+        return cast(ToolCallOutput, await self._run_hooks(self.after_tool, payload))

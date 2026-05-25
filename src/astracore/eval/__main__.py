@@ -6,9 +6,10 @@ import argparse
 import asyncio
 import json
 import sys
+from typing import Any
 
 
-def _load_cases(path: str):
+def _load_cases(path: str) -> list[Any]:
     from uuid import UUID
 
     from astracore.eval.dataset import EvalCase

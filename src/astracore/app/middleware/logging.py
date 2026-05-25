@@ -3,7 +3,7 @@
 import time
 import uuid
 
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -24,7 +24,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     注意：ContextVar token 在 finally 块中重置，确保异步环境下不会污染其他请求。
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         request_id = uuid.uuid4().hex[:12]
         token = request_id_var.set(request_id)
 

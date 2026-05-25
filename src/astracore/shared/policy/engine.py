@@ -17,7 +17,7 @@ from astracore.shared.policy.rules import (
 )
 
 
-def _make_retry_predicate(status_codes: list[int]):
+def _make_retry_predicate(status_codes: list[int]) -> Any:
     """Return a tenacity retry predicate.
 
     Retries on all exceptions unless the exception has a `status_code` attribute

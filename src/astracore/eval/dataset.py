@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 from uuid import UUID
 
 from astracore.modules.chat.domain.chat_options import ChatOptions
@@ -39,4 +40,4 @@ class EvalCase:
     tags: list[str] = field(default_factory=list)
     session_id: UUID | None = None
     workflow_name: str | None = None
-    workflow_tasks: list[dict] | None = None
+    workflow_tasks: list[dict[str, Any]] | None = None

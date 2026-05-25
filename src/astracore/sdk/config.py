@@ -3,9 +3,9 @@
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -207,7 +207,7 @@ def _project_root() -> Path:
 
 
 def _resolve_config_path(raw_path: str | None = None) -> Path:
-    path = Path(raw_path or os.getenv("ASTRACORE_CONFIG", "config/config.yaml"))
+    path = Path(raw_path or os.getenv("ASTRACORE_CONFIG", "config/config.yaml"))  # type: ignore[arg-type]
     if path.is_absolute():
         return path
 
@@ -217,7 +217,7 @@ def _resolve_config_path(raw_path: str | None = None) -> Path:
     return _project_root() / path
 
 
-def _load_yaml_config() -> dict:
+def _load_yaml_config() -> dict[str, Any]:
     load_dotenv()
     config_path = _resolve_config_path()
     if not config_path.exists():

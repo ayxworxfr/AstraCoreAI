@@ -321,16 +321,16 @@ class AnthropicAdapter(LLMAdapter):
                     continue
 
                 if event.type == "content_block_start":
-                    block = getattr(event, "content_block", None)
-                    if block is None:
+                    content_block = getattr(event, "content_block", None)
+                    if content_block is None:
                         continue
                     idx = getattr(event, "index", 0)
-                    block_type = getattr(block, "type", None)
+                    block_type = getattr(content_block, "type", None)
                     if block_type == "tool_use":
                         block_buffers[idx] = {
                             "kind": "tool",
-                            "id": block.id,
-                            "name": block.name,
+                            "id": content_block.id,
+                            "name": content_block.name,
                             "input_str": "",
                         }
                     elif block_type == "thinking":
@@ -402,14 +402,14 @@ class AnthropicAdapter(LLMAdapter):
                             ),
                         )
                     elif buf and buf.get("kind") == "thinking":
-                        block: dict[str, Any] = {
+                        thinking_block: dict[str, Any] = {
                             "type": "thinking",
                             "thinking": buf.get("thinking", ""),
                         }
                         signature = buf.get("signature", "")
                         if signature:
-                            block["signature"] = signature
-                        completed_blocks.append((idx, block))
+                            thinking_block["signature"] = signature
+                        completed_blocks.append((idx, thinking_block))
                     elif buf and buf.get("kind") == "text":
                         completed_blocks.append(
                             (
@@ -439,7 +439,7 @@ class AnthropicAdapter(LLMAdapter):
                 model=self.default_model,
                 messages=converted,
             )
-            return response.input_tokens
+            return int(response.input_tokens)
         except Exception:
             return sum(msg.token_estimate() for msg in messages)
 

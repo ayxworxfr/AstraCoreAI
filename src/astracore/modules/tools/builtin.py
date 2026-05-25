@@ -5,6 +5,7 @@ import asyncio
 import math
 import os
 from datetime import UTC, datetime
+from typing import Any
 
 from astracore.infrastructure.tools.composite import CompositeToolAdapter
 from astracore.infrastructure.tools.native import NativeToolAdapter
@@ -14,7 +15,7 @@ from astracore.sdk.config import AstraCoreConfig
 from astracore.shared.policy.engine import PolicyEngine
 
 # 安全数学求值白名单
-_SAFE_MATH: dict = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
+_SAFE_MATH: dict[str, Any] = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
 _SAFE_MATH["abs"] = abs
 
 _SAFE_AST_NODES = {
@@ -81,7 +82,7 @@ async def _tavily_search(query: str, max_results: int, api_key: str) -> str:
 async def _duckduckgo_search(query: str, max_results: int) -> str:
     from ddgs import DDGS  # noqa: PLC0415
 
-    def _sync() -> list[dict]:
+    def _sync() -> list[dict[str, Any]]:
         return list(DDGS().text(query, max_results=max_results))
 
     results = await asyncio.to_thread(_sync)

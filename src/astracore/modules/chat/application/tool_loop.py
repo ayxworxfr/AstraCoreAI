@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
 from astracore.modules.chat.domain.session import SessionState
@@ -152,7 +152,7 @@ class ToolLoopUseCase:
         kwargs: dict[str, Any],
     ) -> LLMCallInput | ShortCircuit:
         payload = LLMCallInput(
-            messages=messages,  # type: ignore[arg-type]
+            messages=messages,
             model=model,
             tools=tools,
             kwargs=kwargs,
@@ -214,12 +214,12 @@ class ToolLoopUseCase:
         hook_result = await self._fire_before_tool(tool_call)
 
         if isinstance(hook_result, ShortCircuit):
-            sc_out = hook_result.result
+            sc_out = cast(ToolCallOutput, hook_result.result)
             return ToolResult(
-                tool_call_id=sc_out.tool_call_id,  # type: ignore[attr-defined]
-                name=sc_out.tool_name,  # type: ignore[attr-defined]
-                content=sc_out.content,  # type: ignore[attr-defined]
-                is_error=sc_out.is_error,  # type: ignore[attr-defined]
+                tool_call_id=sc_out.tool_call_id,
+                name=sc_out.tool_name,
+                content=sc_out.content,
+                is_error=sc_out.is_error,
             )
 
         hook_input = hook_result
@@ -278,12 +278,12 @@ class ToolLoopUseCase:
         hook_result = await self._fire_before_tool(tool_call)
 
         if isinstance(hook_result, ShortCircuit):
-            sc_out = hook_result.result
+            sc_out = cast(ToolCallOutput, hook_result.result)
             result = ToolResult(
-                tool_call_id=sc_out.tool_call_id,  # type: ignore[attr-defined]
-                name=sc_out.tool_name,  # type: ignore[attr-defined]
-                content=sc_out.content,  # type: ignore[attr-defined]
-                is_error=sc_out.is_error,  # type: ignore[attr-defined]
+                tool_call_id=sc_out.tool_call_id,
+                name=sc_out.tool_name,
+                content=sc_out.content,
+                is_error=sc_out.is_error,
             )
             await queue.put(
                 (
@@ -463,7 +463,7 @@ class ToolLoopUseCase:
                 session.add_message(
                     Message(
                         role=MessageRole.ASSISTANT,
-                        content=sc_out.content,  # type: ignore[attr-defined]
+                        content=sc_out.content,
                         tool_calls=[],
                     )
                 )
@@ -513,7 +513,7 @@ class ToolLoopUseCase:
         self,
         session: SessionState,
         model: str | None = None,
-        allowed_tools: set[str] | None = None,
+        allowed_tools: frozenset[str] | set[str] | None = None,
         **llm_kwargs: Any,
     ) -> AsyncIterator[StreamEvent]:
         """Execute tool loop with streaming.
@@ -547,7 +547,7 @@ class ToolLoopUseCase:
             )
             if isinstance(before_result, ShortCircuit):
                 sc_out = before_result.result
-                sc_content = sc_out.content  # type: ignore[attr-defined]
+                sc_content = sc_out.content
                 yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content=sc_content)
                 yield StreamEvent(
                     event_type=StreamEventType.THINKING_STOP,
@@ -617,10 +617,10 @@ class ToolLoopUseCase:
                 while done_count < len(tasks):
                     idx, item, result = await queue.get()
                     if item is _TOOL_DONE:
-                        results_by_idx[idx] = result  # type: ignore[assignment]
+                        results_by_idx[idx] = result
                         done_count += 1
                     else:
-                        yield item  # type: ignore[misc]
+                        yield item
             except (asyncio.CancelledError, GeneratorExit):
                 for t in tasks:
                     t.cancel()

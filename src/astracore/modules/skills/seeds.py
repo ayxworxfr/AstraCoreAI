@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from astracore.shared.observability.logger import get_logger
 
@@ -95,7 +96,7 @@ async def seed_documents(pipeline: object) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _parse_skill_dir(skill_dir: Path) -> dict:
+def _parse_skill_dir(skill_dir: Path) -> dict[str, Any]:
     """解析 skill 子目录，返回包含 Skill 元数据和引用列表的 dict。
 
     目录结构：
@@ -111,7 +112,7 @@ def _parse_skill_dir(skill_dir: Path) -> dict:
         raise FileNotFoundError(f"Skill 目录缺少 SKILL.md: {skill_dir}")
 
     raw = skill_file.read_text(encoding="utf-8")
-    meta: dict = {}
+    meta: dict[str, Any] = {}
     system_prompt = raw.strip()
 
     fm_match = _FRONTMATTER_RE.match(raw)
@@ -133,7 +134,7 @@ def _parse_skill_dir(skill_dir: Path) -> dict:
 
     # 解析 references 列表（可选）
     raw_refs = meta.get("references") or []
-    references: list[dict] = []
+    references: list[dict[str, Any]] = []
     for idx, entry in enumerate(raw_refs):
         if not isinstance(entry, dict):
             logger.warning("跳过非法 reference 条目（非 dict）: %s[%d]", skill_file, idx)
@@ -168,7 +169,7 @@ def _parse_skill_dir(skill_dir: Path) -> dict:
     }
 
 
-def _load_builtin_skills(extra_dirs: list[str] | None = None) -> list[dict]:
+def _load_builtin_skills(extra_dirs: list[str] | None = None) -> list[dict[str, Any]]:
     """按 frontmatter order 加载 skills/ 目录及所有额外配置目录下的 Skill 子目录。
 
     每个子目录内必须有 SKILL.md。extra_dirs 中的目录按顺序追加在内置目录之后；
@@ -188,7 +189,7 @@ def _load_builtin_skills(extra_dirs: list[str] | None = None) -> list[dict]:
             logger.warning("配置的 skill 目录不存在，跳过: %s", p)
 
     seen: dict[str, Path] = {}  # source_key -> dir path（用于冲突日志）
-    skills_by_key: dict[str, dict] = {}
+    skills_by_key: dict[str, dict[str, Any]] = {}
 
     for dir_path in dirs_to_scan:
         for skill_dir in sorted(p for p in dir_path.iterdir() if p.is_dir()):

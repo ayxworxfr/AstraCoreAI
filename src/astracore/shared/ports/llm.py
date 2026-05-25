@@ -83,7 +83,7 @@ class LLMAdapter(ABC):
         pass
 
     @abstractmethod
-    async def generate_stream(
+    def generate_stream(
         self,
         messages: list[Message],
         model: str | None = None,
@@ -92,7 +92,6 @@ class LLMAdapter(ABC):
         **kwargs: Any,
     ) -> AsyncIterator[StreamEvent]:
         """Generate a streaming response."""
-        pass
 
     @abstractmethod
     async def count_tokens(self, messages: list[Message]) -> int:

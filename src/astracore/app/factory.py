@@ -35,7 +35,7 @@ class SPAStaticFiles(StaticFiles):
 
     _BACKEND_PREFIXES = ("api/", "health", "docs", "redoc", "openapi.json")
 
-    async def get_response(self, path: str, scope: Scope):
+    async def get_response(self, path: str, scope: Scope) -> Any:
         try:
             return await super().get_response(path, scope)
         except StarletteHTTPException as exc:

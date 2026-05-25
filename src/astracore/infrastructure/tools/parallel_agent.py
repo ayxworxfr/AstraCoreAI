@@ -198,7 +198,7 @@ class ParallelAgentTool(ToolAdapter):
 
         # asyncio.Queue 作为多 Worker 事件汇集点
         # 项目格式: ("event", agent_id, StreamEvent) | ("done", agent_id, duration_ms, error)
-        queue: asyncio.Queue[tuple[str, ...]] = asyncio.Queue()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
         worker_text: dict[str, str] = {t.agent_id: "" for t in tasks}
         agent_start_times: dict[str, float] = {}
 
@@ -228,7 +228,8 @@ class ParallelAgentTool(ToolAdapter):
                 session.add_message(Message(role=MessageRole.USER, content=task.task))
 
                 async for event in tool_loop.execute_stream_with_tools(
-                    session, allowed_tools=worker_allowed
+                    session,
+                    allowed_tools=set(worker_allowed) if worker_allowed is not None else None,
                 ):
                     if event.event_type == StreamEventType.TEXT_DELTA and event.content:
                         worker_text[task.agent_id] += event.content
@@ -268,7 +269,7 @@ class ParallelAgentTool(ToolAdapter):
                     )
                 else:
                     _, agent_id, event = item
-                    wrapped = _wrap_agent_event(str(agent_id), event)  # type: ignore[arg-type]
+                    wrapped = _wrap_agent_event(str(agent_id), event)
                     if wrapped is not None:
                         yield wrapped
         except (asyncio.CancelledError, GeneratorExit):

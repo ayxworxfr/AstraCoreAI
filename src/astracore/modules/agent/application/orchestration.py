@@ -57,7 +57,7 @@ class AgentOrchestrationUseCase:
 
         for task in workflow.tasks:
             if task.task_id == task_id:
-                task.require_approval()
+                task.metadata["requires_approval"] = True
                 break
 
         return await self.orchestrator.pause_workflow(workflow_id)

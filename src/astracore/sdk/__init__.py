@@ -1,8 +1,20 @@
 """SDK client for AstraCore AI."""
 
+from typing import TYPE_CHECKING
+
 # AstraCoreConfig and ChatOptions are always safe to import eagerly (no circular dependency).
 from astracore.modules.chat.domain.chat_options import ChatOptions
 from astracore.sdk.config import AstraCoreConfig
+
+if TYPE_CHECKING:
+    from astracore.sdk.client import (
+        AstraCoreClient,
+        ChatResult,
+        Conversation,
+        MemoryClient,
+        ProjectClient,
+        WorkflowClient,
+    )
 
 # AstraCoreClient and ChatResult are loaded lazily to avoid a circular import:
 #   chat_pipeline  →  sdk.config  →  sdk.__init__  →  sdk.client  →  chat_pipeline

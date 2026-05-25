@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Any
 
 from astracore.eval.dataset import EvalCase
 
@@ -31,7 +32,7 @@ class EvalResult:
             return False
         return True
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "input": self.case.input,
             "expected_output": self.case.expected_output,
