@@ -23,7 +23,6 @@ from astracore.shared.ports.llm import LLMAdapter, StreamEvent, StreamEventType
 
 _TOOL_DONE = object()  # sentinel for parallel streaming tool execution
 _logger = get_logger(__name__)
-_LLM_RETRY_MAX = 2
 
 
 class ToolLoopUseCase:
@@ -57,26 +56,6 @@ class ToolLoopUseCase:
     def unlimited(self) -> bool:
         """max_iterations == 0 时不限制工具调用轮次。"""
         return self.max_iterations == 0
-
-    async def _collect_llm_stream(self, **kwargs: Any) -> list[StreamEvent]:
-        """缓冲 generate_stream 的所有事件，遇到 tool-call JSON 截断时自动重试。"""
-        for attempt in range(_LLM_RETRY_MAX + 1):
-            buffer: list[StreamEvent] = []
-            try:
-                async for event in self.llm.generate_stream(**kwargs):
-                    buffer.append(event)
-                return buffer
-            except ValueError as exc:
-                if attempt < _LLM_RETRY_MAX:
-                    _logger.warning(
-                        "LLM stream ValueError (attempt %d/%d), retrying: %s",
-                        attempt + 1,
-                        _LLM_RETRY_MAX,
-                        exc,
-                    )
-                    continue
-                raise
-        return []  # unreachable
 
     def _build_tool_guidance(self, iteration: int) -> str:
         """每轮注入给 LLM 的工具使用进度提示（不存入 session）。"""
@@ -267,6 +246,41 @@ class ToolLoopUseCase:
         )
         await self._fire_after_tool(result, duration_ms=duration_ms)
         return result
+
+    async def _enqueue_parse_error(
+        self,
+        tool_call: ToolCall,
+        idx: int,
+        error_msg: str,
+        queue: asyncio.Queue[Any],
+    ) -> None:
+        """JSON 解析失败的工具调用不执行，直接将错误结果写入队列。"""
+        result = ToolResult(
+            tool_call_id=tool_call.id,
+            name=tool_call.name,
+            content=error_msg,
+            is_error=True,
+        )
+        await self._fire_after_tool(result, duration_ms=0)
+        await queue.put(
+            (
+                idx,
+                StreamEvent(
+                    event_type=StreamEventType.TOOL_RESULT,
+                    content=tool_call.name,
+                    metadata={
+                        "tool": tool_call.name,
+                        "tool_call_id": tool_call.id,
+                        "input": tool_call.arguments,
+                        "result": error_msg,
+                        "is_error": True,
+                        "duration_ms": 0,
+                    },
+                ),
+                None,
+            )
+        )
+        await queue.put((idx, _TOOL_DONE, result))
 
     async def _run_tool_to_queue(
         self,
@@ -559,24 +573,32 @@ class ToolLoopUseCase:
                 break
 
             accumulated_content = ""
-            accumulated_tool_calls = []
+            accumulated_tool_calls: list[ToolCall] = []
+            # tool_call_id → error message：JSON 解析失败的工具调用，跳过实际执行
+            parse_error_results: dict[str, str] = {}
             assistant_metadata: dict[str, Any] = {}
 
-            buffered_events = await self._collect_llm_stream(
+            async for event in self.llm.generate_stream(
                 messages=injected_messages,
                 model=model,
                 tools=tools_for_llm,
                 **llm_kwargs,
-            )
-            for event in buffered_events:
+            ):
                 if event.event_type == StreamEventType.TEXT_DELTA and event.content:
                     accumulated_content += event.content
-                if event.event_type == StreamEventType.DONE:
+                elif event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
+                    accumulated_tool_calls.append(event.tool_call)
+                elif event.event_type == StreamEventType.TOOL_CALL_ERROR and event.tool_call:
+                    # 参数 JSON 无法修复：仍将 tool_call 写入 assistant 消息保持协议完整性，
+                    # 工具执行阶段会直接注入 is_error=True 的结果，LLM 下一轮可自行重试。
+                    accumulated_tool_calls.append(event.tool_call)
+                    parse_error_results[event.tool_call.id] = (
+                        event.error or "工具参数 JSON 解析失败，请重新调用"
+                    )
+                elif event.event_type == StreamEventType.DONE:
                     raw_blocks = event.metadata.get(self._ANTHROPIC_BLOCKS_KEY)
                     if isinstance(raw_blocks, list) and raw_blocks:
                         assistant_metadata[self._ANTHROPIC_BLOCKS_KEY] = raw_blocks
-                if event.tool_call:
-                    accumulated_tool_calls.append(event.tool_call)
                 yield event
 
             llm_duration_ms = int((time.monotonic() - round_start_time) * 1000)
@@ -608,7 +630,11 @@ class ToolLoopUseCase:
 
             queue: asyncio.Queue[Any] = asyncio.Queue()
             tasks = [
-                asyncio.create_task(self._run_tool_to_queue(tc, i, queue))
+                asyncio.create_task(
+                    self._enqueue_parse_error(tc, i, parse_error_results[tc.id], queue)
+                    if tc.id in parse_error_results
+                    else self._run_tool_to_queue(tc, i, queue)
+                )
                 for i, tc in enumerate(accumulated_tool_calls)
             ]
             results_by_idx: dict[int, ToolResult] = {}

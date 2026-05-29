@@ -63,3 +63,26 @@ order: 70
 命令报错或超时：先跑 `openclaw gateway status` 确认实际状态（可能命令挂住但服务已生效），再决定是否重试。**连续 2 次失败必须跑 `openclaw doctor` 诊断，不要盲目重试。**
 
 ⚠️ 用户只让查状态或看日志时，不要擅自重启、停止或使用 `--force`。
+
+---
+
+## 禁止输出
+
+| 禁止表述 | 必须替换为 |
+|---|---|
+| "应该已经启动了" / "服务大概在跑" | 跑 `openclaw gateway status`，引用实际输出片段 |
+| "可能是端口冲突 / 配置问题" | 跑 `status --deep` 或 `doctor`，给具体证据 |
+| "重启一下试试看" | 重启前先 `status`；重启后必须复查 `status` |
+| 凭印象给出端口号、PID、版本号 | 引用 `status --json` 或 `logs` 的真实数据 |
+| 用 Docker / docker compose 命令 | 默认走 `openclaw gateway ...`；除非用户明确要求 Docker |
+| 默认带 `--force` | 仅在用户明确要求或 `doctor` 确认 stuck 时使用 |
+
+---
+
+## 输出前自检
+
+- [ ] 任何"启动/停止/重启完成"的结论，是否有同回合的 `status` 输出佐证
+- [ ] 失败超过 1 次时是否跑了 `openclaw doctor`
+- [ ] 引用的状态、端口、PID、版本号是否来自实际命令输出（非记忆）
+- [ ] 是否避免了未授权的 Docker 切换和 `--force` 使用
+- [ ] warm-up / loaded 状态下是否使用了递增 sleep（10s→20s→30s）退避

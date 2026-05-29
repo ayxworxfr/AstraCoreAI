@@ -6,6 +6,7 @@ import App from './app/App';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { lightTheme, darkTheme } from './app/theme';
 import 'simplebar-react/dist/simplebar.min.css';
+import 'github-markdown-css/github-markdown-light.css';
 import './global.css';
 
 function Root(): JSX.Element {

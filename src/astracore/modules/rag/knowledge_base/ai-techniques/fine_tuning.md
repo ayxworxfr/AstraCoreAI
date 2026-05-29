@@ -1,5 +1,8 @@
 ---
 title: 什么是模型微调（Fine-tuning）
+category: ai-techniques
+tags: [微调, LoRA, QLoRA, Fine-tuning, 迁移学习]
+related: [ai-basics/llm_intro, ai-techniques/prompt_engineering, ai-basics/rag_intro]
 ---
 
 # 什么是模型微调（Fine-tuning）

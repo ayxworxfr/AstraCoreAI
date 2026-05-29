@@ -1,5 +1,8 @@
 ---
 title: 什么是向量数据库
+category: ai-basics
+tags: [向量数据库, ChromaDB, ANN, 相似度搜索, Pinecone, Milvus]
+related: [ai-basics/embedding, ai-basics/rag_intro]
 ---
 
 # 什么是向量数据库

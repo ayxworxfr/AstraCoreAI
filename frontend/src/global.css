@@ -17,6 +17,33 @@ body,
   --app-scrollbar-thumb: rgba(120, 144, 180, 0.42);
   --app-scrollbar-thumb-hover: rgba(120, 144, 180, 0.62);
   --app-scrollbar-track: transparent;
+
+  /* ─── 布局 Token ─────────────────────────────────────────────────────────────── */
+
+  /* 内容列 */
+  --content-max-width: 860px;
+  --content-padding-x: 24px;
+
+  /* 聊天三栏：avatar-slot-width = avatar-size + avatar-gap */
+  --avatar-size: 32px;
+  --avatar-gap: 12px;
+  --avatar-slot-width: 44px;
+
+  /* 消息行 */
+  --msg-row-gap-y: 16px;
+  --msg-padding-y-top: 24px;
+  --msg-padding-y-bottom: 16px;
+
+  /* 输入区 */
+  --input-panel-padding-y-top: 8px;
+  --input-panel-padding-y-bottom: 20px;
+
+  /* Header */
+  --header-height: 64px;
+  --header-side-width: 200px;
+
+  /* Sidebar */
+  --sidebar-width: 260px;
 }
 
 html[data-theme='dark'] {
@@ -86,8 +113,160 @@ textarea::-webkit-scrollbar-thumb:hover {
 }
 
 
-/* wmde-markdown 透明背景，融入气泡/卡片 */
-.md-transparent .wmde-markdown {
-  background: transparent;
-  font-size: 14px;
+/* ─── github-markdown-css 适配 ──────────────────────────────────────────────── */
+
+/* 覆盖背景色和字号，适配聊天气泡嵌入场景；github-markdown-css 负责所有排版样式 */
+.markdown-body {
+  background-color: transparent !important;
+  font-size: 14px !important;
+  line-height: 1.75;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* ─── 暗色主题覆盖（github-markdown-light.css 始终加载，此处补齐暗色色值）───── */
+
+html[data-theme='dark'] .markdown-body {
+  color: #f0f6fc;
+}
+
+html[data-theme='dark'] .markdown-body a {
+  color: #4493f8;
+}
+
+html[data-theme='dark'] .markdown-body h1 {
+  border-bottom-color: #3d444db3;
+}
+
+html[data-theme='dark'] .markdown-body h2 {
+  border-bottom-color: #3d444db3;
+}
+
+html[data-theme='dark'] .markdown-body h6 {
+  color: #9198a1;
+}
+
+html[data-theme='dark'] .markdown-body hr {
+  background-color: #3d444d;
+  border-bottom-color: #3d444db3;
+}
+
+html[data-theme='dark'] .markdown-body blockquote {
+  color: #9198a1;
+  border-left-color: #3d444d;
+}
+
+html[data-theme='dark'] .markdown-body mark {
+  background-color: #bb800926;
+  color: #f0f6fc;
+}
+
+html[data-theme='dark'] .markdown-body code,
+html[data-theme='dark'] .markdown-body tt {
+  background-color: #656c7633;
+  color: #f0f6fc;
+}
+
+html[data-theme='dark'] .markdown-body pre {
+  color: #f0f6fc;
+  background-color: #151b23;
+}
+
+html[data-theme='dark'] .markdown-body pre code,
+html[data-theme='dark'] .markdown-body pre tt {
+  background-color: transparent;
+}
+
+html[data-theme='dark'] .markdown-body table th,
+html[data-theme='dark'] .markdown-body table td {
+  border-color: #3d444d;
+}
+
+html[data-theme='dark'] .markdown-body table tr {
+  background-color: #0d1117;
+  border-top-color: #3d444db3;
+}
+
+html[data-theme='dark'] .markdown-body table tr:nth-child(2n) {
+  background-color: #151b23;
+}
+
+html[data-theme='dark'] .markdown-body kbd {
+  color: #f0f6fc;
+  background-color: #151b23;
+}
+
+html[data-theme='dark'] .markdown-body .footnotes {
+  color: #9198a1;
+  border-top-color: #3d444d;
+}
+
+/* ─── 代码块 fallback（流式期间 / shiki 尚未就绪）──────────────────────────── */
+
+/* 加 .markdown-body 前缀使优先级（0,2,0）高于 github-markdown-css 的 pre（0,1,1）*/
+.markdown-body .md-code-block {
+  margin: 10px 0;
+  padding: 14px 16px;
+  border-radius: 8px;
+  overflow: auto;
+  font-family: ui-monospace, 'SF Mono', Consolas, 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+html[data-theme='dark'] .markdown-body .md-code-block {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.markdown-body .md-code-block code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* ─── Shiki 高亮代码块 ───────────────────────────────────────────────────────── */
+
+.markdown-body .shiki-block {
+  margin: 10px 0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* shiki 在 <pre> 上设置了 background-color 内联样式，这里只补边距和字体 */
+.markdown-body .shiki-block pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  font-family: ui-monospace, 'SF Mono', Consolas, 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  border-radius: 8px;
+}
+
+.markdown-body .shiki-block code {
+  font-family: inherit;
+  font-size: inherit;
+  background: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+/* ─── 流式光标 ───────────────────────────────────────────────────────────────── */
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+.streaming-cursor {
+  display: inline-block;
+  margin-left: 1px;
+  font-size: 0.85em;
+  vertical-align: baseline;
+  animation: cursor-blink 0.9s step-end infinite;
+  user-select: none;
 }

@@ -464,7 +464,14 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
                 "thinking_stop",
                 {"duration_ms": event.metadata.get("duration_ms", 0)},
             )
-        elif event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
+        elif (
+            event.event_type
+            in {
+                StreamEventType.TOOL_CALL,
+                StreamEventType.TOOL_CALL_ERROR,
+            }
+            and event.tool_call
+        ):
             if not in_tool_round:
                 if not thinking_blocks:
                     thinking_blocks.append("")

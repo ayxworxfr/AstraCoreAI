@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, type ComponentProps } from 'react';
 import { Bubble, Sender, Prompts } from '@ant-design/x';
-import type { BubbleProps } from '@ant-design/x';
 import {
   RobotOutlined,
   UserOutlined,
@@ -428,7 +427,7 @@ function AssistantContent({ message }: { message: ChatMessage }) {
   const multiRound = visible.length > 1;
 
   return (
-    <div>
+    <div style={{ width: '100%' }}>
       {visible.map(({ block, idx, streaming }, renderedIdx) => (
         <ThinkingBlock
           key={idx}
@@ -454,12 +453,116 @@ function AssistantContent({ message }: { message: ChatMessage }) {
       {message.subAgents && message.subAgents.length > 0 && (
         <SubAgentPanel agents={message.subAgents} />
       )}
-      <MarkdownContent content={message.content} />
+      <MarkdownContent content={message.content} isStreaming={isStreaming} />
     </div>
   );
 }
 
-type RolesType = Record<string, BubbleProps & { placement?: 'start' | 'end' }>;
+function MessageRow({
+  message,
+  conversationId,
+  hoveredMsgId,
+  onMsgEnter,
+  onMsgLeave,
+}: {
+  message: ChatMessage;
+  conversationId: string;
+  hoveredMsgId: string | null;
+  onMsgEnter: (id: string) => void;
+  onMsgLeave: () => void;
+}) {
+  const { token } = theme.useToken();
+  const isUser = message.role === 'user';
+  const isLoading =
+    message.status === 'streaming' &&
+    message.content.length === 0 &&
+    !message.thinkingBlocks?.length;
+  const actionsVisible = hoveredMsgId === message.id && message.status !== 'streaming';
+
+  return (
+    <div
+      style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 16 }}
+      onMouseEnter={() => onMsgEnter(message.id)}
+      onMouseLeave={onMsgLeave}
+    >
+      {/* AI 头像槽 — 用户消息时为空占位，保持三栏结构稳定 */}
+      <div style={{ width: 44, flexShrink: 0, paddingRight: 12 }}>
+        {!isUser && (
+          <Avatar
+            icon={<RobotOutlined />}
+            size={32}
+            style={{ background: '#722ed1', marginTop: 2 }}
+          />
+        )}
+      </div>
+
+      {/* 内容槽 */}
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: isUser ? 'flex-end' : 'flex-start',
+        }}
+      >
+        {isLoading ? (
+          <Bubble loading content="" variant="borderless" />
+        ) : isUser ? (
+          <div
+            style={{
+              maxWidth: '80%',
+              padding: '10px 14px',
+              borderRadius: 12,
+              background: token.colorFillSecondary,
+              wordBreak: 'break-word',
+              whiteSpace: 'pre-wrap',
+              lineHeight: 1.6,
+              fontSize: 14,
+            }}
+          >
+            {message.content}
+          </div>
+        ) : (
+          <AssistantContent message={message} />
+        )}
+
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: isUser ? 'flex-end' : 'flex-start',
+            marginTop: -4,
+          }}
+        >
+          <MessageActions
+            message={message}
+            conversationId={conversationId}
+            visible={actionsVisible}
+          />
+        </div>
+      </div>
+
+      {/* 用户头像槽 — AI 消息时为空占位 */}
+      <div
+        style={{
+          width: 44,
+          flexShrink: 0,
+          paddingLeft: 12,
+          display: 'flex',
+          justifyContent: 'flex-end',
+        }}
+      >
+        {isUser && (
+          <Avatar
+            icon={<UserOutlined />}
+            size={32}
+            style={{ background: '#1677ff', marginTop: 2 }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function ChatMain(): JSX.Element {
   const [inputValue, setInputValue] = useState('');
@@ -611,62 +714,6 @@ export default function ChatMain(): JSX.Element {
     hoverTimerRef.current = setTimeout(() => setHoveredMsgId(null), 120);
   };
 
-  const roles: RolesType = {
-    user: {
-      placement: 'end',
-      avatar: { icon: <UserOutlined />, style: { background: '#1677ff' } },
-      variant: 'filled' as const,
-    },
-    assistant: {
-      placement: 'start',
-      avatar: { icon: <RobotOutlined />, style: { background: '#722ed1' } },
-    },
-  };
-
-  const bubbleItems = messages.map((m) => {
-    const actionsVisible = hoveredMsgId === m.id && m.status !== 'streaming';
-    const isUser = m.role === 'user';
-    return {
-      key: m.id,
-      role: m.role,
-      content: m.content,
-      loading: m.status === 'streaming' && m.content.length === 0 && !m.thinkingBlocks?.length,
-      messageRender: isUser
-        ? () => (
-            <div
-              onMouseEnter={() => onMsgEnter(m.id)}
-              onMouseLeave={onMsgLeave}
-              style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-            >
-              {m.content}
-            </div>
-          )
-        : () => (
-            <div onMouseEnter={() => onMsgEnter(m.id)} onMouseLeave={onMsgLeave}>
-              <AssistantContent message={m} />
-            </div>
-          ),
-      footer: (
-        <div
-          onMouseEnter={() => onMsgEnter(m.id)}
-          onMouseLeave={onMsgLeave}
-          style={{
-            display: 'flex',
-            justifyContent: isUser ? 'flex-end' : 'flex-start',
-            marginTop: -12,   // 贴近气泡，抵消 Bubble 默认间距
-            paddingRight: isUser ? -14 : 0,
-          }}
-        >
-          <MessageActions
-            message={m}
-            conversationId={activeConversationId}
-            visible={actionsVisible}
-          />
-        </div>
-      ),
-    };
-  });
-
   return (
     <Flex vertical style={{ height: '100%', overflow: 'hidden' }}>
       {/* 消息区域 */}
@@ -717,11 +764,25 @@ export default function ChatMain(): JSX.Element {
                 />
               </Flex>
             ) : (
-              <Bubble.List
-                items={bubbleItems}
-                roles={roles}
-                style={{ padding: '16px 24px' }}
-              />
+              <div
+                style={{
+                  maxWidth: 860,
+                  margin: '0 auto',
+                  width: '100%',
+                  padding: '24px 24px 16px',
+                }}
+              >
+                {messages.map((m) => (
+                  <MessageRow
+                    key={m.id}
+                    message={m}
+                    conversationId={activeConversationId}
+                    hoveredMsgId={hoveredMsgId}
+                    onMsgEnter={onMsgEnter}
+                    onMsgLeave={onMsgLeave}
+                  />
+                ))}
+              </div>
             )}
             <div ref={bottomAnchorRef} style={{ height: 1 }} />
           </div>
@@ -774,12 +835,12 @@ export default function ChatMain(): JSX.Element {
       {/* 输入区域 */}
       <div
         style={{
-          padding: '8px 24px 20px',
+          padding: '8px 0 20px',
           borderTop: '1px solid rgba(5, 5, 5, 0.06)',
           flexShrink: 0,
         }}
       >
-        <div style={{ maxWidth: 1040, margin: '0 auto' }}>
+        <div style={{ maxWidth: 860, margin: '0 auto', width: '100%', padding: '0 24px' }}>
           {/* 工具栏独立一行，不占 Sender 内部空间 */}
           <Flex align="center" gap={6} style={{ marginBottom: 8, flexWrap: 'wrap' }}>
             <Tooltip title={enableThinking ? '关闭深度思考' : '开启深度思考（Extended Thinking）'}>

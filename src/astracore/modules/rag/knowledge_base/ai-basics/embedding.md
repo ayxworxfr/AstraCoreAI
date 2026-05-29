@@ -1,5 +1,8 @@
 ---
 title: 什么是 Embedding（文本嵌入）
+category: ai-basics
+tags: [Embedding, 向量, 语义检索, sentence-transformers, 余弦相似度]
+related: [ai-basics/rag_intro, ai-basics/vector_db]
 ---
 
 # 什么是 Embedding（文本嵌入）

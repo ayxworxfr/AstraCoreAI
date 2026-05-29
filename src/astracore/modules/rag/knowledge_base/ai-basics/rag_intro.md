@@ -1,5 +1,8 @@
 ---
 title: 什么是 RAG（检索增强生成）
+category: ai-basics
+tags: [RAG, 知识库, 向量检索, 幻觉, 检索增强]
+related: [ai-basics/embedding, ai-basics/vector_db, astracore/intro]
 ---
 
 # 什么是 RAG（检索增强生成）

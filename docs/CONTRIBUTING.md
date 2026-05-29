@@ -58,7 +58,7 @@ src/astracore/
 │   ├── chat/         # Chat API、Conversation API、Pipeline、会话领域模型
 │   ├── memory/       # 结构化 Memory API、领域模型、Engine、Store port
 │   ├── projects/     # Project API
-│   ├── rag/          # RAG API、检索领域模型、Pipeline、Retriever port、种子文档
+│   ├── rag/          # RAG API、检索领域模型、Pipeline、Retriever port、知识库文档
 │   ├── settings/     # 用户设置 API
 │   ├── skills/       # Skill API、路由、提示渲染、内置 Skill 种子
 │   ├── system/       # Health / System API
@@ -217,7 +217,7 @@ modules/domain + modules/ports ← modules/application ← infrastructure/app/sd
 | 新增 DB / LLM / MCP / ChromaDB 实现 | `src/astracore/infrastructure/` |
 | 新增启动逻辑 / 中间件 / 路由注册 | `src/astracore/app/` |
 | 新增内置 Skill | `src/astracore/modules/skills/builtin/<skill-name>/` |
-| 新增 RAG 种子文档 | `src/astracore/modules/rag/seed_docs/` |
+| 新增知识库文档 | `src/astracore/modules/rag/knowledge_base/` |
 
 ### 前端新增代码放置规则
 

@@ -35,7 +35,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于能力模块化
 ## 测试状态
 
 ```
-147 passed in the current local Hatch env
+155 passed in the current local Hatch env
 ruff: 0 errors             ✅
 ```
 
@@ -176,7 +176,7 @@ src/astracore/
 │   ├── chat/            # Chat API、Conversation API、Pipeline、会话领域模型
 │   ├── memory/          # 结构化 Memory API、领域模型、Engine、Store port
 │   ├── projects/        # Project API
-│   ├── rag/             # RAG API、检索领域模型、Pipeline、Retriever port、种子文档
+│   ├── rag/             # RAG API、检索领域模型、Pipeline、Retriever port、知识库文档
 │   ├── settings/        # 用户设置 API
 │   ├── skills/          # Skill API、路由、提示渲染、内置 Skill 种子
 │   ├── system/          # Health / System API
@@ -199,7 +199,8 @@ src/astracore/
 │   ├── observability/   # 结构化日志、指标、HookRegistry（ShortCircuit 短路 + before/after_llm/tool）、Tracer（Span 链路追踪）
 │   ├── policy/          # PolicyEngine（tenacity retry + asyncio timeout）、CircuitBreaker（熔断器）
 │   ├── ports/           # 跨模块共享端口（LLM / response_format 结构化输出、Audit、Metrics）
-│   └── security/        # SecurityValidator（XSS、长度、内容过滤）
+│   ├── security/        # SecurityValidator（XSS、长度、内容过滤）
+│   └── utils/           # 跨模块共享工具函数（json_utils：repair_json）
 └── sdk/
     ├── client.py              # 主 SDK 客户端（AstraCoreClient + Conversation + WorkflowClient 门面）
     ├── config.py              # Pydantic v2 YAML 配置模型
@@ -400,7 +401,7 @@ async with AstraCoreClient() as client:
 ## 文件统计
 
 - **Python 源模块**：覆盖 app / modules / infrastructure / shared / sdk 全栈
-- **测试覆盖**：147 个测试，覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略、Skill、Memory、MCP、流式会话安全等核心链路
+- **测试覆盖**：155 个测试，覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略、Skill、Memory、MCP、流式会话安全等核心链路
 - **7 个完整示例**：可直接通过 SDK 运行，无需 HTTP 服务
 - **双形态交付**：SDK + Service 共享同一 ChatPipeline 执行引擎
 

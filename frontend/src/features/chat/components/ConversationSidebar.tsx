@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Input, Flex, Modal, Typography } from 'antd';
-import { EditOutlined, RocketOutlined } from '@ant-design/icons';
+import { EditOutlined } from '@ant-design/icons';
 import { Conversations } from '@ant-design/x';
 import type { ConversationsProps } from '@ant-design/x';
 import type { InputRef } from 'antd/es/input';
@@ -84,16 +84,8 @@ export default function ConversationSidebar(): JSX.Element {
 
   return (
     <Flex vertical style={{ height: '100%', overflow: 'hidden' }}>
-      {/* 品牌 logo */}
-      <Flex align="center" gap={8} style={{ padding: '16px 16px 12px' }}>
-        <RocketOutlined style={{ fontSize: 20, color: '#1677ff' }} />
-        <Typography.Text strong style={{ fontSize: 15, letterSpacing: '-0.01em' }}>
-          AstraCoreAI
-        </Typography.Text>
-      </Flex>
-
       {/* 新建会话 + 搜索 */}
-      <Flex vertical gap={10} style={{ padding: '0 12px 10px' }}>
+      <Flex vertical gap={10} style={{ padding: '16px 12px 10px' }}>
         <Button
           type="primary"
           icon={<EditOutlined />}

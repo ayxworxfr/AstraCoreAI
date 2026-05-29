@@ -27,6 +27,8 @@ class StreamEventType(StrEnum):
     ERROR = "error"
     DONE = "done"
 
+    TOOL_CALL_ERROR = "tool_call_error"  # 工具调用参数 JSON 解析彻底失败，携带 error 字段
+
     # 子 Agent 事件（metadata 包含 agent_id 字段）
     AGENT_START = "agent_start"  # 子 Agent 启动
     AGENT_TEXT_DELTA = "agent_text_delta"  # 子 Agent 文本增量

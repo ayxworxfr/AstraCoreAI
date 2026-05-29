@@ -1,5 +1,8 @@
 ---
 title: 什么是提示词工程
+category: ai-techniques
+tags: [Prompt, 提示词, Few-shot, Chain-of-Thought, 零样本, 角色扮演]
+related: [ai-basics/llm_intro, ai-techniques/fine_tuning]
 ---
 
 # 什么是提示词工程（Prompt Engineering）

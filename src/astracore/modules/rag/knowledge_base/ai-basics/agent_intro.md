@@ -1,5 +1,8 @@
 ---
 title: 什么是 AI Agent（智能体）
+category: ai-basics
+tags: [Agent, 工具调用, 自主规划, Multi-Agent, 智能体]
+related: [ai-basics/llm_intro, astracore/tool_system, astracore/chat_pipeline]
 ---
 
 # 什么是 AI Agent（智能体）

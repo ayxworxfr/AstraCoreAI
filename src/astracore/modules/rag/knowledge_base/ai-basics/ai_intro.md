@@ -1,5 +1,8 @@
 ---
 title: 什么是人工智能
+category: ai-basics
+tags: [AI, 机器学习, 深度学习, NLP, 计算机视觉]
+related: [ai-basics/llm_intro, ai-basics/agent_intro]
 ---
 
 # 什么是人工智能

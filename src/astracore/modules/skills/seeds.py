@@ -1,6 +1,6 @@
 """启动时执行数据初始化：向量库文档写入 + 内置 Skill 写入。
 
-- modules/rag/seed_docs/ 目录下的 .md 文件写入向量数据库，新增文档只需放文件即可
+- modules/rag/knowledge_base/ 目录及子目录下的 .md 文件写入向量数据库，新增文档只需放文件即可
 - modules/skills/builtin/ 目录下每个子目录对应一个内置 Skill：
     <skill-name>/
         SKILL.md          — 必须存在；frontmatter + system_prompt 正文
@@ -26,11 +26,10 @@ from astracore.shared.observability.logger import get_logger
 logger = get_logger(__name__)
 
 MODULES_DIR = Path(__file__).resolve().parents[1]
-DOCS_DIR = MODULES_DIR / "rag" / "seed_docs"
+DOCS_DIR = MODULES_DIR / "rag" / "knowledge_base"
 SKILLS_DIR = Path(__file__).parent / "builtin"
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
-_TITLE_RE = re.compile(r"^title\s*:\s*(.+)$", re.MULTILINE)
 
 
 # ---------------------------------------------------------------------------
@@ -38,57 +37,80 @@ _TITLE_RE = re.compile(r"^title\s*:\s*(.+)$", re.MULTILINE)
 # ---------------------------------------------------------------------------
 
 
-def _parse_doc_md(path: Path) -> tuple[str, str, str]:
-    """解析文档 .md，返回 (document_id, title, content)。"""
+def _parse_doc_md(path: Path, base_dir: Path) -> tuple[str, str, dict[str, Any]]:
+    """解析文档 .md，返回 (document_id, content, metadata)。
+
+    document_id 为相对 base_dir 的路径（不含扩展名），如 ai-basics/llm_intro。
+    metadata 包含 title、category、source、path，以及可选的 tags、related 字段。
+    ChromaDB 不支持 list 类型，tags/related 序列化为逗号分隔字符串。
+    """
     raw = path.read_text(encoding="utf-8")
-    document_id = path.stem
-    title = document_id
+    rel_path = path.relative_to(base_dir).with_suffix("").as_posix()
+
+    metadata: dict[str, Any] = {
+        "title": path.stem,
+        "category": path.parent.name if path.parent != base_dir else "general",
+        "source": "knowledge_base",
+        "path": rel_path,
+    }
     content = raw
 
     fm_match = _FRONTMATTER_RE.match(raw)
     if fm_match:
-        frontmatter = fm_match.group(1)
-        title_match = _TITLE_RE.search(frontmatter)
-        if title_match:
-            title = title_match.group(1).strip()
+        parsed = yaml.safe_load(fm_match.group(1))
+        if isinstance(parsed, dict):
+            if "title" in parsed:
+                metadata["title"] = str(parsed["title"]).strip()
+            if "category" in parsed:
+                metadata["category"] = str(parsed["category"]).strip()
+            if "tags" in parsed:
+                tags = parsed["tags"]
+                metadata["tags"] = (
+                    ",".join(str(t) for t in tags) if isinstance(tags, list) else str(tags)
+                )
+            if "related" in parsed:
+                related = parsed["related"]
+                metadata["related"] = (
+                    ",".join(str(r) for r in related) if isinstance(related, list) else str(related)
+                )
         content = raw[fm_match.end() :]
 
-    return document_id, title, content.strip()
+    return rel_path, content.strip(), metadata
 
 
 async def seed_documents(pipeline: object) -> None:
-    """扫描 docs/ 目录，将所有 .md 文件写入向量数据库。幂等可重复执行。"""
+    """递归扫描 knowledge_base/ 目录，将所有 .md 文件写入向量数据库。幂等可重复执行。"""
     from astracore.modules.rag.application.pipeline import RAGPipeline
 
     assert isinstance(pipeline, RAGPipeline)
 
     if not DOCS_DIR.exists():
-        logger.warning("docs 目录不存在: %s，跳过种子写入", DOCS_DIR)
+        logger.warning("knowledge_base 目录不存在: %s，跳过种子写入", DOCS_DIR)
         return
 
-    md_files = sorted(DOCS_DIR.glob("*.md"))
+    md_files = sorted(DOCS_DIR.rglob("*.md"))
     if not md_files:
-        logger.info("docs 目录为空，无种子文档可写入")
+        logger.info("knowledge_base 目录为空，无文档可写入")
         return
 
     success_count = 0
     for path in md_files:
-        document_id, title, content = _parse_doc_md(path)
+        document_id, content, metadata = _parse_doc_md(path, DOCS_DIR)
         result = await pipeline.retriever.index_document(
             document_id=document_id,
             text=content,
-            metadata={"title": title, "source": "seed"},
+            metadata=metadata,
         )
         if result.success:
             success_count += 1
-            logger.debug("种子文档写入成功: %s (%s)", document_id, title)
+            logger.debug("知识库文档写入成功: %s (%s)", document_id, metadata["title"])
         else:
             if result.error:
-                logger.warning("种子文档写入失败: %s - %s", document_id, result.error)
+                logger.warning("知识库文档写入失败: %s - %s", document_id, result.error)
             else:
-                logger.warning("种子文档写入失败: %s", document_id)
+                logger.warning("知识库文档写入失败: %s", document_id)
 
-    logger.info("种子文档写入完成: %d/%d 成功", success_count, len(md_files))
+    logger.info("知识库文档写入完成: %d/%d 成功", success_count, len(md_files))
 
 
 # ---------------------------------------------------------------------------

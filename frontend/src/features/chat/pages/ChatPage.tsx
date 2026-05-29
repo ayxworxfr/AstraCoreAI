@@ -8,7 +8,8 @@ export default function ChatPage(): JSX.Element {
   return (
     <Layout style={{ height: '100%', overflow: 'hidden' }}>
       <Sider
-        width={300}
+        width={260}
+        theme="light"
         style={{
           overflow: 'hidden',
           height: '100%',

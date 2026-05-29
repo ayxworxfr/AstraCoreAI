@@ -378,7 +378,7 @@ sequenceDiagram
 - `M3`: RAG 与引用体系完成，建立评估基线 ✅
 - `M4`: 多 Agent 协作、并行 spawn_agents ✅
 - `M5`: SDK 全功能对齐、ChatPipeline 统一执行引擎、Skill 系统、MCP 集成、工具循环健壮性、Conversation 门面 ✅
-- `M5+`: Hook/Callback 系统（before/after_llm/tool）、轻量级 Span 追踪（无 OTel）、DAG 工作流引擎（Kahn 拓扑 + 层级并行 + 条件跳过）、SDK WorkflowClient ✅
+- `M5+`: Hook/Callback 系统（before/after_llm/tool）、轻量级 Span 追踪（无 OTel）、DAG 工作流引擎（Kahn 拓扑 + 层级并行 + 条件跳过）、SDK WorkflowClient ✅、Hook ShortCircuit 短路拦截 ✅、CircuitBreaker 熔断器（三态状态机 + PolicyEngine 集成）✅、Structured Output（response_format + Anthropic tool_use + OpenAI json_schema）✅、Agent Eval 评估框架（EvalRunner + LLM-as-judge + 工具精确匹配 + CLI）✅、THINKING_DELTA 实时流式透传（移除 LLM 流缓冲）✅、shared repair_json 工具函数 ✅、knowledge_base 子目录结构 + frontmatter 多维度元数据 ✅
 - `M6`: 可靠性与安全 — 熔断器、API Key 鉴权、限流
 - `M7`: 可观测与性能 — SLO/指标/压测基线
 - `M8`: 发布工程化 — 版本策略、回滚预案、运维文档

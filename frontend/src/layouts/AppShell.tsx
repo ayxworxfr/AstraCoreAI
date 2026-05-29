@@ -1,5 +1,5 @@
-import { Layout, Menu, Button, Flex } from 'antd';
-import { BulbOutlined, MoonOutlined } from '@ant-design/icons';
+import { Layout, Menu, Button, Typography } from 'antd';
+import { BulbOutlined, MoonOutlined, RocketOutlined } from '@ant-design/icons';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
 
@@ -23,15 +23,20 @@ export default function AppShell(): JSX.Element {
         style={{
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'flex-end',
           padding: '0 20px',
           flexShrink: 0,
-          height: 56,
-          lineHeight: '56px',
+          height: 64,
+          lineHeight: '64px',
           borderBottom: theme === 'light' ? '1px solid #e8edf2' : '1px solid rgba(255,255,255,0.06)',
         }}
       >
-        <Flex align="center" gap={8} style={{ flex: '0 0 auto' }}>
+        <div style={{ width: 200, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <RocketOutlined style={{ fontSize: 20, color: '#1677ff' }} />
+          <Typography.Text strong style={{ fontSize: 15, letterSpacing: '-0.01em' }}>
+            AstraCoreAI
+          </Typography.Text>
+        </div>
+        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', minWidth: 0 }}>
           <Menu
             theme={theme === 'dark' ? 'dark' : 'light'}
             mode="horizontal"
@@ -40,14 +45,15 @@ export default function AppShell(): JSX.Element {
             style={{
               background: 'transparent',
               border: 'none',
-              width: 440,
-              flex: '0 0 440px',
-              height: 56,
-              lineHeight: '56px',
+              height: 64,
+              lineHeight: '64px',
               fontSize: 14,
               fontWeight: 500,
+              minWidth: 380,
             }}
           />
+        </div>
+        <div style={{ width: 200, flexShrink: 0, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
           <Button
             type="text"
             size="large"
@@ -64,7 +70,7 @@ export default function AppShell(): JSX.Element {
             }}
             title={theme === 'dark' ? '切换浅色' : '切换深色'}
           />
-        </Flex>
+        </div>
       </Header>
       <Content style={{ flex: '1 1 0', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <Outlet />

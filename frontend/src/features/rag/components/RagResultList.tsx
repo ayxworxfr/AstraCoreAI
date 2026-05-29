@@ -1,7 +1,6 @@
-import MDEditor from '@uiw/react-md-editor';
 import { Card, Tag, Empty, Typography, Flex } from 'antd';
-import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import type { RagResult } from '@/shared/types/api';
+import MarkdownContent from '@/features/chat/components/MarkdownContent';
 
 type Props = { results: RagResult[] };
 
@@ -12,8 +11,6 @@ function scoreColor(score: number): string {
 }
 
 export default function RagResultList({ results }: Props): JSX.Element {
-  const theme = useSettingsStore((s) => s.theme);
-
   if (results.length === 0) {
     return <Empty description="暂无检索结果" style={{ padding: '40px 0' }} />;
   }
@@ -31,9 +28,7 @@ export default function RagResultList({ results }: Props): JSX.Element {
             </Tag>
           }
         >
-          <div className="md-transparent" data-color-mode={theme}>
-            <MDEditor.Markdown source={r.content} />
-          </div>
+          <MarkdownContent content={r.content} />
           {r.citation && (
             <Typography.Text
               type="secondary"

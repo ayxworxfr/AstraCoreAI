@@ -9,33 +9,9 @@ from pydantic import BaseModel
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
+from astracore.shared.utils.json_utils import repair_json
 
 _logger = get_logger(__name__)
-
-
-def _repair_json(tool_name: str, raw: str, original_exc: json.JSONDecodeError) -> dict[str, Any]:
-    """尝试用 json-repair 修复畸形 JSON；修复失败则抛出 ValueError。"""
-    try:
-        from json_repair import loads as repair_loads  # noqa: PLC0415
-
-        repaired = repair_loads(raw)
-        if isinstance(repaired, dict):
-            _logger.warning(
-                "Tool '%s' JSON repaired (原始错误: %s, char %d/%d): %s",
-                tool_name,
-                original_exc.msg,
-                original_exc.pos,
-                len(raw),
-                raw[:200],
-            )
-            return repaired
-    except ImportError:
-        pass
-    raise ValueError(
-        f"Tool '{tool_name}' 的参数 JSON 解析失败。"
-        f" 原始错误: {original_exc}（截断位置: char {original_exc.pos}，原始长度: {len(raw)}）。"
-        f" 原始参数字符串: {raw!r}"
-    ) from original_exc
 
 
 class OpenAIAdapter(LLMAdapter):
@@ -414,18 +390,28 @@ class OpenAIAdapter(LLMAdapter):
 
         for tc_data in tool_call_buffer.values():
             raw_args = tc_data["arguments"]
+            parse_error: str | None = None
             try:
                 arguments = json.loads(raw_args) if raw_args else {}
             except json.JSONDecodeError as exc:
-                arguments = _repair_json(tc_data["name"], raw_args, exc)
-            yield StreamEvent(
-                event_type=StreamEventType.TOOL_CALL,
-                tool_call=ToolCall(
-                    id=tc_data["id"],
-                    name=tc_data["name"],
-                    arguments=arguments,
-                ),
+                try:
+                    arguments = repair_json(tc_data["name"], raw_args, exc)
+                except ValueError as repair_exc:
+                    parse_error = str(repair_exc)
+                    arguments = {}
+            tool_call = ToolCall(
+                id=tc_data["id"],
+                name=tc_data["name"],
+                arguments=arguments,
             )
+            if parse_error:
+                yield StreamEvent(
+                    event_type=StreamEventType.TOOL_CALL_ERROR,
+                    tool_call=tool_call,
+                    error=parse_error,
+                )
+            else:
+                yield StreamEvent(event_type=StreamEventType.TOOL_CALL, tool_call=tool_call)
 
         yield StreamEvent(event_type=StreamEventType.DONE)
 

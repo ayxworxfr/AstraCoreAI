@@ -1,5 +1,8 @@
 ---
 title: 什么是大语言模型
+category: ai-basics
+tags: [LLM, GPT, Claude, Transformer, 预训练]
+related: [ai-basics/ai_intro, ai-basics/agent_intro, ai-techniques/prompt_engineering, ai-techniques/fine_tuning]
 ---
 
 # 什么是大语言模型（LLM）

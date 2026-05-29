@@ -4,6 +4,10 @@ import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
   plugins: [react()],
+  // shiki 包含 WASM，排除预构建避免 Vite 的 commonjs 转换干扰
+  optimizeDeps: {
+    exclude: ['shiki'],
+  },
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
