@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import dataclasses
 from typing import Any
-from uuid import UUID
 
 
 @dataclasses.dataclass
@@ -40,10 +39,6 @@ class ChatOptions:
         Expose the ``search_knowledge_base`` tool and inject RAG context.
     enable_web:
         Expose the ``web_search`` tool.
-    skill_id:
-        Anchor skill UUID to activate.  ``None`` uses the session default skill.
-    disable_skill:
-        Suppress automatic skill injection even if a default skill is configured.
     """
 
     model_profile: str | None = None
@@ -53,8 +48,6 @@ class ChatOptions:
     thinking_budget: int = 8000
     enable_rag: bool = False
     enable_web: bool = False
-    skill_id: UUID | None = None
-    disable_skill: bool = False
 
     def apply(self, **overrides: Any) -> ChatOptions:
         """Return a new ``ChatOptions`` with the given fields replaced.

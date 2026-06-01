@@ -1,245 +1,179 @@
 ---
-name: 小说写作大师
-description: 长篇小说专业写作助手，支持从零创作或模仿参考小说风格，覆盖中文网文、文学小说与类型小说，含选题对话、完整框架设计与跨会话进度持久化
-order: 65
-references:
-  - title: 写作技艺
-    description: 人物呈现、节奏控制、信息密度、配角独立性等散文技艺原则
-    file: references/craft/writing-craft.md
-  - title: 禁用词表
-    description: AI腔一级/二级禁用词、高频套路句式、替换策略速查
-    file: references/craft/banned-words.md
-  - title: 质量清单
-    description: 每章写作后的三层自检：一致性 / 写作质量 / 章节结构
-    file: references/craft/quality-checklist.md
-  - title: 风格分析指南
-    description: 分析参考小说的风格、节奏、叙事手法，生成 novel-style.md
-    file: references/design/style-analysis.md
-  - title: 状态文件规范
-    description: 定义 novel-state.md / novel-framework.md / novel-characters.md / novel-style.md 四个持久化文件的完整字段格式
-    file: references/design/state-schema.md
-  - title: 题材框架速查
-    description: 20+网文子类型路由表、各题材核心要点、作者优势×题材匹配、平台调性速查
-    file: references/genre/genre-catalog.md
-  - title: 类型套路手册
-    description: 中文网文节奏设计、修仙/玄幻时间线、文学小说与类型小说结构惯例
-    file: references/genre/genre-conventions.md
-  - title: 命名指南
-    description: 书名、章节名、人物名、地点名、功法/道具/势力名的命名方法与自检清单
-    file: references/design/naming-guide.md
-  - title: 黄金三章
-    description: 开篇前3章设计手册：决策路由、必达指标、禁止事项、题材模板、情绪波动线操作
-    file: references/craft/opening-design.md
+name: novel-writer
+description: |
+  长篇小说专业写作助手，支持从零创作或模仿参考小说风格，覆盖中文网文、文学小说与类型小说，含选题对话、完整框架设计与跨会话进度持久化。
+metadata:
+  display_name: "小说写作大师"
+  order: "65"
+  category: "writing"
 ---
 # 小说写作大师
 
-## 当前时间
+## 核心原则【写之前必读，整次会话有效】
 
-{{current_time_info}}
+1. **状态先行**：本次任何写作动作前，先用 Read 工具读完 `novel-state.md` + 列出本章可能涉及的 Key Continuity Notes。未读完不得动笔。
+2. **场景识别**：开写前用 30 秒判断本章场景类型（常规叙事 / 战斗 / 高光出场 / 反派谋划 / 重要反转），按下方触发表加载专项参考。识别错 = 流水账。
+3. **三层防御**：① 写前——加载触发条件命中的所有专项参考；② 写中——每 500 字自检一次（`——` 数量、套话、自我修正痕迹）；③ 写后——执行 `quality-checklist.md` 四层全项检查，未通过禁止交付。
+4. **绝不偷懒**：禁止用"接下来主角去做了 X"概括代替场景渲染；禁止战斗一笔带过；禁止反派输了立刻进下一情节。所有偷懒模式见文末禁止输出表。
 
 ---
 
-## 可用工具
+## 决策门：会话启动
 
-本 Skill 的 `scripts/` 子目录内含两类脚本：**市场榜单采集** 和 **质量检测**。直接用 Bash 工具执行（路径固定，无需搜索）。
-
-### 市场榜单采集（查榜时使用）
-
-| 脚本 | 用途 |
-|------|------|
-| `setup-cdp-chrome.js 9222` | 启动 Chrome CDP（每次会话执行一次） |
-| `qidian-rank-scraper.js --type newsign\|all` | 起点榜单 |
-| `qimao-rank-scraper.js --channel all --type all` | 七猫榜单 |
-| `fanqie-rank-scraper.js` | 番茄榜单（需登录态） |
-| `jjwxc-rank-scraper.js` | 晋江榜单 |
-
-```bash
-node "{{skill_dir}}/scripts/setup-cdp-chrome.js" 9222
-node "{{skill_dir}}/scripts/qidian-rank-scraper.js" --type newsign
+```
+用 Bash 工具运行 ls 检查项目目录中是否存在 novel-state.md（默认当前目录；用户可指定其他目录）
+   │
+   ├── 存在 → 走【续写分支】
+   │
+   └── 不存在 → 走【初始化分支】
 ```
 
-### 质量检测（章节自检 / 整卷批检时使用）
+**续写分支**：用 Read 工具按顺序读取 `novel-state.md` / `novel-framework.md` / `novel-characters.md` / `novel-style.md` → 用 1 句话向用户播报当前进度（"当前在卷 N 第 M 章，设计焦点是 X，本次写第 M+1 章？"）→ 等用户确认 → 进入【写章节循环】。
 
-| 脚本 | 用途 | 推荐用法 |
-|------|------|---------|
-| `fix-dashes.js` | 统计 `——` 数量并定位每处用法（保留分100=对话打断 / 80=成对强调 / 70=悬停 等） | **优先 `--dry-run` 预览**；自动修复仅在批量整卷时使用 |
-| `fix-banned-words.js` | 扫描一级/二级禁用词、给出位置 | **默认仅检测**，不加 `--fix-simple` |
-
-**重要原则**：脚本主要用于**定位问题**，**修改尽量手动完成**——
-- 自动替换可能破坏语义连贯（如把对话中合理的破折号改成逗号、删掉真正需要的"轻轻"）
-- AI 应该读取脚本输出后，**逐条判断每处的上下文**，再用 Edit 工具精修
-- 仅在以下场景使用 `--fix-simple` / 全自动修复：① 批量处理已完结的旧稿；② 已逐条核对过预览结果
-
-```bash
-# 写完一章后：先看数量是否超标
-node "{{skill_dir}}/scripts/fix-dashes.js" "<章节路径>" --dry-run
-node "{{skill_dir}}/scripts/fix-banned-words.js" "<章节路径>"
-
-# 整卷写完批检：可加 --dry-run 看预览，确认无误再去掉
-node "{{skill_dir}}/scripts/fix-dashes.js" "<vol-XX 目录>" --dry-run
-```
+**初始化分支**：先用 Bash 创建项目目录与空的 `novel-state.md`，再进入【选题对话】。
 
 ---
 
-## 会话启动
+## 初始化分支
 
-检查项目目录中是否存在 `novel-state.md`（默认当前目录；用户可指定其他目录）：
+### 步骤 1 — 三步选题
 
-- **存在（续写模式）**：读取全部状态文件 → 向用户确认当前进度 → 进入写作阶段
-- **不存在（初始化模式）**：确认项目目录（立即创建 `novel-state.md`）→ 进入**选题对话**
+**1.1 题材方向**
 
----
+- 用户已说出方向 → 调用 `get_skill_reference("novel-writer", "references/genre/genre-catalog.md")` 定位子类型，跳到 1.2
+- 用户没方向 → **同时一次性问两问**（不要拆轮次）：
+  > 「你想写什么题材方向？告诉我你的优势——脑洞 / 文笔 / 节奏感 / 生活经验 / 逻辑设计——我来推荐 2-3 个最适配的方向。」
+  > 「另外，要不要先看一眼起点 / 番茄 / 晋江现在的榜单？」
+- 用户给了优势关键词 → 调用 `get_skill_reference("novel-writer", "references/genre/genre-catalog.md")` 按"作者优势×题材匹配"表推荐 2-3 个，让用户选 1
+- 用户要看榜单 → 调用 `get_skill_reference("novel-writer", "references/market/scraping-guide.md")` 执行扫榜流程并解读结果
 
-## 选题对话
+**1.2 参考作品**
 
-初始化时，在框架设计之前，依次确认以下问题：
+- 用户提供参考小说 → **必须 WebSearch** 核实书名/作者/核心设定/风格特色，把核实结果摆给用户确认；确认前不得凭印象描述。确认后调用 `get_skill_reference("novel-writer", "references/design/style-analysis.md")` 走风格分析模式
+- 无参考 → 跳到 1.3
 
-**第一步：题材方向**
+**1.3 核心创意**
 
-用户已有明确方向 → 调用 `get_skill_reference("题材框架速查")` 定位对应子类型，直接进第二步。
+- 用户给出"主角是谁 + 面对什么困境/追求什么目标"
+- **强制 WebSearch 撞车检测**：搜「[题材关键词] 小说 起点 番茄」
+  - 搜到大量同类热门作品 → 向用户说明，给 2-3 个差异化方向（换角度 / 换职业 / 加反转）
+  - 暂无同类，或差异化已足够 → 进入步骤 2
 
-用户没有方向 → 同时问以下两个问题（一次问完，不要拆成多轮）：
+### 步骤 2 — 框架设计【铁律：四个状态文件全部存在前，禁止输出任何故事正文】
 
-> 「你想写什么题材方向？如果还不确定，告诉我你的优势——脑洞好 / 文笔细腻 / 节奏感强 / 生活经验丰富 / 逻辑设计强，我来推荐最适合你的题材。」
-> 「另外，想不想先看看现在平台上什么题材最热？（可以帮你实时查起点/番茄/晋江的榜单）」
-
-- 用户说出优势 → 调用 `get_skill_reference("题材框架速查")` 按"作者优势×题材匹配"表推荐 2-3 个方向，请用户选一个
-- 用户想看榜单 → 按以下优先级执行扫榜：
-  1. **脚本采集（优先，必须执行）**：
-     - **用 Bash 工具依次执行**（脚本路径固定，直接执行，不要只说能做）：
-       ```bash
-       SCRIPTS="{{skill_dir}}/scripts"
-       node "$SCRIPTS/setup-cdp-chrome.js" 9222                       # 启动 Chrome CDP
-       node "$SCRIPTS/qidian-rank-scraper.js" --type newsign          # 起点新人签约榜
-       node "$SCRIPTS/qidian-rank-scraper.js" --type all              # 起点全榜
-       node "$SCRIPTS/qimao-rank-scraper.js" --channel all --type all # 七猫全榜
-       node "$SCRIPTS/fanqie-rank-scraper.js"                         # 番茄（需登录态）
-       node "$SCRIPTS/jjwxc-rank-scraper.js"                         # 晋江
-       ```
-     - 读取 `扫榜/` 目录下的输出文件；调用 `get_skill_reference("扫榜数据格式")` 解读字段
-  2. **WebSearch（备用）**：Bash 执行失败或 Chrome 未开启时，搜索「起点中文网新书榜」「番茄热门题材」提炼趋势
-  
-  采集完后读取结果文件，提炼 3-5 个热门题材趋势给建议
-
-**第二步：参考作品**
-
-有没有想模仿风格的参考作品？（有 → 风格分析模式；无 → 直接框架设计）
-
-**用户提供参考作品时**：先联网搜索该作品，确认书名、作者、核心设定、风格特色，再向用户呈现核实结果——不得凭印象直接描述，确认前视为信息未知。
-
-**第三步：核心创意**
-
-用户描述创意后，**必须先做撞车检测再确认**：
-- WebSearch 搜索「[题材关键词] 小说 起点 番茄」，确认该设定是否已有大量同类作品
-- 若搜索到已有热门同类作品，向用户说明并提供差异化方向（换角度/换职业/加反转）
-- 若暂无同类作品，或差异化足够，再进入框架设计
-
-一句话：[主角是谁] + [他/她面对什么困境或追求什么目标]
-
-三步确认后 → 进入**框架设计**。
-
----
-
-## 风格分析模式
-
-用户提供参考小说 → 调用 `get_skill_reference("风格分析指南")` → 分析后生成 `novel-style.md` → 进入框架设计。
-
----
-
-## 框架设计
-
-**在写任何正文之前完成全部设计。四个状态文件全部存在前，不得输出故事内容。**
-
-调用 `get_skill_reference("题材框架速查")` 定位子类型核心要点；调用 `get_skill_reference("类型套路手册")` 加载对应章节（§web-novel / §literary / §genre-fiction）。
+调用 `get_skill_reference("novel-writer", "references/genre/genre-catalog.md")` 定位子类型核心要点；调用 `get_skill_reference("novel-writer", "references/genre/genre-conventions.md")` 加载对应章节（§web-novel / §literary / §genre-fiction）。**逐项填写**：
 
 1. **世界与背景** — 时代、规则体系、氛围、格局
-2. **情节结构** — 主线弧、幕式结构、关键转折点、结局方向；规划卷数与各卷名称；**明确哪些配角有独立的副线，副线在哪些章节与主线交叉**
-3. **人物** — 主角 + 核心配角；性格、动机、成长弧；**每个核心配角须有独立于主角的目标或秘密；并标注该配角是否需要独立视角场景**
+2. **情节结构** — 主线弧、幕式结构、关键转折点、结局方向；规划卷数与各卷名称；**明确哪些配角有独立副线，副线在哪些章节与主线交叉**
+3. **人物** — 主角 + 核心配角；性格、动机、成长弧；**每个核心配角须有独立于主角的目标或秘密；并标注是否需要独立视角场景**
 4. **套路与钩子** — 体裁专属套路、读者期待、核心钩子
-5. **风格** — 如未来自分析：POV、时态、叙述语气、散文风格、节奏
-6. **命名** — 调用 `get_skill_reference("命名指南")`，确定书名、卷名、主要人物与地点名
-7. **简介** — 基于以上设计，撰写 `## Synopsis`（平台简介 50~150字 + 详细简介 200~300字），供发布时直接复制；故事走向有重大调整时同步更新
+5. **风格** — POV、时态、叙述语气、散文风格、节奏（来自风格分析则直接复用）
+6. **命名** — 调用 `get_skill_reference("novel-writer", "references/design/naming-guide.md")`，确定书名、卷名、主要人物与地点名
+7. **简介** — 撰写 `## Synopsis`（平台简介 50~150 字 + 详细简介 200~300 字）
 
-将结果写入 `novel-framework.md`、`novel-characters.md`、`novel-style.md`，并初始化 `novel-state.md`，创建第一卷目录 `vol-01/`。字段格式参见 `get_skill_reference("状态文件规范")`。
+### 步骤 3 — 状态文件初始化
 
----
+字段格式见 `get_skill_reference("novel-writer", "references/design/state-schema.md")`。用 Write 工具创建：
+- `novel-state.md`（含 current_volume=1 / current_chapter_in_volume=1）
+- `novel-framework.md`
+- `novel-characters.md`
+- `novel-style.md`
+- 用 Bash 创建 `vol-01/` 目录
 
-## 写作阶段
-
-章节文件路径：`vol-{nn}/chapter-{nnn}.md`，卷号与章节号均补零（`vol-01/chapter-001.md`）。章节编号在每卷内从 001 重新开始。
-
-**⚠️ 黄金三章（卷一第1-3章）**：前3章是留住读者的唯一机会，必须在写作前额外加载：
-- 调用 `get_skill_reference("黄金三章")` 获取完整手册
-- 逐条对照"必达指标"和"绝对禁止"清单
-- 按题材选择对应的开头模板
-- 第1章末尾必须触发金手指；第3章内完成三大基点（人设/切入点/金手指）
-- 写完后用"黄金一章检查清单"自检，全部通过再提交
+四个文件齐全后，进入【写章节循环】。
 
 ---
 
-每次写作会话：
+## 写章节循环
 
-1. 读取 `novel-state.md` — 当前卷号、卷内章节号、设计焦点、短期计划
-2. 逐条读取 `Key Continuity Notes`，列出本章可能涉及的条目（人名、地名、道具属性、伏笔状态等）
-3. 读取其余三个状态文件的相关部分；调用 `get_skill_reference("写作技艺")`；**调用 `get_skill_reference("禁用词表")`，将禁用词列表记在工作记忆中，写作时主动规避**
-4. 与用户确认本次范围（默认：一个完整章节）
-5. 写作——遇到人名、地名、宗门名、数字、道具时与步骤 2 条目对照；不确定时优先查状态文件，不得凭印象写；**行文中遇到禁用词立即在脑内替换，直接输出替换后的版本，严禁将纠错过程写入正文**（禁止出现"——不对""（删去）""修改为"等任何自我纠正痕迹）；**每写完约 500 字，默数当前 `——` 次数，已达 3 处则后续改用句号或逗号，不再新增**
-6. **写完后自检**：调用 `get_skill_reference("质量清单")` 执行三层检查；发现问题立即修正
-7. 将章节写入 `vol-{nn}/chapter-{nnn}.md`
-8. 更新 `novel-state.md`：递增卷内章节计数、更新设计焦点、修订短期计划（保持 5—8 章的展望），将本章新增细节追加到 `Key Continuity Notes`
+章节文件路径：`vol-{nn}/chapter-{nnn}.md`，卷号与章节号均补零；章节编号每卷内从 001 重新开始。
 
-检查 `novel-state.md` 是否超过 150 行或 `Key Continuity Notes` 超过 20 条——若是，执行**归档**。
+### A. 写前准备（5 个动作，缺一不可）
+
+1. **读状态**：用 Read 工具读 `novel-state.md`，朗读 4 个字段并记入工作记忆——`current_volume` / `current_chapter_in_volume` / `Current Design Focus` / `Short-term Plan`
+2. **读 KCN**：逐条朗读本章可能涉及的所有 `Key Continuity Notes` 条目（人名/地名/道具属性/伏笔状态），明确"谁知道什么"
+3. **加载基础参考**：调用 `get_skill_reference("novel-writer", "references/craft/writing-craft.md")` + `get_skill_reference("novel-writer", "references/craft/banned-words.md")`，把禁用词表压入工作记忆
+4. **场景识别 + 加载专项**：用下表逐行检查本章包含什么，命中即加载——
+
+   | 本章包含 | 必须加载 | 触发判断 |
+   |---|---|---|
+   | 核心角色出场 / 高光亮相 / 美貌或帅气描写 | `references/craft/character-charisma.md` | 出现频次 ≥ 5 章的角色每次重要出场 + 任何"美 / 帅"描写 |
+   | 战斗 / 施法 / 招式 / 能力首次或关键展示 / 阵法启动 | `references/craft/spectacle-rendering.md` | 任何动用名词化招式或跨等级压制 |
+   | 重要战斗 / BOSS 谋划 / 危险逼近 / 主角不在场关键事件 | `references/craft/multi-pov.md` | 持续超过半章的对抗或本卷 BOSS 行动 |
+   | 高光时刻 / 立威 / 打脸 / 关键反转 / 反派失败 | `references/craft/climax-design.md` | 五段爽点结构所适用的所有"赢 / 揭示 / 反转" |
+
+   **多个命中 → 全部加载；一个不命中 → 仅基础参考**
+
+5. **黄金三章特判**：若本章为卷一第 1-3 章，**额外**调用 `get_skill_reference("novel-writer", "references/craft/opening-design.md")`，逐条对照"必达指标"和"绝对禁止"清单
+6. **范围确认**：用 1 句话告知用户本次写哪一章 + 设计焦点，等用户回 ok / 调整
+
+### B. 写中段自检（每 500 字触发一次）
+
+每写完约 500 字，**停下来扫描已写文本**，按以下检查门处理：
+
+| 检查项 | 阻断条件 |
+|---|---|
+| 当前 `——` 数量 | 已 ≥ 3 → 后续段落只能用句号或逗号；已 ≥ 5 → 立刻停下，删减至 ≤ 5 后才能继续 |
+| 对话末尾 `——`（欲言又止 / 话没说完） | **零容忍**。任何形如 `"...但是——"` / `"那是——"` 的悬停式破折号 → 立刻删除并改为：① 把话写完，② 用 `……`，③ 用动作接住（"他没再往下说"） |
+| 一级禁用词 | 出现任何 1 个 → 立刻替换 |
+| 二级禁用词 | 同章节累计 ≥ 2 → 替换至 ≤ 1 |
+| 连续内心推断 | 超过 3 句未插入感官细节 → 立刻补一句肢体或环境 |
+| 自我修正痕迹（"——不对" / "（删去）" / "修改为"） | 出现任何 1 处 → 立刻删除并改写为最终版 |
+
+行文中遇到禁用词**直接输出替换后的版本**，**严禁把纠错过程写入正文**。
+
+### C. 写后最终关卡
+
+调用 `get_skill_reference("novel-writer", "references/craft/quality-checklist.md")`，**逐条**执行：
+- 第一层（一致性）+ 第二层（写作质量）+ 第三层（章节结构）= 基础三层，**全部章节都必须通过**
+- 第四层（高光场景专项）= **触发条件命中时全部必须通过**
+
+**任一项未通过 → 回去改写，禁止以"待修"为由继续。**
+
+辅助脚本（**仅用于定位，禁止任何形式的自动修复**）：
+- `run_skill_script("novel-writer", "fix-dashes.js", {"path": "<章节路径>", "dry_run": true})` — 必须带 `dry_run: true`
+- `run_skill_script("novel-writer", "fix-banned-words.js", {"path": "<章节路径>"})` — 不得加任何 `--fix-simple` / `--max` 等修复参数
+
+脚本职责到"输出位置 + 计数"为止。**所有删减、替换、改写一律用 Edit 工具逐处手动完成**——AI 必须读上下文判断每处用法（对话打断 / 成对强调 / 悬停 / 真正必要的破折号 vs. 可删可换的破折号），不得让脚本批量改文。原因：自动修复无法理解语义连贯，会破坏对话节奏、误删合理用法。
+
+### D. 写入与状态更新
+
+1. 用 Write 工具写章节到 `vol-{nn}/chapter-{nnn}.md`
+2. 用 Edit 工具按以下 4 处修改 `novel-state.md`：
+   - `current_chapter_in_volume` +1
+   - `chapters_completed_total` +1，`word_count_total` 累加
+   - `Current Design Focus` 替换为下章重点
+   - `Short-term Plan` 维持 5—8 章展望
+   - `Key Continuity Notes` 追加本章新增条目（新设定、新伏笔、人物新承诺）
+3. 用 Bash 运行 `wc -l novel-state.md`，行数 > 150 或 KCN > 20 条 → 调用 `get_skill_reference("novel-writer", "references/design/state-schema.md")` 的 §归档流程
 
 ---
 
-## 归档
+## 顶层禁止输出表（堵死高频偷懒路径）
 
-1. 读取 `novel-archive.md`（不存在则新建）
-2. 将已完成卷的章节摘要追加到 `novel-archive.md` 对应卷区块
-3. 将已解决或距当前章节超过 10 章且不再活跃的 `Key Continuity Notes` 条目移入 `novel-archive.md`
-4. 清空 `novel-state.md` 中已归档的内容，替换为指针：`<!-- 卷N已归档，见 novel-archive.md -->`
-5. 整体精简 `novel-state.md` 后告知用户
-
----
-
-## 换卷
-
-1. 归档当前卷所有章节摘要和已解决伏笔
-2. `current_volume` 递增，填写新卷标题
-3. `current_chapter_in_volume` 重置为 1
-4. 创建新卷目录 `vol-{nn}/`
-5. 更新 `novel-framework.md` 新卷情节规划（如尚未填写）
-6. 与用户确认新卷开篇设计焦点，再进入写作
+| 禁止 | 替代 |
+|---|---|
+| 状态文件未读完就开始写章节 | 先 Read `novel-state.md` + 列出本章涉及的 Key Continuity Notes，再动笔 |
+| 用"接下来主角去做了 X"概括代替场景 | 切换到具体视角，写动作 + 感官 + 对白 |
+| 在正文中出现自我修正痕迹（"——不对 / （删去） / 修改为"） | 直接输出最终版，纠错过程内化为脑内动作 |
+| 战斗写"两人激战片刻，主角胜出" | 加载 `特效渲染` 并执行起势 / 蓄力 / 爆发 / 余波四段 |
+| 反派输了立刻进入下一情节 | 给反派破防具体动作 + ≥ 2 句涟漪扩散（见 `爽点设计`） |
+| 全章只有主角视角，对手只在主角面前出现 | 触发条件命中时切非主角视角；本卷至少每 5 章 1 次 |
+| 美貌 / 帅气直接写"绝美 / 玉树临风 / 倾国倾城 / 剑眉星目" | 用他人反应 / 环境衬托 / 局部特写（见 `角色魅力塑造`） |
+| 框架/状态文件未建立完成就输出故事正文 | 先完成四个状态文件 + vol-01/ 目录 |
+| 用 `fix-dashes.js` / `fix-banned-words.js` 的自动修复模式批改章节 | 脚本只跑 `dry_run` / 仅检测；逐处用 Edit 工具读上下文后手动改 |
+| 对话末尾用 `——` 制造"欲言又止"（如 `"...但是——"`、`"那是——"`） | 改成 `……` 或写完后用动作接住（"他没再往下说，端起杯子。"），严重影响阅读节奏 |
 
 ---
 
-## 中途修改
+## 状态维护
 
-用户想改变方向 → 更新相关框架文件 → 向用户确认变更 → 继续写作。绝不私自偏离已确立的框架。
-
----
-
-## 标点与命名规范
-
-对话引号一律使用中文全角引号 `"` `"`，禁止 ASCII 直引号 `"` 或 `'`。句号用 `。`，逗号用 `，`，其余标点同理。
-
-章节标题 2—10 字，禁止单字标题。连续三章不得全部使用 2 字标题；同一卷 2 字标题占比不超过三分之一。所有命名场景调用 `get_skill_reference("命名指南")`。
+- **归档**：触发条件 = `novel-state.md` > 150 行 或 `Key Continuity Notes` > 20 条 → 调用 `get_skill_reference("novel-writer", "references/design/state-schema.md")` 的 §归档流程
+- **换卷**：当前卷写完 → 调用 `get_skill_reference("novel-writer", "references/design/state-schema.md")` 的 §换卷流程
+- **中途修改**：用户要改方向 → 用 Edit 更新对应框架文件 → 向用户复述变更 → 继续写作。绝不私自偏离已确立的框架
 
 ---
 
-## 参考文档索引
+## 标点
 
-| 调用名 | 文件 | 加载时机 |
-|--------|------|---------|
-| 写作技艺 | writing-craft.md | 写作阶段步骤 3，整次会话有效 |
-| 质量清单 | quality-checklist.md | 写完后自检（步骤 6） |
-| 禁用词表 | banned-words.md | 质量清单第二层调用时 |
-| 风格分析指南 | style-analysis.md | 有参考书时 |
-| 状态文件规范 | state-schema.md | 框架设计完成写入文件时 |
-| 题材框架速查 | genre-catalog.md | 选题对话题材定位 + 框架设计步骤 1 |
-| 类型套路手册 | genre-conventions.md | 框架设计步骤 1（节奏/结构细节） |
-| 命名指南 | naming-guide.md | 框架设计步骤 6 及所有命名场景 |
-| 黄金三章 | references/craft/opening-design.md | 写卷一第1-3章前必须加载 |
-| 扫榜数据格式 | references/market/scan-output-format.md | 扫榜后解读各平台采集字段 |
-| 题材趋势 | references/genre/genre-trends.md | 无法实时采集时的历史趋势参考 |
-| 平台发布指南 | references/market/publishing-guide.md | 选平台/推荐机制/简介设计 |
+对话引号一律中文全角 `"` `"`，禁止 ASCII 直引号；句号 `。`、逗号 `，`、其余同理。章节标题命名规则详见 `命名指南`。

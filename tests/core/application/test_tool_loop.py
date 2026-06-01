@@ -92,7 +92,9 @@ async def test_execute_with_tools_calls_tool_and_continues(loop_uc, mock_llm, mo
     await loop_uc.execute_with_tools(session)
 
     mock_tools.execute.assert_called_once_with(
-        tool_name="search", arguments={"query": "Python"}, context={"profile_id": None}
+        tool_name="search",
+        arguments={"query": "Python"},
+        context={"_read_files": set(), "profile_id": None},
     )
     assert mock_llm.generate.call_count == 2
 

@@ -32,7 +32,6 @@ from astracore.modules.memory.domain import (
     StructuredMemory,
 )
 from astracore.modules.rag.application.pipeline import RAGPipeline
-from astracore.modules.skills.router import SkillRouter
 from astracore.modules.skills.seeds import seed_builtin_skills
 from astracore.modules.tools.ports.tool import MutableToolAdapter, ToolParameter
 from astracore.sdk.config import AstraCoreConfig
@@ -52,8 +51,6 @@ class ChatResult:
     session_id: UUID
     model_profile: str
     model: str
-    anchor_skill: str | None = None
-    routed_skills: tuple[str, ...] = ()
 
 
 class Conversation:
@@ -222,7 +219,6 @@ class AstraCoreClient:
         self._rag_pipeline: RAGPipeline
         self._user_adapter: MutableToolAdapter
         self._tool_adapter: MutableToolAdapter
-        self._skill_router: SkillRouter | None
         self._pipeline: ChatPipeline
 
     # ------------------------------------------------------------------
@@ -255,15 +251,10 @@ class AstraCoreClient:
         from astracore.infrastructure.tools.native import NativeToolAdapter  # noqa: PLC0415
         from astracore.modules.tools.builtin import build_tool_adapter  # noqa: PLC0415
 
-        builtin_adapter = build_tool_adapter()
+        builtin_adapter = build_tool_adapter(db_url=cfg.memory.db_url)
         self._user_adapter = NativeToolAdapter()
         self._tool_adapter = CompositeToolAdapter([builtin_adapter, self._user_adapter])
 
-        self._skill_router = (
-            SkillRouter(config=cfg, db_url=cfg.memory.db_url)
-            if cfg.skill_routing.mode != "off"
-            else None
-        )
         self._pipeline = self._build_pipeline()
 
         # Async initialization
@@ -272,12 +263,6 @@ class AstraCoreClient:
             await seed_builtin_skills(cfg.memory.db_url, extra_skill_dirs=cfg.skills.extra_dirs)
         except Exception:
             logger.warning("内置 Skill 种子写入失败，继续启动")
-
-        if self._skill_router is not None:
-            try:
-                await self._skill_router.precompute()
-            except Exception:
-                logger.warning("SkillRouter precompute 失败，继续启动")
 
         if cfg.mcp.servers:
             try:
@@ -315,7 +300,6 @@ class AstraCoreClient:
             rag_pipeline=self._rag_pipeline,
             policy=PolicyEngine(),
             tool_adapter=self._tool_adapter,
-            skill_router=self._skill_router,
             memory_engine=self._memory_engine,
             hooks=self._hooks,
         )
@@ -346,8 +330,6 @@ class AstraCoreClient:
         thinking_budget: int = 8000,
         enable_rag: bool = False,
         enable_web: bool = False,
-        skill_id: UUID | None = None,
-        disable_skill: bool = False,
     ) -> Conversation:
         """Create a :class:`Conversation` for multi-turn chat.
 
@@ -377,8 +359,6 @@ class AstraCoreClient:
                 thinking_budget=thinking_budget,
                 enable_rag=enable_rag,
                 enable_web=enable_web,
-                skill_id=skill_id,
-                disable_skill=disable_skill,
             ),
         )
 
@@ -399,8 +379,6 @@ class AstraCoreClient:
         thinking_budget: int = 8000,
         enable_rag: bool = False,
         enable_web: bool = False,
-        skill_id: UUID | None = None,
-        disable_skill: bool = False,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a single-turn chat response as raw :class:`StreamEvent` objects.
 
@@ -421,15 +399,8 @@ class AstraCoreClient:
                 thinking_budget=thinking_budget,
                 enable_rag=enable_rag,
                 enable_web=enable_web,
-                skill_id=skill_id,
-                disable_skill=disable_skill,
             ),
         )
-        if ctx.anchor_skill or ctx.routed_skills:
-            yield StreamEvent(
-                event_type=StreamEventType.SKILL_MATCH,
-                metadata={"anchor": ctx.anchor_skill, "routed": list(ctx.routed_skills)},
-            )
         accumulated = ""
         async for event in self._pipeline.stream(ctx):
             if event.event_type == StreamEventType.TEXT_DELTA and event.content:
@@ -450,8 +421,6 @@ class AstraCoreClient:
         thinking_budget: int = 8000,
         enable_rag: bool = False,
         enable_web: bool = False,
-        skill_id: UUID | None = None,
-        disable_skill: bool = False,
     ) -> ChatResult:
         """Send a single-turn message and return the complete response.
 
@@ -472,8 +441,6 @@ class AstraCoreClient:
                 thinking_budget=thinking_budget,
                 enable_rag=enable_rag,
                 enable_web=enable_web,
-                skill_id=skill_id,
-                disable_skill=disable_skill,
             ),
         )
         content = await self._pipeline.execute(ctx)
@@ -483,8 +450,6 @@ class AstraCoreClient:
             session_id=_session_id,
             model_profile=ctx.profile.id,
             model=ctx.profile.model,
-            anchor_skill=ctx.anchor_skill,
-            routed_skills=ctx.routed_skills,
         )
 
     # ------------------------------------------------------------------
@@ -524,7 +489,9 @@ class AstraCoreClient:
             {
                 "id": row.id,
                 "name": row.name,
+                "display_name": row.display_name or "",
                 "description": row.description,
+                "category": row.category,
                 "order": row.sort_order,
                 "is_builtin": row.is_builtin,
             }

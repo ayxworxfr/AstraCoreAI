@@ -46,8 +46,8 @@ class ChatContext:
     """采样温度，由"请求参数 → DB 用户设置 → profile 默认值"三级优先级解析得出。"""
 
     system_prompt: str | None
-    """最终注入 LLM 的系统提示，由 skill 提示 + 全局指令 + RAG 上下文三层拼接而成；
-    无任何 skill 且无 RAG 时为 ``None``。"""
+    """最终注入 LLM 的系统提示，由身份层 + 技能清单 + 记忆 + RAG 上下文四层拼接而成；
+    无任何内容时为 ``None``。"""
 
     context_max_messages: int
     """传给 LLM 的历史消息条数上限，从用户设置或 profile 默认值中读取。"""
@@ -77,25 +77,3 @@ class ChatContext:
     allowed_tools: frozenset[str] = field(default_factory=frozenset)
     """白名单工具名集合。非空时 ToolLoopUseCase 只向 LLM 暴露集合内的工具；
     空集合表示暴露全部可用工具。"""
-
-    # ------------------------------------------------------------------
-    # Skill 路由结果
-    # ------------------------------------------------------------------
-
-    anchor_skill: str | None = None
-    """主锚定 Skill 的名称（显示用），即用户在 Chat 工具栏手动选择的 Skill。
-    未选择时为 ``None``。"""
-
-    routed_skills: tuple[str, ...] = field(default_factory=tuple)
-    """由 SkillRouter 自动路由命中的副技能名称列表（显示用）。
-    路由关闭或无匹配时为空元组。"""
-
-    skill_has_refs: bool = False
-    """当前 anchor skill 是否存在关联的参考资料（skill_references 表中有记录）。
-    ``True`` 时 ``tool_adapter`` 中会包含 ``get_skill_reference`` 工具。"""
-
-    anchor_id: str | None = None
-    """当前 anchor skill 在数据库中的 ID（UUID hex）。
-    用于在工具执行上下文中传递给 ``ParallelAgentTool``，让 Worker Agent 也能
-    动态构建含 ``get_skill_reference`` 的 CompositeToolAdapter。
-    无 anchor skill 时为 ``None``。"""

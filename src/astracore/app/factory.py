@@ -73,14 +73,6 @@ async def lifespan(app: FastAPI) -> Any:
     except Exception:
         logger.exception("内置 Skill 种子写入失败，不影响服务启动")
 
-    if cfg.skill_routing.mode != "off":
-        try:
-            from astracore.modules.chat.api import _get_skill_router  # noqa: PLC0415
-
-            asyncio.create_task(_get_skill_router().precompute())
-        except Exception:
-            logger.exception("SkillRouter precompute 启动失败，不影响服务启动")
-
     try:
         pipeline = rag._get_rag_pipeline()
         # Run in background so slow model downloads don't block server startup
@@ -104,13 +96,13 @@ async def lifespan(app: FastAPI) -> Any:
             mcp_adapter = MCPToolAdapter(mcp_configs)
 
             # 先挂内置工具，MCP 在后台启动，不阻塞服务就绪
-            app.state.tool_adapter = build_tool_adapter()
+            app.state.tool_adapter = build_tool_adapter(db_url=cfg.memory.db_url)
 
             async def _start_mcp() -> None:
                 try:
                     await asyncio.wait_for(mcp_adapter.start(), timeout=30)
                     app.state.tool_adapter = CompositeToolAdapter(
-                        [build_tool_adapter(), mcp_adapter]
+                        [build_tool_adapter(db_url=cfg.memory.db_url), mcp_adapter]
                     )
                     logger.info("MCP tool adapter started with %d server(s)", len(mcp_configs))
                 except Exception:

@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from functools import lru_cache
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
@@ -23,36 +24,52 @@ def _db_url() -> str:
 class SkillResponse(BaseModel):
     id: str
     name: str
+    display_name: str
     description: str
-    system_prompt: str
+    instructions: str
+    category: str | None
     is_builtin: bool
     order: int
     has_references: bool
+    has_scripts: bool
     created_at: datetime
     updated_at: datetime
 
 
 class SkillCreate(BaseModel):
     name: str
+    display_name: str = ""
     description: str = ""
-    system_prompt: str
+    instructions: str
+    category: str | None = None
 
 
 class SkillUpdate(BaseModel):
     name: str | None = None
+    display_name: str | None = None
     description: str | None = None
-    system_prompt: str | None = None
+    instructions: str | None = None
+    category: str | None = None
+
+
+def _has_scripts(row: SkillRow) -> bool:
+    if not row.skill_dir:
+        return False
+    return (Path(row.skill_dir) / "scripts").exists()
 
 
 def _to_response(row: SkillRow, *, has_references: bool = False) -> SkillResponse:
     return SkillResponse(
         id=row.id,
         name=row.name,
+        display_name=row.display_name or "",
         description=row.description,
-        system_prompt=row.system_prompt,
+        instructions=row.instructions or "",
+        category=row.category,
         is_builtin=row.is_builtin,
         order=row.sort_order,
         has_references=has_references,
+        has_scripts=_has_scripts(row),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -82,8 +99,10 @@ async def create_skill(body: SkillCreate) -> SkillResponse:
         row = SkillRow(
             id=str(uuid4()),
             name=body.name,
+            display_name=body.display_name,
             description=body.description,
-            system_prompt=body.system_prompt,
+            instructions=body.instructions,
+            category=body.category,
             is_builtin=False,
             created_at=now,
             updated_at=now,
@@ -104,10 +123,14 @@ async def update_skill(skill_id: str, body: SkillUpdate) -> SkillResponse:
             raise HTTPException(status_code=403, detail="内置 Skill 不可修改")
         if body.name is not None:
             row.name = body.name
+        if body.display_name is not None:
+            row.display_name = body.display_name
         if body.description is not None:
             row.description = body.description
-        if body.system_prompt is not None:
-            row.system_prompt = body.system_prompt
+        if body.instructions is not None:
+            row.instructions = body.instructions
+        if body.category is not None:
+            row.category = body.category
         row.updated_at = datetime.now(UTC)
         await db.commit()
         await db.refresh(row)

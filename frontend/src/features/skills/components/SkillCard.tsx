@@ -4,22 +4,18 @@ import type { Skill } from '@/features/skills/types';
 
 type Props = {
   skill: Skill;
-  isActive?: boolean;
   onEdit: (skill: Skill) => void;
   onDelete: (id: string) => void;
   onView: (skill: Skill) => void;
 };
 
-export default function SkillCard({ skill, isActive, onEdit, onDelete, onView }: Props): JSX.Element {
+export default function SkillCard({ skill, onEdit, onDelete, onView }: Props): JSX.Element {
   const { token } = theme.useToken();
+  const displayName = skill.display_name || skill.name;
 
   return (
     <Card
       hoverable
-      style={{
-        borderColor: isActive ? token.colorPrimary : undefined,
-        boxShadow: isActive ? `0 0 0 2px ${token.colorPrimaryBg}` : undefined,
-      }}
       styles={{
         body: {
           display: 'flex',
@@ -30,9 +26,9 @@ export default function SkillCard({ skill, isActive, onEdit, onDelete, onView }:
       }}
     >
       {/* 标题行 */}
-      <Flex align="center" justify="space-between" gap={8} style={{ marginBottom: 8 }}>
-        <Typography.Text strong ellipsis={{ tooltip: skill.name }} style={{ flex: 1, fontSize: 14 }}>
-          {skill.name}
+      <Flex align="center" justify="space-between" gap={8} style={{ marginBottom: 6 }}>
+        <Typography.Text strong ellipsis={{ tooltip: displayName }} style={{ flex: 1, fontSize: 14 }}>
+          {displayName}
         </Typography.Text>
         <Flex gap={4} style={{ flexShrink: 0 }}>
           {skill.is_builtin && (
@@ -40,13 +36,18 @@ export default function SkillCard({ skill, isActive, onEdit, onDelete, onView }:
               内置
             </Tag>
           )}
-          {isActive && (
-            <Tag color="processing" style={{ margin: 0, fontSize: 11 }}>
-              使用中
+          {skill.category && (
+            <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>
+              {skill.category}
             </Tag>
           )}
         </Flex>
       </Flex>
+
+      {/* 技能 ID */}
+      <Typography.Text type="secondary" style={{ fontSize: 11, marginBottom: 4 }}>
+        {skill.name}
+      </Typography.Text>
 
       {/* 描述 */}
       <Typography.Text
@@ -69,7 +70,7 @@ export default function SkillCard({ skill, isActive, onEdit, onDelete, onView }:
         }}
       >
         {skill.is_builtin ? (
-          <Tooltip title="查看内置 Skill">
+          <Tooltip title="查看内置技能">
             <Button
               type="text"
               size="small"
@@ -89,7 +90,7 @@ export default function SkillCard({ skill, isActive, onEdit, onDelete, onView }:
               />
             </Tooltip>
             <Popconfirm
-              title="确认删除此 Skill？"
+              title="确认删除此技能？"
               onConfirm={() => onDelete(skill.id)}
               okText="删除"
               cancelText="取消"

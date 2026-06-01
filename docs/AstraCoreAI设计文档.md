@@ -167,42 +167,23 @@ Service 层将一次前端对话发送抽象为 `ChatRunRow`，避免浏览器�
 - **取消传播**：父任务取消时，所有 Worker asyncio.Task 立即取消，通过 `asyncio.gather(return_exceptions=True)` 确保所有 Worker 安全退出
 - **配置开关**：`agent.enable_spawn_agents: true/false`，`false` 时不暴露 `spawn_agents` 工具给 LLM
 
-### 5.7 Skill 系统
+### 5.7 Skill 系统（Agent Skills 能力包）
 
-- **Skill 提示词库**：内置 Skill + 用户自定义 Skill，CRUD 全量管理，支持标记内置不可删除
-- **多目录扫描**：`skills.extra_dirs` 配置额外 skill 目录（绝对路径或 `~/xxx`），同名 `source_key` 后加载覆盖先加载并发出警告
-- **三层系统提示**：Skill 专属提示 → 全局指令 → RAG 上下文，按顺序拼接注入
-- **用户设置**：默认 Skill（对话自动激活）+ 全局指令（所有对话追加）
-- **运行时参数**：Temperature、RAG top_k、对话上下文长度（context_max_messages）— 存储在 `UserSettingsRow` 键值表，按请求读取，无需重启
+- **Skill = 能力包**：Skill 是 Claude 可按需加载的专业能力，而非预设角色/System Prompt 注入；格式兼容 [Agent Skills 开放标准](https://agentskills.io)
+- **SKILL.md 格式**：标准 YAML frontmatter（`name`、`description`、`metadata.display_name/order/category`）+ Markdown 正文（`instructions`）；内置 9 个 Skill 均符合标准格式，存储在 `modules/skills/builtin/` 各自目录
+- **三层 System Prompt**：
+  1. **身份层**（始终注入）：`ai_name`、`owner_name`、时间信息、`global_instruction`
+  2. **Skill 摘要清单**（始终注入）：所有 Skill 按 category 分组，每条含 name + description，约 ~50 token/skill；Claude 据此自主决策加载哪个 Skill
+  3. **动态上下文**（按需注入）：RAG 召回结果 + 记忆引擎内容
+- **三个 Skill 工具**（Claude 按需调用）：
+  - `load_skill(skill_id)` — 加载完整 instructions + 引用列表 + 脚本列表
+  - `get_skill_reference(skill_id, file)` — 读取 `references/` 目录下的参考文档内容
+  - `run_skill_script(skill_id, script, args)` — 在 `skill_dir/scripts/` 内运行脚本（防路径穿越，30s 超时）
+- **Claude 主导路由**：废弃服务端 SkillRouter；Claude 通过摘要清单自主决策，工具循环始终激活（`needs_tool_loop = True`）；参数 `skill_id` / `disable_skill` 已从 Chat API 移除
+- **Skill CRUD**：内置 Skill（`is_builtin=True`，仅可查看）+ 用户自建 Skill；API 返回 `display_name`、`instructions`、`category`、`has_references`、`has_scripts`；前端按 category 分组展示
+- **多目录扫描**：`skills.extra_dirs` 配置额外 Skill 目录（绝对路径或 `~/xxx`），同名 `source_key` 后加载覆盖先加载并发出警告
+- **运行时参数**：Temperature、RAG top_k、context_max_messages 存储在 `UserSettingsRow` 键值表，按请求读取，无需重启
 - **系统信息 API**：`GET /api/v1/system/` 返回 LLM profiles、模型能力、MCP server 与 Tavily 状态，供前端只读展示
-
-### 5.8 Skill 自动路由（SkillRouter）
-
-`SkillRouter` 根据用户消息内容自动匹配并追加相关副技能，实现"主技能全量注入 + 副技能能力声明追加"的分层效果。
-
-**工作模式**
-
-| 模式 | 原理 | 依赖 |
-|------|------|------|
-| `off` | 禁用，返回空列表 | 无 |
-| `vector` | 对 skill `name+description` 预计算嵌入，查询时余弦相似度排序，按 threshold/secondary_threshold 过滤 | sentence-transformers + numpy（可选）|
-| `llm` | 构造 skill 列表作为上下文，由 LLM 返回 `{"skill_ids": [...]}` JSON | 配置的 LLM profile |
-
-**分层加载语义**
-
-- **Anchor 技能（主技能）**：用户在请求中显式指定的 `skill_id`，或 `default_skill_id` 设置项；注入完整 `system_prompt`，在对话框显示 `📌` 标签
-- **Routed 技能（副技能）**：路由自动追加，仅追加 `name + description` 简短声明（不注入完整提示词，节省 token）；对话框显示 `⚡` 标签
-- Anchor 在路由结果中自动过滤，避免重复
-
-**`build_system_prompt` 返回值**
-
-`(system_prompt: str | None, anchor_name: str | None, routed_names: list[str], skill_has_refs: bool)`
-- Service 层通过 `auto_skills` SSE 事件向前端广播：`{"anchor": "管理员", "routed": ["故事大师"]}`
-
-**路由 LLM Prompt 原则**
-- 只匹配用户**显式提出**的需求，禁止推断隐含场景
-- 多主题消息每个主题各匹配一个技能（上限 `max_skills`）
-- 有具体技能匹配时不选通用/兜底技能
 
 ### 5.8 LLM Profile 注册表
 
@@ -378,7 +359,7 @@ sequenceDiagram
 - `M3`: RAG 与引用体系完成，建立评估基线 ✅
 - `M4`: 多 Agent 协作、并行 spawn_agents ✅
 - `M5`: SDK 全功能对齐、ChatPipeline 统一执行引擎、Skill 系统、MCP 集成、工具循环健壮性、Conversation 门面 ✅
-- `M5+`: Hook/Callback 系统（before/after_llm/tool）、轻量级 Span 追踪（无 OTel）、DAG 工作流引擎（Kahn 拓扑 + 层级并行 + 条件跳过）、SDK WorkflowClient ✅、Hook ShortCircuit 短路拦截 ✅、CircuitBreaker 熔断器（三态状态机 + PolicyEngine 集成）✅、Structured Output（response_format + Anthropic tool_use + OpenAI json_schema）✅、Agent Eval 评估框架（EvalRunner + LLM-as-judge + 工具精确匹配 + CLI）✅、THINKING_DELTA 实时流式透传（移除 LLM 流缓冲）✅、shared repair_json 工具函数 ✅、knowledge_base 子目录结构 + frontmatter 多维度元数据 ✅
+- `M5+`: Hook/Callback 系统（before/after_llm/tool）、轻量级 Span 追踪（无 OTel）、DAG 工作流引擎（Kahn 拓扑 + 层级并行 + 条件跳过）、SDK WorkflowClient ✅、Hook ShortCircuit 短路拦截 ✅、CircuitBreaker 熔断器（三态状态机 + PolicyEngine 集成）✅、Structured Output（response_format + Anthropic tool_use + OpenAI json_schema）✅、Agent Eval 评估框架（EvalRunner + LLM-as-judge + 工具精确匹配 + CLI）✅、THINKING_DELTA 实时流式透传（移除 LLM 流缓冲）✅、shared repair_json 工具函数 ✅、knowledge_base 子目录结构 + frontmatter 多维度元数据 ✅、Skill 系统重设计（Agent Skills 标准 + 三层 System Prompt + Claude 自主路由工具 + 废弃 SkillRouter）✅
 - `M6`: 可靠性与安全 — 熔断器、API Key 鉴权、限流
 - `M7`: 可观测与性能 — SLO/指标/压测基线
 - `M8`: 发布工程化 — 版本策略、回滚预案、运维文档

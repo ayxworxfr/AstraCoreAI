@@ -174,8 +174,6 @@ class ParallelAgentTool(ToolAdapter):
 
         ctx = context or {}
         profile_id: str | None = ctx.get("profile_id")
-        anchor_id: str | None = ctx.get("anchor_id")
-        db_url: str = ctx.get("db_url", "")
         # 使用请求时的完整 tool_adapter（含 MCP），回退到初始化时的 worker_tools
         full_adapter: ToolAdapter = ctx.get("tool_adapter") or self._worker_tools
         allowed_tools_ctx = ctx.get("allowed_tools")
@@ -206,9 +204,7 @@ class ParallelAgentTool(ToolAdapter):
             agent_start_times[task.agent_id] = time.monotonic()
             error: str | None = None
             try:
-                tool_loop = self._build_tool_loop(
-                    profile_id, anchor_id=anchor_id, db_url=db_url, worker_tool_adapter=full_adapter
-                )
+                tool_loop = self._build_tool_loop(profile_id, worker_tool_adapter=full_adapter)
                 session = SessionState()
                 # 默认自主执行提示：防止子 Agent 停下来询问用户确认
                 system_parts = [
@@ -327,27 +323,9 @@ class ParallelAgentTool(ToolAdapter):
     def _build_tool_loop(
         self,
         profile_id: str | None = None,
-        anchor_id: str | None = None,
-        db_url: str = "",
         worker_tool_adapter: ToolAdapter | None = None,
     ) -> ToolLoopUseCase:
-        base_adapter = worker_tool_adapter or self._worker_tools
-        if anchor_id is not None and db_url:
-            from astracore.infrastructure.tools.composite import (
-                CompositeToolAdapter,  # noqa: PLC0415
-            )
-            from astracore.modules.tools.builtin import (
-                build_skill_reference_adapter,  # noqa: PLC0415
-            )
-
-            ref_adapter = build_skill_reference_adapter(anchor_id, db_url)
-            tool_adapter: ToolAdapter = CompositeToolAdapter([ref_adapter, base_adapter])
-        else:
-            tool_adapter = base_adapter
-        extra_context: dict[str, Any] = {}
-        if anchor_id is not None:
-            extra_context["anchor_id"] = anchor_id
-            extra_context["db_url"] = db_url
+        tool_adapter: ToolAdapter = worker_tool_adapter or self._worker_tools
         return ToolLoopUseCase(
             llm_adapter=self._get_llm_adapter(profile_id),
             tool_adapter=tool_adapter,
@@ -355,5 +333,4 @@ class ParallelAgentTool(ToolAdapter):
             max_iterations=_WORKER_MAX_ITERATIONS,
             max_tool_result_chars=self._config.agent.max_tool_result_chars,
             tool_timeout_s=self._config.agent.tool_timeout_s,
-            extra_context=extra_context or None,
         )

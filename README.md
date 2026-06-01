@@ -16,8 +16,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于能力模块化
 - **Command + Pipeline 执行引擎**：`ChatPipeline` 作为 SDK 与 HTTP Service 的统一 chat 管道；`prepare()` 一次性完成所有 DB 查询与决策，返回不可变 `ChatContext`；`stream()` 纯执行，system prompt 始终注入，无分支歧义
 - **记忆系统**：Redis 短期缓存 + SQLite 持久化兜底（重启恢复）+ 结构化 Memory Store（默认 `astracore.db`），Redis 不可用时自动降级到 SQLite
 - **RAG 管道**：ChromaDB 向量搜索（幂等 upsert）、文档分块、引用支持
-- **Skill 系统**：Skill 提示词管理（CRUD + 内置/自定义）、全局指令编辑、对话时动态切换激活 Skill；支持多目录扫描（`skills.extra_dirs`）
-- **Skill 自动路由**：三种模式（`off` / `vector` / `llm`）；vector 模式用 sentence-transformers 余弦相似度匹配，llm 模式用轻量 LLM 调用判断；主技能（anchor，📌）+ routing 自动追加副技能（⚡）分层显示
+- **Skill 系统（Agent Skills 标准）**：Skill 作为 Claude 可按需加载的专业能力包（SKILL.md 格式），兼容 Agent Skills 开放标准；三层 System Prompt（身份层 + Skill 摘要清单 + 动态上下文）；Claude 通过 `load_skill` / `get_skill_reference` / `run_skill_script` 三个工具自主决策何时加载哪个 Skill，工具循环始终激活；支持多目录扫描（`skills.extra_dirs`）
 - **并行多 Agent**：`spawn_agents` 工具将任务分解为 2–5 个独立子任务，Worker Agent 并发执行，前端实时展示各 Agent 进度；可通过 `agent.enable_spawn_agents` 配置开关；Worker 自动使用用户当前选择的模型 profile
 - **策略引擎**：tenacity retry + asyncio timeout 实际生效，Token 预算 O(n) 截断
 - **双形态交付**：SDK 嵌入 + FastAPI 服务 HTTP 访问，两者共享同一 `ChatPipeline` 执行引擎
@@ -107,7 +106,6 @@ async def main():
         # 同步对话
         result = await conv.send("你好，你是谁？")
         print(result.content)           # 回复文本
-        print(result.anchor_skill)      # 激活的主技能名（如有）
 
         # 流式对话（同一会话自动续接）
         async for chunk in conv.stream("讲一个故事"):
@@ -178,7 +176,7 @@ src/astracore/
 │   ├── projects/        # Project API
 │   ├── rag/             # RAG API、检索领域模型、Pipeline、Retriever port、知识库文档
 │   ├── settings/        # 用户设置 API
-│   ├── skills/          # Skill API、路由、提示渲染、内置 Skill 种子
+│   ├── skills/          # Skill API（CRUD）、内置 Skill 种子、Skill 工具适配器（load_skill / get_skill_reference / run_skill_script）
 │   ├── system/          # Health / System API
 │   └── tools/           # 内置工具注册和 Tool port
 ├── infrastructure/
@@ -257,12 +255,6 @@ mcp:
 
 skills:
   extra_dirs: []             # 额外的 skill 目录，支持绝对路径或 ~/xxx
-
-skill_routing:
-  mode: off                  # off | vector | llm
-  threshold: 0.45            # vector 模式：主技能最低相似度（使用 retrieval.embedding_model）
-  secondary_threshold: 0.35  # vector 模式：副技能最低相似度
-  max_skills: 3              # 同时加载的最大技能数
 ```
 
 ```bash
@@ -393,7 +385,7 @@ async with AstraCoreClient() as client:
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
 - [x] M5：质量闭环 — 后端优化 ✅ 单元测试 131 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ Memory 自动抽取 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatPipeline 统一执行）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅ 并行多 Agent（spawn_agents）✅ Command + Pipeline 模式重构 ✅ Conversation 门面（多轮会话自动管理 session_id）✅ SKILL_MATCH 事件（SDK 技能路由透传）✅ Hook/Callback 系统（before/after_llm/tool 四切入点）✅ 轻量级 Span 链路追踪（无 OTel 依赖）✅ DAG 工作流引擎（拓扑排序 + 层级并行 + 条件跳过）✅ SDK WorkflowClient ✅
-- [x] M5+：Hook ShortCircuit 短路拦截 ✅ CircuitBreaker 熔断器（三态状态机 + PolicyEngine 集成）✅ Structured Output（LLMAdapter response_format + Anthropic tool_use + OpenAI json_schema + MemoryEngine 切换）✅ Agent Eval 评估框架（EvalRunner + LLM-as-judge + 工具精确匹配 + JSON 报告 + CLI）✅
+- [x] M5+：Hook ShortCircuit 短路拦截 ✅ CircuitBreaker 熔断器（三态状态机 + PolicyEngine 集成）✅ Structured Output（LLMAdapter response_format + Anthropic tool_use + OpenAI json_schema + MemoryEngine 切换）✅ Agent Eval 评估框架（EvalRunner + LLM-as-judge + 工具精确匹配 + JSON 报告 + CLI）✅ Skill 系统重设计（Agent Skills 标准：三层 System Prompt + Claude 自主路由 + load_skill/get_skill_reference/run_skill_script 工具 + 废弃 SkillRouter）✅
 - [ ] M6：可靠性与安全 — API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档

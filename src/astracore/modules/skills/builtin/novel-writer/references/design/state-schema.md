@@ -95,6 +95,41 @@ The only file updated after every writing session.
 
 ---
 
+## §归档流程
+
+**触发条件**（任一命中即触发）：
+- `novel-state.md` 行数 > 150
+- `Key Continuity Notes` 条目 > 20
+- 完成一卷
+
+**执行步骤**：
+1. 用 Read 工具读 `novel-archive.md`（不存在则用 Write 新建空骨架）
+2. 用 Edit 把已完成卷的章节摘要追加到 `novel-archive.md` 的 `## Archived Volumes` 对应卷区块
+3. 用 Edit 把已解决、或距当前章节 > 10 章且不再活跃的 `Key Continuity Notes` 条目移入 `novel-archive.md` 的 `## Archived Continuity Notes`
+4. 用 Edit 清空 `novel-state.md` 中已归档的内容，每被归档的卷写入一行指针：
+   `<!-- 卷N已归档，见 novel-archive.md -->`
+5. 用 Bash 运行 `wc -l novel-state.md` 确认 ≤ 150 行
+6. 用 1 句话告知用户："已归档 X 内容，state.md 现 Y 行"
+
+---
+
+## §换卷流程
+
+**触发条件**：当前卷最后一章已写完，用户要求开始下一卷。
+
+**执行步骤**：
+1. 执行【§归档流程】把当前卷全部章节摘要 + 已解决伏笔归档
+2. 用 Edit 修改 `novel-state.md`：
+   - `current_volume` += 1
+   - `current_volume_title` 填入新卷标题
+   - `current_chapter_in_volume` 重置为 1
+   - `Current Design Focus` 替换为新卷开篇焦点
+3. 用 Bash 创建新卷目录 `vol-{nn}/`
+4. 用 Read 检查 `novel-framework.md` 是否已规划新卷情节；未规划则与用户确认补全
+5. 与用户确认新卷开篇章节的设计焦点 → 进入【写章节循环】
+
+---
+
 ## novel-framework.md
 
 Updated when the user revises world, plot, or story structure. Rarely changes after initial design.

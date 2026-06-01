@@ -7,7 +7,6 @@ function toMeta(item: ConversationApiItem): ConversationMeta {
     id: item.id,
     title: item.title,
     pinned: item.pinned,
-    skillId: item.skill_id,
     modelId: item.model_id,
     lastMessagePreview: item.last_message_preview,
     messageCount: item.message_count,

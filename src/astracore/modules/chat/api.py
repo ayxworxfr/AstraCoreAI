@@ -24,7 +24,6 @@ from astracore.modules.chat.domain.message import MessageRole
 from astracore.modules.chat.pipeline import ChatPipeline
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.modules.rag import api as rag_api
-from astracore.modules.skills.router import SkillRouter
 from astracore.modules.tools.builtin import build_tool_adapter
 from astracore.modules.tools.ports.tool import ToolAdapter
 from astracore.sdk.config import AstraCoreConfig
@@ -56,8 +55,6 @@ class _ActiveRun:
             "created_at": _utc_iso(row.created_at),
             "updated_at": _utc_iso(row.updated_at),
             "completed_at": _utc_iso(row.completed_at) if row.completed_at else None,
-            "anchor_skill": None,
-            "routed_skills": [],
         }
 
     def update(self, **patch: Any) -> None:
@@ -125,12 +122,6 @@ def _get_memory_adapter() -> HybridMemoryAdapter:
 
 
 @lru_cache(maxsize=1)
-def _get_skill_router() -> SkillRouter:
-    cfg = _get_settings()
-    return SkillRouter(config=cfg, db_url=cfg.memory.db_url)
-
-
-@lru_cache(maxsize=1)
 def _get_memory_engine() -> MemoryEngine:
     cfg = _get_settings()
     return MemoryEngine(SQLMemoryStore(cfg.memory.db_url))
@@ -144,8 +135,7 @@ def _get_chat_pipeline() -> ChatPipeline:
         memory=_get_memory_adapter(),
         rag_pipeline=rag_api._get_rag_pipeline(),
         policy=PolicyEngine(),
-        tool_adapter=build_tool_adapter(),
-        skill_router=_get_skill_router() if cfg.skill_routing.mode != "off" else None,
+        tool_adapter=build_tool_adapter(db_url=cfg.memory.db_url),
         memory_engine=_get_memory_engine(),
     )
 
@@ -153,7 +143,9 @@ def _get_chat_pipeline() -> ChatPipeline:
 def _resolve_tool_adapter(http_request: Request) -> ToolAdapter:
     """Get the tool adapter from app.state (set by lifespan) or fall back to builtins."""
     adapter = getattr(http_request.app.state, "tool_adapter", None)
-    return adapter if adapter is not None else build_tool_adapter()
+    return (
+        adapter if adapter is not None else build_tool_adapter(db_url=_get_settings().memory.db_url)
+    )
 
 
 # ------------------------------------------------------------------
@@ -179,6 +171,9 @@ class MessageItem(BaseModel):
     thinking_blocks: list[str] = Field(default_factory=list)
     tool_activity: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str = ""
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    model: str | None = None
 
 
 class SessionMessagesResponse(BaseModel):
@@ -197,8 +192,6 @@ class ChatRequest(BaseModel):
     thinking_budget: int = Field(default=8000, ge=1000, le=32000)
     enable_rag: bool = False
     enable_web: bool = False
-    skill_id: UUID | None = None
-    disable_skill: bool = False
 
     def to_options(self) -> ChatOptions:
         return ChatOptions(
@@ -209,8 +202,6 @@ class ChatRequest(BaseModel):
             thinking_budget=self.thinking_budget,
             enable_rag=self.enable_rag,
             enable_web=self.enable_web,
-            skill_id=self.skill_id,
-            disable_skill=self.disable_skill,
         )
 
 
@@ -282,6 +273,9 @@ def _run_row_to_messages(row: ChatRunRow) -> list[MessageItem]:
                 thinking_blocks=row.thinking_blocks or [],
                 tool_activity=row.tool_activity or [],
                 created_at=_utc_iso(row.completed_at or row.updated_at),
+                input_tokens=row.input_tokens,
+                output_tokens=row.output_tokens,
+                model=row.model,
             )
         )
     return messages
@@ -410,6 +404,8 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
     round_count = 0
     round_text_buffer: list[str] = []
     in_tool_round = False
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     async for event in _get_chat_pipeline().stream(ctx):
         if event.event_type == StreamEventType.DONE:
@@ -422,7 +418,10 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
                 round_text_buffer = []
                 in_tool_round = False
             else:
-                # Final DONE; flush remaining buffer and exit.
+                # Final DONE; extract usage, flush remaining buffer, and exit.
+                _u = event.metadata.get("usage", {})
+                total_input_tokens = int(_u.get("input_tokens", 0))
+                total_output_tokens = int(_u.get("output_tokens", 0))
                 for text in round_text_buffer:
                     accumulated_content += text
                     _broadcast_run_event(run_id, "message", {"text": text})
@@ -594,7 +593,21 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
         thinking_blocks=thinking_blocks,
         tool_activity=[{**item, "done": True} for item in tool_activity],
         status="done",
+        input_tokens=total_input_tokens or None,
+        output_tokens=total_output_tokens or None,
+        model=ctx.profile.model or None,
     )
+    if total_input_tokens or total_output_tokens:
+        _broadcast_run_event(
+            run_id,
+            "usage",
+            {
+                "input_tokens": total_input_tokens,
+                "output_tokens": total_output_tokens,
+                "model": ctx.profile.model,
+            },
+        )
+    logger.info("记忆提取: run_id=%s, content_len=%d", run_id, len(accumulated_content))
     try:
         await _get_memory_engine().extract_and_store(
             session_id=ctx.session_id,
@@ -604,6 +617,7 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
             llm_adapter=_get_chat_pipeline().get_llm_adapter(ctx.profile),
             model=ctx.profile.model,
         )
+        logger.info("记忆提取完成: run_id=%s", run_id)
     except Exception:
         logger.exception("Memory 自动提取失败，run_id=%s", run_id)
     if row:
@@ -625,23 +639,6 @@ async def _run_chat_in_background(
             options=request.to_options(),
             tool_adapter=tool_adapter,
         )
-        if ctx.anchor_skill or ctx.routed_skills:
-            logger.info(
-                "active skills for run %s: anchor=%s routed=%s",
-                run_id,
-                ctx.anchor_skill,
-                ctx.routed_skills,
-            )
-            _update_active_run_state(
-                run_id,
-                anchor_skill=ctx.anchor_skill,
-                routed_skills=list(ctx.routed_skills),
-            )
-            _broadcast_run_event(
-                run_id,
-                "auto_skills",
-                {"anchor": ctx.anchor_skill, "routed": list(ctx.routed_skills)},
-            )
         await _execute_run(run_id=run_id, ctx=ctx)
     except asyncio.CancelledError:
         row = await _update_run_row(run_id, status="cancelled", error="用户已停止生成")

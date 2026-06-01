@@ -28,7 +28,6 @@ type SkillStore = {
 export const useSkillStore = create<SkillStore>()((set) => ({
   skills: [],
   settings: {
-    default_skill_id: '',
     global_instruction: '',
     temperature: 0.7,
     rag_top_k: 4,

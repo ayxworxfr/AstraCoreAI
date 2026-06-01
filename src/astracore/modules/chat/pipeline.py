@@ -12,18 +12,17 @@ Both the HTTP service and the embedded SDK use this module; HTTP-specific concer
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
 
-from astracore.infrastructure.db.models import SkillReferenceRow, SkillRow, UserSettingsRow
+from astracore.infrastructure.db.models import SkillRow, UserSettingsRow
 from astracore.infrastructure.db.session import get_session
 from astracore.infrastructure.llm.anthropic import AnthropicAdapter
 from astracore.infrastructure.llm.openai import OpenAIAdapter
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
-from astracore.infrastructure.tools.composite import CompositeToolAdapter
 from astracore.modules.chat.application.tool_loop import ToolLoopUseCase
 from astracore.modules.chat.domain.chat_context import ChatContext
 from astracore.modules.chat.domain.chat_options import ChatOptions
@@ -31,8 +30,7 @@ from astracore.modules.chat.domain.message import Message, MessageRole
 from astracore.modules.chat.domain.session import SessionState
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.modules.rag.application.pipeline import RAGPipeline
-from astracore.modules.skills.prompt_utils import render_skill_prompt
-from astracore.modules.skills.router import SkillRouter
+from astracore.modules.skills.prompt_utils import build_identity_layer, build_skill_manifest
 from astracore.modules.tools.ports.tool import ToolAdapter
 from astracore.sdk.config import AstraCoreConfig, LLMProfileConfig
 from astracore.shared.observability.hooks import HookRegistry
@@ -48,21 +46,6 @@ _ANTHROPIC_BLOCKS_KEY = "anthropic_content_blocks"
 # ------------------------------------------------------------------
 # Module-level pure helpers (no I/O, easily testable in isolation)
 # ------------------------------------------------------------------
-
-
-def _compose_skill_section(skills: list[SkillRow], ai_name: str, owner_name: str) -> str:
-    """Build a system-prompt section for one or more matched skills.
-
-    Primary skill (index 0): full rendered system_prompt.
-    Secondary skills (index 1+): name + description only, appended as a brief
-    capability list to keep token usage bounded.
-    """
-    primary = render_skill_prompt(skills[0].system_prompt, ai_name, owner_name)
-    if len(skills) == 1:
-        return primary
-    sec_lines = [f"- **{s.name}**：{s.description}" for s in skills[1:]]
-    secondary = "## 你同时具备以下辅助能力\n\n" + "\n".join(sec_lines)
-    return primary + "\n\n---\n\n" + secondary
 
 
 def _strip_dangling_tool_calls(messages: list[Message]) -> list[Message]:
@@ -141,7 +124,6 @@ class ChatPipeline:
         rag_pipeline: RAGPipeline,
         policy: PolicyEngine,
         tool_adapter: ToolAdapter,
-        skill_router: SkillRouter | None = None,
         memory_engine: MemoryEngine | None = None,
         hooks: HookRegistry | None = None,
     ) -> None:
@@ -150,7 +132,6 @@ class ChatPipeline:
         self._rag_pipeline = rag_pipeline
         self._policy = policy
         self._default_tool_adapter = tool_adapter
-        self._skill_router = skill_router
         self._memory_engine = memory_engine or MemoryEngine(SQLMemoryStore(config.memory.db_url))
         self._hooks = hooks
         self._llm_adapters: dict[str, LLMAdapter] = {}
@@ -186,14 +167,10 @@ class ChatPipeline:
         self,
         profile: LLMProfileConfig,
         tool_adapter: ToolAdapter,
-        anchor_id: str | None = None,
         allowed_tools: frozenset[str] = frozenset(),
     ) -> ToolLoopUseCase:
         cfg = self._config.agent
         extra_context: dict[str, Any] = {}
-        if anchor_id is not None:
-            extra_context["anchor_id"] = anchor_id
-            extra_context["db_url"] = self._config.memory.db_url
         if allowed_tools:
             extra_context["allowed_tools"] = allowed_tools
         extra_context["tool_adapter"] = tool_adapter
@@ -218,16 +195,10 @@ class ChatPipeline:
             row = await db.get(UserSettingsRow, key)
             return row.value if row else ""
 
-    async def _load_skill(self, skill_id: str) -> SkillRow | None:
-        async with get_session(self._config.memory.db_url) as db:
-            return await db.get(SkillRow, skill_id)
-
-    async def _load_skill_references(self, skill_id: str) -> list[SkillReferenceRow]:
+    async def _load_all_skills(self) -> list[SkillRow]:
         async with get_session(self._config.memory.db_url) as db:
             result = await db.execute(
-                select(SkillReferenceRow)
-                .where(SkillReferenceRow.skill_id == skill_id)
-                .order_by(SkillReferenceRow.sort_order)
+                select(SkillRow).order_by(SkillRow.is_builtin.desc(), SkillRow.sort_order)
             )
             return list(result.scalars().all())
 
@@ -255,70 +226,22 @@ class ChatPipeline:
     async def _build_system_prompt(
         self,
         session_id: UUID,
-        skill_id: UUID | None,
-        disable_skill: bool,
         enable_rag: bool,
         message: str,
-    ) -> tuple[str | None, str | None, list[str], bool, str | None]:
-        """Compose the three-layer system prompt: skill → global instruction → RAG context.
+    ) -> str | None:
+        """Compose system prompt: identity layer + skill manifest + memory + RAG context."""
+        ai_name = await self._get_setting("ai_name") or "小卡"
+        owner_name = await self._get_setting("owner_name")
+        global_instruction = await self._get_setting("global_instruction")
 
-        Returns ``(system_prompt, anchor_name, routed_names, skill_has_refs, anchor_id)``.
-        - ``anchor_name``: the primary/default skill name, or None if no skill is active.
-        - ``routed_names``: names of additional skills added automatically by routing.
-        - ``skill_has_refs``: True when the anchor skill has attached reference documents.
-        - ``anchor_id``: the resolved anchor skill's DB id (str), or None.
-        """
-        parts: list[str] = []
-        anchor_name: str | None = None
-        anchor_id: str | None = None
-        routed_names: list[str] = []
-        skill_has_refs = False
+        identity = build_identity_layer(ai_name, owner_name, global_instruction)
 
-        if not disable_skill:
-            ai_name = await self._get_setting("ai_name") or "小卡"
-            owner_name = await self._get_setting("owner_name")
+        all_skills = await self._load_all_skills()
+        manifest = build_skill_manifest(all_skills)
 
-            anchor: SkillRow | None = None
-            if skill_id is not None:
-                anchor = await self._load_skill(str(skill_id))
-            if anchor is None:
-                default_id = await self._get_setting("default_skill_id")
-                if default_id:
-                    anchor = await self._load_skill(default_id)
-
-            routed: list[SkillRow] = []
-            if self._skill_router is not None:
-                routed = await self._skill_router.route(message)
-                if anchor:
-                    routed = [s for s in routed if s.id != anchor.id]
-
-            if anchor:
-                anchor_name = anchor.name
-                anchor_id = anchor.id
-            routed_names = [s.name for s in routed]
-
-            if anchor and anchor.system_prompt:
-                refs = await self._load_skill_references(anchor.id)
-                skill_has_refs = bool(refs)
-                skill_section = _compose_skill_section([anchor, *routed], ai_name, owner_name)
-                if refs:
-                    toc_lines = [
-                        f"- **{r.title}**：{r.description}" if r.description else f"- **{r.title}**"
-                        for r in refs
-                    ]
-                    toc = (
-                        "## 可用参考文档\n\n"
-                        "以下参考文档可按需加载，使用 `get_skill_reference` 工具并传入标题即可获取内容：\n\n"
-                        + "\n".join(toc_lines)
-                    )
-                    skill_section = skill_section + "\n\n---\n\n" + toc
-                parts.append(skill_section)
-            elif routed:
-                parts.append(_compose_skill_section(routed, ai_name, owner_name))
-
-        instruction = await self._get_setting("global_instruction")
-        if instruction:
-            parts.append(instruction)
+        parts: list[str] = [identity]
+        if manifest:
+            parts.append(manifest)
 
         try:
             memory_context = await self._memory_engine.build_memory_context(
@@ -335,13 +258,7 @@ class ChatPipeline:
             if rag_ctx:
                 parts.append(rag_ctx)
 
-        return (
-            "\n\n---\n\n".join(parts) or None,
-            anchor_name,
-            routed_names,
-            skill_has_refs,
-            anchor_id,
-        )
+        return "\n\n---\n\n".join(parts) or None
 
     async def _resolve_temperature(
         self, temperature: float | None, profile: LLMProfileConfig
@@ -373,17 +290,9 @@ class ChatPipeline:
         if (opts.use_tools or opts.enable_web) and not profile.capabilities.tools:
             raise ValueError(f"LLM profile '{profile.id}' does not support tool calling")
 
-        # 1. Compose system prompt (skill + global instruction + RAG context in one pass)
-        (
-            system_prompt,
-            anchor_name,
-            routed_names,
-            skill_has_refs,
-            anchor_id,
-        ) = await self._build_system_prompt(
+        # 1. Compose system prompt (identity + manifest + memory + RAG in one pass)
+        system_prompt = await self._build_system_prompt(
             session_id=session_id,
-            skill_id=opts.skill_id,
-            disable_skill=opts.disable_skill,
             enable_rag=opts.enable_rag,
             message=message,
         )
@@ -399,40 +308,21 @@ class ChatPipeline:
             llm_kwargs["thinking_budget"] = opts.thinking_budget
 
         # 4. Resolve tool adapter: per-call override takes precedence
-        base_adapter = tool_adapter if tool_adapter is not None else self._default_tool_adapter
+        effective_adapter: ToolAdapter = (
+            tool_adapter if tool_adapter is not None else self._default_tool_adapter
+        )
 
-        # 5. Compose ref adapter when skill has reference documents.
-        # Use anchor_id (resolved inside _build_system_prompt) instead of the caller-supplied
-        # skill_id, which may be None when the skill is auto-loaded from default_skill_id.
-        effective_adapter: ToolAdapter = base_adapter
-        if skill_has_refs and anchor_id is not None:
-            from astracore.modules.tools.builtin import (
-                build_skill_reference_adapter,  # noqa: PLC0415
-            )
-
-            ref_adapter = build_skill_reference_adapter(anchor_id, self._config.memory.db_url)
-            effective_adapter = CompositeToolAdapter([ref_adapter, base_adapter])
-
-        # 6. Determine execution mode and allowed tools
-        needs_tool_loop = opts.use_tools or opts.enable_web or skill_has_refs
-        allowed_tools: frozenset[str]
-        mode: Literal["normal", "tool_loop"]
-        if needs_tool_loop:
-            mode = "tool_loop"
-            if not opts.use_tools and not opts.enable_web:
-                # Reference-only mode: expose only get_skill_reference.
-                allowed_tools = frozenset({"get_skill_reference"})
-            else:
-                all_tools = frozenset(d.name for d in effective_adapter.get_definitions())
-                excluded: set[str] = set()
-                if not opts.enable_rag:
-                    excluded.add("search_knowledge_base")
-                if not opts.enable_web:
-                    excluded.add("web_search")
-                allowed_tools = all_tools - excluded
-        else:
-            mode = "normal"
-            allowed_tools = frozenset()
+        # 5. Determine execution mode and allowed tools
+        # Tool loop always active: skill tools (load_skill etc.) are available by default.
+        # use_tools or enable_web additionally expose those specific tools.
+        needs_tool_loop = True
+        all_tools = frozenset(d.name for d in effective_adapter.get_definitions())
+        excluded: set[str] = set()
+        if not opts.enable_rag:
+            excluded.add("search_knowledge_base")
+        if not opts.enable_web:
+            excluded.add("web_search")
+        allowed_tools = all_tools - excluded
 
         return ChatContext(
             session_id=session_id,
@@ -441,14 +331,10 @@ class ChatPipeline:
             temperature=resolved_temp,
             system_prompt=system_prompt,
             context_max_messages=context_max,
-            mode=mode,
+            mode="tool_loop" if needs_tool_loop else "normal",
             llm_kwargs=llm_kwargs,
             tool_adapter=effective_adapter,
             allowed_tools=allowed_tools,
-            anchor_skill=anchor_name,
-            routed_skills=tuple(routed_names),
-            skill_has_refs=skill_has_refs,
-            anchor_id=anchor_id,
         )
 
     # ------------------------------------------------------------------
@@ -543,10 +429,12 @@ class ChatPipeline:
         """
         assert ctx.tool_adapter is not None, "tool_adapter must be set for tool_loop mode"
         tool_loop = self._make_tool_loop(
-            ctx.profile, ctx.tool_adapter, anchor_id=ctx.anchor_id, allowed_tools=ctx.allowed_tools
+            ctx.profile, ctx.tool_adapter, allowed_tools=ctx.allowed_tools
         )
         round_count = 0
         completed = False
+        total_input_tokens = 0
+        total_output_tokens = 0
         try:
             async for event in tool_loop.execute_stream_with_tools(
                 session, allowed_tools=ctx.allowed_tools, **ctx.llm_kwargs
@@ -554,7 +442,11 @@ class ChatPipeline:
                 if event.event_type == StreamEventType.ROUND_START:
                     round_count = int(event.metadata.get("round", round_count + 1))
                 # Filter LLM-level DONE events; we emit the authoritative ones below.
+                # Accumulate usage from each round's DONE before filtering.
                 if event.event_type == StreamEventType.DONE:
+                    _u = event.metadata.get("usage", {})
+                    total_input_tokens += int(_u.get("input_tokens", 0))
+                    total_output_tokens += int(_u.get("output_tokens", 0))
                     continue
                 yield event
             completed = True
@@ -583,6 +475,9 @@ class ChatPipeline:
                 if event.event_type == StreamEventType.TEXT_DELTA and event.content:
                     summary_text += event.content
                 if event.event_type == StreamEventType.DONE:
+                    _u = event.metadata.get("usage", {})
+                    total_input_tokens += int(_u.get("input_tokens", 0))
+                    total_output_tokens += int(_u.get("output_tokens", 0))
                     continue
                 yield event
 
@@ -594,7 +489,12 @@ class ChatPipeline:
                 yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content=hint)
 
         await self._save_session_safe(ctx.session_id, session.get_messages())
-        yield StreamEvent(event_type=StreamEventType.DONE)
+        yield StreamEvent(
+            event_type=StreamEventType.DONE,
+            metadata={
+                "usage": {"input_tokens": total_input_tokens, "output_tokens": total_output_tokens}
+            },
+        )
 
     # ------------------------------------------------------------------
     # execute: convenience wrapper, collects all TEXT_DELTA from stream()
@@ -614,11 +514,13 @@ class ChatPipeline:
 
     async def _save_session_safe(self, session_id: UUID, messages: list[Message]) -> None:
         """Persist session, shielding against cancellation during cleanup."""
+        to_save = _prepare_for_save(messages)
+        logger.info("保存会话: session_id=%s, messages=%d", session_id, len(to_save))
         try:
             await asyncio.shield(
                 self._memory.save_short_term(
                     session_id=session_id,
-                    messages=_prepare_for_save(messages),
+                    messages=to_save,
                 )
             )
         except asyncio.CancelledError:

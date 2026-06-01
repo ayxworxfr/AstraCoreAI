@@ -132,17 +132,24 @@ class StructuredMemoryRow(Base):
 
 
 class SkillRow(Base):
-    """User-defined or built-in skill (named system prompt)."""
+    """User-defined or built-in skill (capability package)."""
 
     __tablename__ = "skills"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    # kebab-case identifier matching directory name; doubles as display label fallback
     name: Mapped[str] = mapped_column(String(128), nullable=False)
+    # human-readable display name (e.g. "通用助手"); empty means fall back to name
+    display_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    # SKILL.md body: the full capability instructions loaded on demand via load_skill
+    instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     is_builtin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
-    # MD 文件名（不含扩展名），作为内置 Skill 的稳定标识符，用于跨重启的 upsert 和孤儿清理
+    # absolute posix path to the skill directory (builtin skills with scripts/references)
+    skill_dir: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    # directory name, stable identifier for cross-restart upserts and orphan cleanup
     source_key: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -217,6 +224,9 @@ class ChatRunRow(Base):
     thinking_blocks: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     tool_activity: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -236,14 +246,13 @@ class ChatRunRow(Base):
 
 
 class ConversationRow(Base):
-    """Persisted conversation metadata (title, pin status, skill/model preferences)."""
+    """Persisted conversation metadata (title, pin status, model preferences)."""
 
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     title: Mapped[str] = mapped_column(String(256), nullable=False, default="新会话")
     pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    skill_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     last_message_preview: Mapped[str] = mapped_column(String(256), nullable=False, default="")
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

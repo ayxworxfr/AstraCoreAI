@@ -6,6 +6,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
+from astracore.infrastructure.tools.read_tracked import ReadTrackedToolAdapter
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
 from astracore.modules.chat.domain.session import SessionState
 from astracore.modules.tools.ports.tool import ToolAdapter, ToolExecutionResult
@@ -43,13 +44,15 @@ class ToolLoopUseCase:
         hooks: HookRegistry | None = None,
     ):
         self.llm = llm_adapter
-        self.tools = tool_adapter
+        self.tools = ReadTrackedToolAdapter(tool_adapter)
         self.policy = policy_engine
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
         self.tool_timeout_s = tool_timeout_s
         self.profile_id = profile_id
-        self._extra_context: dict[str, Any] = extra_context or {}
+        ctx: dict[str, Any] = dict(extra_context) if extra_context else {}
+        ctx.setdefault("_read_files", set())
+        self._extra_context = ctx
         self._hooks = hooks
 
     @property

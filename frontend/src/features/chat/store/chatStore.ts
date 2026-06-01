@@ -20,7 +20,6 @@ import {
 } from '@/features/chat/services/conversationService';
 import type { ChatRunState } from '@/shared/types/api';
 import type { ChatMessage, ConversationMeta, ToolActivity } from '@/features/chat/types';
-import { useSkillStore } from '@/features/skills/store/skillStore';
 
 const PAGE_SIZE = 30;
 
@@ -81,6 +80,9 @@ function toChatMessage(convId: string, index: number, item: SessionMessageItem):
     toolActivity: toolActivity.length ? toolActivity : undefined,
     status: 'done',
     createdAt: item.created_at || new Date().toISOString(),
+    inputTokens: item.input_tokens ?? undefined,
+    outputTokens: item.output_tokens ?? undefined,
+    model: item.model ?? undefined,
   };
 }
 
@@ -101,7 +103,6 @@ type ChatStore = {
   enableRag: boolean;
   enableTools: boolean;
   enableWeb: boolean;
-  activeSkillId: string | null;  // null = use default, 'none' = explicitly disabled, uuid = specific skill
   activeModelId: string | null;  // null = use backend default model
   /** 每个 conversation 正在进行的 run_id（有值表示生成中） */
   runIdByConversation: Record<string, string>;
@@ -109,6 +110,8 @@ type ChatStore = {
   abortControllerByConversation: Record<string, AbortController>;
   /** 已订阅的 run，避免 React StrictMode / 恢复流程重复订阅同一个 SSE */
   subscribedRunIds: Record<string, boolean>;
+  /** 每个 conversation 最近一次的 token 使用量，用于底部状态栏展示 */
+  latestUsageByConversation: Record<string, { inputTokens: number; outputTokens: number; model: string }>;
   sessionError: string | null;   // 当前会话错误，不持久化，刷新自动清除
 
   // Actions
@@ -124,7 +127,6 @@ type ChatStore = {
   setEnableRag: (value: boolean) => void;
   setEnableTools: (value: boolean) => void;
   setEnableWeb: (value: boolean) => void;
-  setActiveSkillId: (id: string | null) => void;
   setActiveModelId: (id: string | null) => void;
   setSessionError: (msg: string | null) => void;
   deleteMessage: (conversationId: string, messageId: string) => void;
@@ -153,11 +155,11 @@ export const useChatStore = create<ChatStore>()(
       enableRag: false,
       enableTools: false,
       enableWeb: false,
-      activeSkillId: null,
       activeModelId: null,
       runIdByConversation: {},
       abortControllerByConversation: {},
       subscribedRunIds: {},
+      latestUsageByConversation: {},
       sessionError: null,
 
       initConversations: async () => {
@@ -173,7 +175,6 @@ export const useChatStore = create<ChatStore>()(
               conversations: list,
               conversationsLoaded: true,
               activeConversationId: activeConv.id,
-              activeSkillId: activeConv.skillId ?? null,
               activeModelId: activeConv.modelId ?? null,
             });
             if (!get().messagesByConversation[activeConv.id]) {
@@ -194,12 +195,10 @@ export const useChatStore = create<ChatStore>()(
       },
 
       createConversation: async () => {
-        const defaultSkillId = useSkillStore.getState().settings.default_skill_id || null;
         const id = uuid();
         const c: ConversationMeta = {
           ...buildConversation(),
           id,
-          skillId: defaultSkillId,
           modelId: null,
         };
         // 乐观更新
@@ -207,14 +206,12 @@ export const useChatStore = create<ChatStore>()(
           conversations: sortConversations([c, ...s.conversations]),
           conversationsLoaded: true,
           activeConversationId: c.id,
-          activeSkillId: defaultSkillId,
           activeModelId: null,
         }));
         // 同步到后端（失败静默，本地状态已可用）
         void createConversationApi({
           id,
           title: c.title,
-          skill_id: defaultSkillId,
           model_id: null,
         }).catch(() => undefined);
         return id;
@@ -224,7 +221,6 @@ export const useChatStore = create<ChatStore>()(
         const conv = get().conversations.find((c) => c.id === id);
         set({
           activeConversationId: id,
-          activeSkillId: conv?.skillId ?? null,
           activeModelId: conv?.modelId ?? null,
         });
         if (!get().messagesByConversation[id]) {
@@ -253,7 +249,9 @@ export const useChatStore = create<ChatStore>()(
           set((s) => {
             const msgs = { ...s.messagesByConversation };
             delete msgs[id];
-            return { conversations: [], messagesByConversation: msgs };
+            const usage = { ...s.latestUsageByConversation };
+            delete usage[id];
+            return { conversations: [], messagesByConversation: msgs, latestUsageByConversation: usage };
           });
           void get().createConversation();
         } else {
@@ -263,15 +261,18 @@ export const useChatStore = create<ChatStore>()(
           set((s) => {
             const msgs = { ...s.messagesByConversation };
             delete msgs[id];
+            const usage = { ...s.latestUsageByConversation };
+            delete usage[id];
             return {
               conversations: sortConversations(remaining),
               messagesByConversation: msgs,
+              latestUsageByConversation: usage,
               activeConversationId: nextId,
             };
           });
           if (activeConversationId === id) {
             const nextConv = get().conversations.find((c) => c.id === nextId);
-            set({ activeSkillId: nextConv?.skillId ?? null, activeModelId: nextConv?.modelId ?? null });
+            set({ activeModelId: nextConv?.modelId ?? null });
           }
         }
         // 后端同时删除对话元数据 + 消息历史
@@ -286,10 +287,13 @@ export const useChatStore = create<ChatStore>()(
           delete offsets[id];
           const hasMore = { ...s.hasMoreMessages };
           delete hasMore[id];
+          const usage = { ...s.latestUsageByConversation };
+          delete usage[id];
           return {
             messagesByConversation: msgs,
             messagesOffset: offsets,
             hasMoreMessages: hasMore,
+            latestUsageByConversation: usage,
             conversations: sortConversations(
               s.conversations.map((c) =>
                 c.id === id
@@ -319,17 +323,6 @@ export const useChatStore = create<ChatStore>()(
       setEnableRag: (value) => set({ enableRag: value }),
       setEnableTools: (value) => set({ enableTools: value }),
       setEnableWeb: (value) => set({ enableWeb: value }),
-
-      setActiveSkillId: (id) => {
-        const { activeConversationId } = get();
-        set((s) => ({
-          activeSkillId: id,
-          conversations: s.conversations.map((c) =>
-            c.id === activeConversationId ? { ...c, skillId: id } : c,
-          ),
-        }));
-        void patchConversationApi(activeConversationId, { skill_id: id }).catch(() => undefined);
-      },
 
       setActiveModelId: (id) => {
         const { activeConversationId } = get();
@@ -409,11 +402,25 @@ export const useChatStore = create<ChatStore>()(
         try {
           const result = await fetchSessionMessages(convId, PAGE_SIZE, 0);
           const messages: ChatMessage[] = result.messages.map((m, i) => toChatMessage(convId, i, m));
+          const lastWithTokens = [...messages].reverse().find(
+            (m) => m.role === 'assistant' && (m.inputTokens != null || m.outputTokens != null),
+          );
           set((s) => ({
             messagesByConversation: { ...s.messagesByConversation, [convId]: messages },
             messagesOffset: { ...s.messagesOffset, [convId]: result.messages.length },
             hasMoreMessages: { ...s.hasMoreMessages, [convId]: result.has_more },
             isLoadingMessages: false,
+            latestUsageByConversation: lastWithTokens
+              ? {
+                  ...s.latestUsageByConversation,
+                  [convId]: {
+                    inputTokens: lastWithTokens.inputTokens ?? 0,
+                    outputTokens: lastWithTokens.outputTokens ?? 0,
+                    // DB 存了 model，优先用；退而保留 onUsage 已写入的值
+                    model: lastWithTokens.model || s.latestUsageByConversation[convId]?.model || '',
+                  },
+                }
+              : s.latestUsageByConversation,
           }));
         } catch {
           set((s) => ({
@@ -478,8 +485,6 @@ export const useChatStore = create<ChatStore>()(
               toolActivity: normalizeToolActivity(state.tool_activity),
               status: state.status === 'running' ? 'streaming' : 'done',
               createdAt: state.created_at,
-              anchorSkill: state.anchor_skill ?? null,
-              autoSkills: state.routed_skills ?? [],
             };
             const withoutRun = prev.filter((m) =>
               m.id !== assistantId
@@ -546,14 +551,6 @@ export const useChatStore = create<ChatStore>()(
                   blocks[blocks.length - 1] = `${blocks[blocks.length - 1]}${delta}`;
                   return { ...m, thinkingBlocks: blocks, status: 'streaming' as const };
                 });
-                return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
-              });
-            },
-            onAutoSkills: ({ anchor, routed }) => {
-              set((s) => {
-                const msgs = (s.messagesByConversation[conversationId] ?? []).map((m) =>
-                  m.id === assistantId ? { ...m, anchorSkill: anchor, autoSkills: routed } : m,
-                );
                 return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
               });
             },
@@ -675,6 +672,14 @@ export const useChatStore = create<ChatStore>()(
                 return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
               });
             },
+            onUsage: (inputTokens, outputTokens, model) => {
+              set((s) => ({
+                latestUsageByConversation: {
+                  ...s.latestUsageByConversation,
+                  [conversationId]: { inputTokens, outputTokens, model },
+                },
+              }));
+            },
             onDone: () => clearRunState(),
             onError: (msg) => {
               clearRunState({ sessionError: msg });
@@ -717,7 +722,7 @@ export const useChatStore = create<ChatStore>()(
       sendMessage: async (prompt) => {
         const {
           activeConversationId, useStream, enableThinking, enableRag, enableTools, enableWeb,
-          activeSkillId, activeModelId, conversations,
+          activeModelId, conversations,
         } = get();
         const trimmed = prompt.trim();
         const hasStreaming = (get().messagesByConversation[activeConversationId] ?? []).some(
@@ -770,7 +775,7 @@ export const useChatStore = create<ChatStore>()(
         });
 
         const updateAssistant = (
-          patch: Partial<Pick<ChatMessage, 'content' | 'thinkingBlocks' | 'status' | 'toolActivity' | 'anchorSkill' | 'autoSkills' | 'subAgents'>>,
+          patch: Partial<Pick<ChatMessage, 'content' | 'thinkingBlocks' | 'status' | 'toolActivity' | 'subAgents'>>,
         ) => {
           set((s) => {
             const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) =>
@@ -813,8 +818,6 @@ export const useChatStore = create<ChatStore>()(
               enable_rag: enableRag,
               use_tools: enableTools || enableWeb,
               enable_web: enableWeb,
-              skill_id: activeSkillId !== null && activeSkillId !== 'none' ? activeSkillId : undefined,
-              disable_skill: activeSkillId === 'none',
             });
 
             if (get().subscribedRunIds[run.run_id]) {
@@ -848,8 +851,6 @@ export const useChatStore = create<ChatStore>()(
                     thinkingBlocks: state.thinking_blocks.length ? state.thinking_blocks : undefined,
                     toolActivity: normalizeToolActivity(state.tool_activity),
                     status: state.status === 'running' ? 'streaming' : 'done',
-                    anchorSkill: state.anchor_skill ?? null,
-                    autoSkills: state.routed_skills ?? [],
                   });
                 },
                 onMessage: (delta) => {
@@ -885,9 +886,6 @@ export const useChatStore = create<ChatStore>()(
                     });
                     return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
                   });
-                },
-                onAutoSkills: ({ anchor, routed }) => {
-                  updateAssistant({ anchorSkill: anchor, autoSkills: routed });
                 },
                 onAgentStart: (agentId, task, model) => {
                   set((s) => {
@@ -991,6 +989,14 @@ export const useChatStore = create<ChatStore>()(
                   if (thinkingBlocks.length === 0) thinkingBlocks.push('');
                   thinkingBlocks[thinkingBlocks.length - 1] += delta;
                   updateAssistant({ thinkingBlocks: getUpdatedBlocks(), status: 'streaming' });
+                },
+                onUsage: (inputTokens, outputTokens, model) => {
+                  set((s) => ({
+                    latestUsageByConversation: {
+                      ...s.latestUsageByConversation,
+                      [activeConversationId]: { inputTokens, outputTokens, model },
+                    },
+                  }));
                 },
                 onDone: (conv?: ConversationUpdate) => {
                   set((s) => ({

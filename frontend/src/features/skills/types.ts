@@ -1,28 +1,35 @@
 export type Skill = {
   id: string;
   name: string;
+  display_name: string;
   description: string;
-  system_prompt: string;
+  instructions: string;
+  category: string | null;
   is_builtin: boolean;
   order: number;
+  has_references: boolean;
+  has_scripts: boolean;
   created_at: string;
   updated_at: string;
 };
 
 export type CreateSkillRequest = {
   name: string;
-  description: string;
-  system_prompt: string;
+  display_name?: string;
+  description?: string;
+  instructions: string;
+  category?: string | null;
 };
 
 export type UpdateSkillRequest = {
   name?: string;
+  display_name?: string;
   description?: string;
-  system_prompt?: string;
+  instructions?: string;
+  category?: string | null;
 };
 
 export type UserSettings = {
-  default_skill_id: string;
   global_instruction: string;
   temperature: number;
   rag_top_k: number;

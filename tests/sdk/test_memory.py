@@ -217,10 +217,6 @@ async def test_sdk_chat_triggers_memory_extraction(sdk_client: AstraCoreClient) 
                 llm_kwargs={},
                 tool_adapter=None,  # type: ignore[arg-type]
                 allowed_tools=frozenset(),
-                anchor_skill=None,
-                routed_skills=(),
-                skill_has_refs=False,
-                anchor_id=None,
             )
             mock_prepare.return_value = fake_ctx
             mock_execute.return_value = "模拟回复"

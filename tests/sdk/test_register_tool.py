@@ -142,8 +142,6 @@ def test_chat_options_fields():
         "thinking_budget",
         "enable_rag",
         "enable_web",
-        "skill_id",
-        "disable_skill",
     }
     assert expected <= field_names
 

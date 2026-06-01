@@ -39,14 +39,26 @@ let targetPath = '';
 let dryRun = false;
 let maxDashes = MAX_PER_CHAPTER;
 
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--dry-run') {
-    dryRun = true;
-  } else if (args[i] === '--max') {
-    maxDashes = parseInt(args[i + 1]) || MAX_PER_CHAPTER;
-    i++;
-  } else if (!targetPath) {
-    targetPath = args[i];
+// run_skill_script 工具传入 JSON 字符串作为第一个参数
+if (args.length === 1 && args[0].startsWith('{')) {
+  try {
+    const json = JSON.parse(args[0]);
+    targetPath = json.path || json.targetPath || '';
+    dryRun = Boolean(json.dry_run || json.dryRun);
+    maxDashes = json.max || json.maxDashes || MAX_PER_CHAPTER;
+  } catch (e) {
+    targetPath = args[0];
+  }
+} else {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--dry-run') {
+      dryRun = true;
+    } else if (args[i] === '--max') {
+      maxDashes = parseInt(args[i + 1]) || MAX_PER_CHAPTER;
+      i++;
+    } else if (!targetPath) {
+      targetPath = args[i];
+    }
   }
 }
 

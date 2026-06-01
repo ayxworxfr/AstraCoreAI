@@ -9,6 +9,9 @@ export type SessionMessagesResponse = {
     thinking_blocks: string[];
     tool_activity: ChatRunState['tool_activity'];
     created_at: string;
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    model?: string | null;
   }>;
   total: number;
   has_more: boolean;
@@ -30,13 +33,13 @@ type StreamHandlers = {
   onThinking?: (delta: string) => void;
   onToolStart?: (toolName: string, toolCallId: string, input: Record<string, unknown>) => void;
   onToolResult?: (toolName: string, toolCallId: string, input: Record<string, unknown>, result: string, isError: boolean, durationMs: number) => void;
-  onAutoSkills?: (data: { anchor: string | null; routed: string[] }) => void;
   onAgentStart?: (agentId: string, task: string, model?: string) => void;
   onAgentMessage?: (agentId: string, delta: string) => void;
   onAgentThinking?: (agentId: string, delta: string) => void;
   onAgentToolStart?: (agentId: string, toolName: string, toolCallId: string, input: Record<string, unknown>) => void;
   onAgentToolResult?: (agentId: string, toolName: string, toolCallId: string, result: string, isError: boolean, durationMs: number) => void;
   onAgentDone?: (agentId: string, durationMs: number, error?: string | null) => void;
+  onUsage?: (inputTokens: number, outputTokens: number, model: string) => void;
   onDone: (conversation?: ConversationUpdate) => void;
   onError: (msg: string) => void;
 };
@@ -133,12 +136,6 @@ function parseBlock(block: string, handlers: StreamHandlers): void {
       Number(d.duration_ms ?? 0),
     );
   }
-  else if (eventType === 'auto_skills') {
-    const d = safeJson();
-    const anchor: string | null = typeof d.anchor === 'string' ? d.anchor : null;
-    const routed: string[] = Array.isArray(d.routed) ? d.routed.map(String) : [];
-    handlers.onAutoSkills?.({ anchor, routed });
-  }
   else if (eventType === 'agent_start') {
     const d = safeJson();
     handlers.onAgentStart?.(String(d.agent_id ?? ''), String(d.task ?? ''), d.model ? String(d.model) : undefined);
@@ -162,6 +159,10 @@ function parseBlock(block: string, handlers: StreamHandlers): void {
   else if (eventType === 'agent_done') {
     const d = safeJson();
     handlers.onAgentDone?.(String(d.agent_id ?? ''), Number(d.duration_ms ?? 0), d.error ? String(d.error) : null);
+  }
+  else if (eventType === 'usage') {
+    const d = safeJson();
+    handlers.onUsage?.(Number(d.input_tokens ?? 0), Number(d.output_tokens ?? 0), String(d.model ?? ''));
   }
   else if (eventType === 'done') handlers.onDone(safeJson().conversation as ConversationUpdate | undefined);
   else if (eventType === 'error') handlers.onError(String(safeJson().message ?? data) || '流式请求失败');
@@ -210,13 +211,13 @@ export async function sendChatStream(
     onThinking: (d) => { if (!isAborted()) handlers.onThinking?.(d); },
     onToolStart: (name, toolCallId, input) => { if (!isAborted()) handlers.onToolStart?.(name, toolCallId, input); },
     onToolResult: (name, toolCallId, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, toolCallId, input, result, isError, durationMs); },
-    onAutoSkills: (skills) => { if (!isAborted()) handlers.onAutoSkills?.(skills); },
     onAgentStart: (agentId, task, model) => { if (!isAborted()) handlers.onAgentStart?.(agentId, task, model); },
     onAgentMessage: (agentId, delta) => { if (!isAborted()) handlers.onAgentMessage?.(agentId, delta); },
     onAgentThinking: (agentId, delta) => { if (!isAborted()) handlers.onAgentThinking?.(agentId, delta); },
     onAgentToolStart: (agentId, toolName, toolCallId, input) => { if (!isAborted()) handlers.onAgentToolStart?.(agentId, toolName, toolCallId, input); },
     onAgentToolResult: (agentId, toolName, toolCallId, result, isError, durationMs) => { if (!isAborted()) handlers.onAgentToolResult?.(agentId, toolName, toolCallId, result, isError, durationMs); },
     onAgentDone: (agentId, durationMs, error) => { if (!isAborted()) handlers.onAgentDone?.(agentId, durationMs, error); },
+    onUsage: (inputTokens, outputTokens, model) => { if (!isAborted()) handlers.onUsage?.(inputTokens, outputTokens, model); },
     onDone: (conv) => {
       if (isAborted()) return;
       doneCalled = true;
@@ -288,13 +289,13 @@ export async function subscribeChatRun(
     onThinking: (d) => { if (!isAborted()) handlers.onThinking?.(d); },
     onToolStart: (name, toolCallId, input) => { if (!isAborted()) handlers.onToolStart?.(name, toolCallId, input); },
     onToolResult: (name, toolCallId, input, result, isError, durationMs) => { if (!isAborted()) handlers.onToolResult?.(name, toolCallId, input, result, isError, durationMs); },
-    onAutoSkills: (skills) => { if (!isAborted()) handlers.onAutoSkills?.(skills); },
     onAgentStart: (agentId, task, model) => { if (!isAborted()) handlers.onAgentStart?.(agentId, task, model); },
     onAgentMessage: (agentId, delta) => { if (!isAborted()) handlers.onAgentMessage?.(agentId, delta); },
     onAgentThinking: (agentId, delta) => { if (!isAborted()) handlers.onAgentThinking?.(agentId, delta); },
     onAgentToolStart: (agentId, toolName, toolCallId, input) => { if (!isAborted()) handlers.onAgentToolStart?.(agentId, toolName, toolCallId, input); },
     onAgentToolResult: (agentId, toolName, toolCallId, result, isError, durationMs) => { if (!isAborted()) handlers.onAgentToolResult?.(agentId, toolName, toolCallId, result, isError, durationMs); },
     onAgentDone: (agentId, durationMs, error) => { if (!isAborted()) handlers.onAgentDone?.(agentId, durationMs, error); },
+    onUsage: (inputTokens, outputTokens, model) => { if (!isAborted()) handlers.onUsage?.(inputTokens, outputTokens, model); },
     onDone: (conv) => { if (!isAborted()) handlers.onDone(conv); },
     onError: (msg) => { if (!isAborted()) handlers.onError(msg); },
   };

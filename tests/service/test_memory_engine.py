@@ -377,11 +377,10 @@ async def test_chat_pipeline_injects_memory_context() -> None:
         memory_engine=_MemoryEngineStub(),
     )
     pipeline._get_setting = AsyncMock(return_value="")
+    pipeline._load_all_skills = AsyncMock(return_value=[])
 
-    system_prompt, *_ = await pipeline._build_system_prompt(
+    system_prompt = await pipeline._build_system_prompt(
         session_id=uuid4(),
-        skill_id=None,
-        disable_skill=True,
         enable_rag=False,
         message="你好",
     )

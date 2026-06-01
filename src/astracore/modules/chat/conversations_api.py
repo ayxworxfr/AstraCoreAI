@@ -37,7 +37,6 @@ def _row_to_item(row: ConversationRow) -> "ConversationItem":
         id=row.id,
         title=row.title,
         pinned=row.pinned,
-        skill_id=row.skill_id,
         model_id=row.model_id,
         last_message_preview=row.last_message_preview,
         message_count=row.message_count,
@@ -50,7 +49,6 @@ class ConversationItem(BaseModel):
     id: str
     title: str
     pinned: bool
-    skill_id: str | None
     model_id: str | None
     last_message_preview: str
     message_count: int
@@ -61,14 +59,12 @@ class ConversationItem(BaseModel):
 class CreateConversationRequest(BaseModel):
     id: str
     title: str = "新会话"
-    skill_id: str | None = None
     model_id: str | None = None
 
 
 class PatchConversationRequest(BaseModel):
     title: str | None = None
     pinned: bool | None = None
-    skill_id: str | None = None
     model_id: str | None = None
     last_message_preview: str | None = None
     message_count: int | None = None
@@ -91,7 +87,6 @@ async def create_conversation(body: CreateConversationRequest) -> ConversationIt
     row = ConversationRow(
         id=body.id,
         title=body.title,
-        skill_id=body.skill_id,
         model_id=body.model_id,
     )
     async with get_session(_get_db_url()) as db:
@@ -116,8 +111,6 @@ async def patch_conversation(
             row.title = body.title
         if "pinned" in provided and body.pinned is not None:
             row.pinned = body.pinned
-        if "skill_id" in provided:
-            row.skill_id = body.skill_id
         if "model_id" in provided:
             row.model_id = body.model_id
         if "last_message_preview" in provided and body.last_message_preview is not None:

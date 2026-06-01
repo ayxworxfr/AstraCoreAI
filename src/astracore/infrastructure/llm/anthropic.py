@@ -288,11 +288,25 @@ class AnthropicAdapter(LLMAdapter):
         # index → {kind, ...}
         block_buffers: dict[int, dict[str, Any]] = {}
         completed_blocks: list[tuple[int, dict[str, Any]]] = []
+        _input_tokens = 0
+        _output_tokens = 0
 
         async with client.messages.stream(**request_params) as stream:
             async for event in stream:
                 if not hasattr(event, "type"):
                     continue
+
+                # 从流式事件中直接采集 token 用量（比 get_final_message() 更可靠）
+                if event.type == "message_start":
+                    msg = getattr(event, "message", None)
+                    if msg:
+                        usage = getattr(msg, "usage", None)
+                        if usage:
+                            _input_tokens = getattr(usage, "input_tokens", 0) or 0
+                elif event.type == "message_delta":
+                    usage = getattr(event, "usage", None)
+                    if usage:
+                        _output_tokens = getattr(usage, "output_tokens", 0) or 0
 
                 if event.type == "content_block_start":
                     content_block = getattr(event, "content_block", None)
@@ -414,7 +428,10 @@ class AnthropicAdapter(LLMAdapter):
         ]
         yield StreamEvent(
             event_type=StreamEventType.DONE,
-            metadata={self._ANTHROPIC_BLOCKS_KEY: assistant_blocks},
+            metadata={
+                self._ANTHROPIC_BLOCKS_KEY: assistant_blocks,
+                "usage": {"input_tokens": _input_tokens, "output_tokens": _output_tokens},
+            },
         )
 
     async def count_tokens(self, messages: list[Message]) -> int:

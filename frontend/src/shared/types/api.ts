@@ -2,7 +2,6 @@ export type ConversationApiItem = {
   id: string;
   title: string;
   pinned: boolean;
-  skill_id: string | null;
   model_id: string | null;
   last_message_preview: string;
   message_count: number;
@@ -59,14 +58,12 @@ export type ConversationProjectBindingApiItem = {
 export type CreateConversationRequest = {
   id: string;
   title?: string;
-  skill_id?: string | null;
   model_id?: string | null;
 };
 
 export type PatchConversationRequest = {
   title?: string;
   pinned?: boolean;
-  skill_id?: string | null;
   model_id?: string | null;
   last_message_preview?: string;
   message_count?: number;
@@ -82,8 +79,6 @@ export type ChatRequest = {
   enable_rag?: boolean;
   use_tools?: boolean;
   enable_web?: boolean;
-  skill_id?: string;
-  disable_skill?: boolean;
 };
 
 export type ChatResponse = {
@@ -119,8 +114,6 @@ export type ChatRunState = {
   created_at: string;
   updated_at: string;
   completed_at?: string | null;
-  anchor_skill?: string | null;
-  routed_skills?: string[];
 };
 
 export type RagRetrieveRequest = {

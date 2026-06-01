@@ -14,15 +14,15 @@ import {
   DownCircleOutlined,
   CloseCircleOutlined,
 } from '@ant-design/icons';
-import { Flex, Typography, Alert, Avatar, Button, Collapse, Tooltip, Popover, Tag, theme } from 'antd';
+import { Flex, Typography, Alert, Avatar, Button, Collapse, Tooltip, Popover, theme } from 'antd';
 import { useChatStore } from '@/features/chat/store/chatStore';
 import { useSkillStore } from '@/features/skills/store/skillStore';
 import MarkdownContent from './MarkdownContent';
 import ModelSelector from './ModelSelector';
-import SkillSelector from '@/features/skills/components/SkillSelector';
 import type { ChatMessage, SubAgentActivity, ThinkingMode, ToolActivity } from '@/features/chat/types';
 import AppScrollArea from '@/shared/components/AppScrollArea';
 import { formatAppMessageTime } from '@/shared/utils/time';
+import TokenUsageBar from './TokenUsageBar';
 
 const SUGGESTED_PROMPTS = [
   { key: '1', label: '你能做什么？', icon: <ThunderboltOutlined /> },
@@ -437,16 +437,6 @@ function AssistantContent({ message }: { message: ChatMessage }) {
           mode={mode}
         />
       ))}
-      {(message.anchorSkill || (message.autoSkills && message.autoSkills.length > 0)) && (
-        <div style={{ marginBottom: 6 }}>
-          {message.anchorSkill && (
-            <Tag color="geekblue" style={{ fontSize: 11 }}>📌 {message.anchorSkill}</Tag>
-          )}
-          {message.autoSkills?.map((s) => (
-            <Tag key={s} color="blue" style={{ fontSize: 11 }}>⚡ {s}</Tag>
-          ))}
-        </div>
-      )}
       {message.toolActivity && message.toolActivity.length > 0 && (
         <ToolActivityRow tools={message.toolActivity} />
       )}
@@ -570,10 +560,15 @@ export default function ChatMain(): JSX.Element {
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const bottomAnchorRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    bottomAnchorRef.current?.scrollIntoView({ behavior, block: 'end' });
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    if (behavior === 'smooth') {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    } else {
+      el.scrollTop = el.scrollHeight;
+    }
   }, []);
 
   // 通过 ref 让 handleScroll 始终能拿到最新的 handleScrollLoadMore，
@@ -612,6 +607,7 @@ export default function ChatMain(): JSX.Element {
     enableTools,
     enableWeb,
     sessionError,
+    latestUsageByConversation,
     initConversations,
     setEnableThinking,
     setEnableRag,
@@ -718,11 +714,44 @@ export default function ChatMain(): JSX.Element {
     <Flex vertical style={{ height: '100%', overflow: 'hidden' }}>
       {/* 消息区域 */}
       <div style={{ flex: '1 1 0', minHeight: 0, overflow: 'hidden', position: 'relative' }}>
-        <AppScrollArea
-          style={{ height: '100%' }}
-          scrollableNodeProps={{ ref: scrollContainerRef, onScroll: handleScroll }}
-        >
-          <div style={{ minHeight: '100%' }}>
+        {messages.length === 0 && !isLoadingMessages ? (
+          <Flex
+            vertical
+            align="center"
+            justify="center"
+            gap={32}
+            style={{ height: '100%', padding: '0 24px' }}
+          >
+            <Flex vertical align="center" gap={16}>
+              <Avatar
+                size={72}
+                icon={<RobotOutlined />}
+                style={{
+                  background: 'linear-gradient(135deg, #1677ff 0%, #722ed1 100%)',
+                  fontSize: 32,
+                }}
+              />
+              <Flex vertical align="center" gap={4}>
+                <Typography.Title level={4} style={{ margin: 0 }}>
+                  你好，我是 AstraCoreAI
+                </Typography.Title>
+                <Typography.Text type="secondary" style={{ fontSize: 14 }}>
+                  专业 AI 基础设施，有什么可以帮你的？
+                </Typography.Text>
+              </Flex>
+            </Flex>
+            <Prompts
+              items={SUGGESTED_PROMPTS}
+              onItemClick={({ data }) => {
+                if (typeof data.label === 'string') handleSendMessage(data.label);
+              }}
+            />
+          </Flex>
+        ) : (
+          <AppScrollArea
+            style={{ height: '100%' }}
+            scrollableNodeProps={{ ref: scrollContainerRef, onScroll: handleScroll }}
+          >
             {/* 顶部哨兵：IntersectionObserver 的观察目标，进入可视区域时触发加载更多 */}
             <div ref={loadMoreSentinelRef} style={{ height: 1, overflow: 'hidden' }} />
             {hasMore && (
@@ -730,63 +759,28 @@ export default function ChatMain(): JSX.Element {
                 {isLoadingMoreMessages ? '加载中...' : '上滑加载更早的消息'}
               </div>
             )}
-            {messages.length === 0 && !isLoadingMessages ? (
-              <Flex
-                vertical
-                align="center"
-                justify="center"
-                gap={32}
-                style={{ minHeight: '100%', padding: '0 24px' }}
-              >
-                <Flex vertical align="center" gap={16}>
-                  <Avatar
-                    size={72}
-                    icon={<RobotOutlined />}
-                    style={{
-                      background: 'linear-gradient(135deg, #1677ff 0%, #722ed1 100%)',
-                      fontSize: 32,
-                    }}
-                  />
-                  <Flex vertical align="center" gap={4}>
-                    <Typography.Title level={4} style={{ margin: 0 }}>
-                      你好，我是 AstraCoreAI
-                    </Typography.Title>
-                    <Typography.Text type="secondary" style={{ fontSize: 14 }}>
-                      专业 AI 基础设施，有什么可以帮你的？
-                    </Typography.Text>
-                  </Flex>
-                </Flex>
-                <Prompts
-                  items={SUGGESTED_PROMPTS}
-                  onItemClick={({ data }) => {
-                    if (typeof data.label === 'string') handleSendMessage(data.label);
-                  }}
+            <div
+              style={{
+                maxWidth: 860,
+                margin: '0 auto',
+                width: '100%',
+                padding: '24px 24px 16px',
+              }}
+            >
+              {messages.map((m) => (
+                <MessageRow
+                  key={m.id}
+                  message={m}
+                  conversationId={activeConversationId}
+                  hoveredMsgId={hoveredMsgId}
+                  onMsgEnter={onMsgEnter}
+                  onMsgLeave={onMsgLeave}
                 />
-              </Flex>
-            ) : (
-              <div
-                style={{
-                  maxWidth: 860,
-                  margin: '0 auto',
-                  width: '100%',
-                  padding: '24px 24px 16px',
-                }}
-              >
-                {messages.map((m) => (
-                  <MessageRow
-                    key={m.id}
-                    message={m}
-                    conversationId={activeConversationId}
-                    hoveredMsgId={hoveredMsgId}
-                    onMsgEnter={onMsgEnter}
-                    onMsgLeave={onMsgLeave}
-                  />
-                ))}
-              </div>
-            )}
-            <div ref={bottomAnchorRef} style={{ height: 1 }} />
-          </div>
-        </AppScrollArea>
+              ))}
+            </div>
+            <div style={{ height: 1 }} />
+          </AppScrollArea>
+        )}
 
         {/* 回到最新消息按钮 */}
         {showScrollBtn && (
@@ -931,7 +925,6 @@ export default function ChatMain(): JSX.Element {
               </Button>
             </Tooltip>
 
-            <SkillSelector disabled={isStreaming} />
             <ModelSelector disabled={isStreaming} />
           </Flex>
 
@@ -946,6 +939,13 @@ export default function ChatMain(): JSX.Element {
             onCancel={() => cancelStream(activeConversationId)}
             placeholder="输入问题，Enter 发送，Shift+Enter 换行"
           />
+
+          {/* Token 用量状态栏：位于输入框正下方，有数据时用自身 padding 撑起底部 */}
+          {latestUsageByConversation[activeConversationId] && (
+            <div style={{ marginBottom: -20 }}>
+              <TokenUsageBar {...latestUsageByConversation[activeConversationId]} />
+            </div>
+          )}
         </div>
       </div>
     </Flex>

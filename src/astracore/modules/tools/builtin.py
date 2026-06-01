@@ -105,54 +105,11 @@ async def _web_search(query: str, max_results: int = 5) -> str:
         return f"搜索失败：{e}"
 
 
-def build_skill_reference_adapter(skill_id: str, db_url: str) -> NativeToolAdapter:
-    """构造按需加载 Skill 附属参考文档的单工具 Adapter（每次请求独立实例）。
-
-    skill_id 通过闭包捕获，执行时直接按 (skill_id, title) 查询 skill_references 表。
-    """
-    from sqlalchemy import select  # noqa: PLC0415
-
-    from astracore.infrastructure.db.models import SkillReferenceRow  # noqa: PLC0415
-    from astracore.infrastructure.db.session import get_session  # noqa: PLC0415
-
-    async def _get_skill_reference(title: str) -> str:
-        async with get_session(db_url) as db:
-            result = await db.execute(
-                select(SkillReferenceRow).where(
-                    SkillReferenceRow.skill_id == skill_id,
-                    SkillReferenceRow.title == title,
-                )
-            )
-            row = result.scalar_one_or_none()
-        if row is None:
-            return f"未找到标题为「{title}」的参考文档。"
-        return row.content
-
-    adapter = NativeToolAdapter()
-    adapter.register_tool(
-        name="get_skill_reference",
-        func=_get_skill_reference,
-        description=(
-            "按标题获取当前 Skill 的附属参考文档内容。"
-            "仅在系统提示「可用参考文档」列表中出现的文档可供查询。"
-        ),
-        parameters=[
-            ToolParameter(
-                name="title",
-                type=ToolParameterType.STRING,
-                description="参考文档标题，必须与系统提示「可用参考文档」列表中的标题完全匹配",
-                required=True,
-            )
-        ],
-    )
-    return adapter
-
-
-def build_tool_adapter() -> ToolAdapter:
-    """构造并注册所有内置工具，返回 CompositeToolAdapter。
+def build_tool_adapter(db_url: str = "") -> ToolAdapter:
+    """构造并注册所有内置工具（含技能工具），返回 CompositeToolAdapter。
 
     新增工具时只需在此函数中追加 register_tool 调用即可。
-    spawn_agents 工具自动注入到 ParallelAgentTool；worker 工具集 = native 工具（不含 spawn_agents），
+    spawn_agents 工具自动注入到 ParallelAgentTool；worker 工具集 = 内置工具 + 技能工具，
     防止子 Agent 递归调用 spawn_agents（深度限制 = 1）。
     """
     # 延迟导入避免循环依赖（rag_api 依赖 chat_api 的 lru_cache 工厂）
@@ -248,8 +205,17 @@ def build_tool_adapter() -> ToolAdapter:
         ],
     )
 
+    # 技能工具：load_skill / get_skill_reference / run_skill_script
+    if db_url:
+        from astracore.modules.skills.tools import build_skill_tools_adapter  # noqa: PLC0415
+
+        skill_tools = build_skill_tools_adapter(db_url)
+        combined = CompositeToolAdapter([skill_tools, native])
+    else:
+        combined = native
+
     config = AstraCoreConfig()
     if config.agent.enable_spawn_agents:
-        parallel = ParallelAgentTool(config=config, worker_tools=native, policy=PolicyEngine())
-        return CompositeToolAdapter([parallel, native])
-    return native
+        parallel = ParallelAgentTool(config=config, worker_tools=combined, policy=PolicyEngine())
+        return CompositeToolAdapter([parallel, combined])
+    return combined

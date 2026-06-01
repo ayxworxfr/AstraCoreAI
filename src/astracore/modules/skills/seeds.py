@@ -1,16 +1,18 @@
 """启动时执行数据初始化：向量库文档写入 + 内置 Skill 写入。
 
 - modules/rag/knowledge_base/ 目录及子目录下的 .md 文件写入向量数据库，新增文档只需放文件即可
-- modules/skills/builtin/ 目录下每个子目录对应一个内置 Skill：
+- modules/skills/builtin/ 目录下每个子目录对应一个内置 Skill（Agent Skills 标准格式）：
     <skill-name>/
-        SKILL.md          — 必须存在；frontmatter + system_prompt 正文
-        <ref>.md          — 可选；附属参考文档，LLM 按需加载
-  SKILL.md frontmatter 字段:
-    name        必填，Skill 显示名称
-    description 选填，简短描述
-    order       选填，排序值（整数），越小越靠前，默认 1000
-    default     选填，true 表示首次启动时设为默认 Skill
-    references  选填，YAML 列表，每项包含 title / description / file
+        SKILL.md          — 必须存在；frontmatter + instructions 正文
+        references/       — 可选；附属参考文档（递归扫描所有 .md 文件）
+        scripts/          — 可选；可执行脚本
+  SKILL.md frontmatter 字段（Agent Skills 开放标准）:
+    name        必填，kebab-case，与目录名一致
+    description 必填，描述"做什么 + 何时使用"
+    metadata:
+      display_name  必填，人类可读显示名称（如"通用助手"）
+      order         选填，排序值（数字字符串），越小越靠前，默认 1000
+      category      选填，分类标签（general / coding / writing / analysis / finance / language / ops 等）
 """
 
 from __future__ import annotations
@@ -121,12 +123,13 @@ async def seed_documents(pipeline: object) -> None:
 def _parse_skill_dir(skill_dir: Path) -> dict[str, Any]:
     """解析 skill 子目录，返回包含 Skill 元数据和引用列表的 dict。
 
-    目录结构：
+    目录结构（Agent Skills 标准格式）：
       <skill-name>/
-        SKILL.md     — 必须存在，frontmatter + system_prompt 正文
-        <ref>.md     — 可选附属参考文档
+        SKILL.md           — 必须存在，frontmatter + instructions 正文
+        references/        — 可选，附属参考文档（递归扫描 .md 文件）
+        scripts/           — 可选，可执行脚本
 
-    SKILL.md frontmatter 使用 yaml.safe_load 解析，支持列表类型字段（references）。
+    frontmatter 中的 name 字段必须与目录名一致（kebab-case）。
     source_key 取目录名，作为跨重启的稳定标识符。
     """
     skill_file = skill_dir / "SKILL.md"
@@ -135,64 +138,68 @@ def _parse_skill_dir(skill_dir: Path) -> dict[str, Any]:
 
     raw = skill_file.read_text(encoding="utf-8")
     meta: dict[str, Any] = {}
-    system_prompt = raw.strip()
+    instructions = raw.strip()
 
     fm_match = _FRONTMATTER_RE.match(raw)
     if fm_match:
         parsed = yaml.safe_load(fm_match.group(1))
         if isinstance(parsed, dict):
             meta = parsed
-        system_prompt = raw[fm_match.end() :].strip()
+        instructions = raw[fm_match.end() :].strip()
 
-    # 将 {{skill_dir}} 替换为该 skill 目录的绝对路径（使用正斜杠，兼容 Node.js/shell）
-    system_prompt = system_prompt.replace("{{skill_dir}}", skill_dir.as_posix())
+    name = str(meta.get("name") or skill_dir.name)
+    description = str(meta.get("description") or "").strip()
 
-    if not meta.get("name"):
-        raise ValueError(f"SKILL.md 缺少 name 字段: {skill_file}")
+    skill_metadata = meta.get("metadata") or {}
+    if not isinstance(skill_metadata, dict):
+        skill_metadata = {}
+
+    display_name = str(skill_metadata.get("display_name") or "").strip()
     try:
-        sort_order = int(meta.get("order", 1000))
-    except (ValueError, TypeError) as exc:
-        raise ValueError(f"SKILL.md order 字段必须是整数: {skill_file}") from exc
+        sort_order = int(str(skill_metadata.get("order") or "1000"))
+    except (ValueError, TypeError):
+        sort_order = 1000
+    category_raw = skill_metadata.get("category")
+    category = str(category_raw).strip() if category_raw else None
 
-    # 解析 references 列表（可选）
-    raw_refs = meta.get("references") or []
+    # 自动发现 references/ 目录下的所有 .md 文件
     references: list[dict[str, Any]] = []
-    for idx, entry in enumerate(raw_refs):
-        if not isinstance(entry, dict):
-            logger.warning("跳过非法 reference 条目（非 dict）: %s[%d]", skill_file, idx)
-            continue
-        title = str(entry.get("title") or "").strip()
-        file_name = str(entry.get("file") or "").strip()
-        if not title or not file_name:
-            logger.warning("跳过缺少 title 或 file 的 reference 条目: %s[%d]", skill_file, idx)
-            continue
-        ref_path = skill_dir / file_name
-        if not ref_path.exists():
-            logger.warning("reference 文件不存在，跳过: %s", ref_path)
-            continue
-        references.append(
-            {
-                "title": title,
-                "description": str(entry.get("description") or "").strip(),
-                "content": ref_path.read_text(encoding="utf-8").strip(),
-                "source_file": file_name,
-                "sort_order": idx,
-            }
-        )
+    refs_dir = skill_dir / "references"
+    if refs_dir.exists():
+        for ref_path in sorted(refs_dir.rglob("*.md")):
+            rel_path = ref_path.relative_to(skill_dir).as_posix()
+            # use relative path without extension as title (unique within skill)
+            title = ref_path.relative_to(skill_dir).with_suffix("").as_posix()
+            try:
+                content = ref_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                logger.warning("无法读取参考文档，跳过: %s", ref_path)
+                continue
+            references.append(
+                {
+                    "title": title,
+                    "description": "",
+                    "content": content,
+                    "source_file": rel_path,
+                    "sort_order": 0,
+                }
+            )
 
     return {
         "source_key": skill_dir.name,
-        "name": str(meta["name"]),
-        "description": str(meta.get("description") or ""),
+        "name": name,
+        "display_name": display_name,
+        "description": description,
+        "instructions": instructions,
+        "category": category,
         "order": sort_order,
-        "system_prompt": system_prompt,
-        "default": str(meta.get("default") or "false").lower() == "true",
+        "skill_dir": skill_dir.as_posix(),
         "references": references,
     }
 
 
 def _load_builtin_skills(extra_dirs: list[str] | None = None) -> list[dict[str, Any]]:
-    """按 frontmatter order 加载 skills/ 目录及所有额外配置目录下的 Skill 子目录。
+    """按 metadata.order 加载 skills/ 目录及所有额外配置目录下的 Skill 子目录。
 
     每个子目录内必须有 SKILL.md。extra_dirs 中的目录按顺序追加在内置目录之后；
     source_key 冲突时后加载的目录覆盖先加载的并记录警告。
@@ -247,12 +254,27 @@ async def _ensure_skill_tables(db_url: str) -> None:
         for col_name, ddl in [
             ("source_key", "TEXT"),
             ("sort_order", "INTEGER NOT NULL DEFAULT 1000"),
+            ("display_name", "TEXT NOT NULL DEFAULT ''"),
+            ("instructions", "TEXT NOT NULL DEFAULT ''"),
+            ("category", "TEXT"),
+            ("skill_dir", "TEXT"),
         ]:
             try:
                 await conn.execute(text(f"ALTER TABLE skills ADD COLUMN {col_name} {ddl}"))
                 logger.info("已为 skills 表添加 %s 列", col_name)
             except Exception:
                 pass  # 列已存在
+
+        # 将旧 system_prompt 内容迁移到 instructions（仅在 instructions 为空时）
+        try:
+            await conn.execute(
+                text(
+                    "UPDATE skills SET instructions = system_prompt"
+                    " WHERE instructions = '' AND system_prompt IS NOT NULL AND system_prompt != ''"
+                )
+            )
+        except Exception:
+            pass  # system_prompt 列可能不存在（新建数据库）
 
         # 创建 skill_references 表（若不存在）
         await conn.execute(
@@ -279,21 +301,20 @@ async def _ensure_skill_tables(db_url: str) -> None:
 
 
 async def seed_builtin_skills(db_url: str, extra_skill_dirs: list[str] | None = None) -> None:
-    """写入并同步内置 Skill 及其附属 reference 文档，首次启动时设置默认 Skill。
+    """写入并同步内置 Skill 及其附属 reference 文档。
 
     - 匹配键：source_key（目录名），与 Skill 显示名称解耦
     - 新 Skill：插入
-    - 已有 Skill：name / description / system_prompt / sort_order 有变化时更新
+    - 已有 Skill：字段有变化时更新
     - 孤儿 Skill：目录已删除的内置 Skill 自动从数据库删除（CASCADE 删除关联 references）
-    - References：按 (skill_id, title) 做 upsert，孤儿 reference（SKILL.md 中已移除）自动删除
-    - 默认 Skill：仅在 default_skill_id 未设置时写入，不覆盖用户的选择
+    - References：按 (skill_id, title) 做 upsert，孤儿 reference 自动删除
     """
     from datetime import UTC, datetime
     from uuid import uuid4
 
     from sqlalchemy import select
 
-    from astracore.infrastructure.db.models import SkillReferenceRow, SkillRow, UserSettingsRow
+    from astracore.infrastructure.db.models import SkillReferenceRow, SkillRow
     from astracore.infrastructure.db.session import get_session
 
     await _ensure_skill_tables(db_url)
@@ -318,10 +339,13 @@ async def seed_builtin_skills(db_url: str, extra_skill_dirs: list[str] | None = 
                 row = SkillRow(
                     id=str(uuid4()),
                     name=name,
+                    display_name=skill["display_name"],
                     description=skill["description"],
-                    system_prompt=skill["system_prompt"],
+                    instructions=skill["instructions"],
+                    category=skill["category"],
                     is_builtin=True,
                     sort_order=skill["order"],
+                    skill_dir=skill["skill_dir"],
                     source_key=key,
                     created_at=now,
                     updated_at=now,
@@ -332,15 +356,21 @@ async def seed_builtin_skills(db_url: str, extra_skill_dirs: list[str] | None = 
             else:
                 changed = (
                     row.name != name
+                    or row.display_name != skill["display_name"]
                     or row.description != skill["description"]
-                    or row.system_prompt != skill["system_prompt"]
+                    or row.instructions != skill["instructions"]
+                    or row.category != skill["category"]
                     or row.sort_order != skill["order"]
+                    or row.skill_dir != skill["skill_dir"]
                 )
                 if changed:
                     row.name = name
+                    row.display_name = skill["display_name"]
                     row.description = skill["description"]
-                    row.system_prompt = skill["system_prompt"]
+                    row.instructions = skill["instructions"]
+                    row.category = skill["category"]
                     row.sort_order = skill["order"]
+                    row.skill_dir = skill["skill_dir"]
                     row.updated_at = datetime.now(UTC)
                     logger.debug("更新内置 Skill: %s (%s)", name, key)
 
@@ -391,7 +421,7 @@ async def seed_builtin_skills(db_url: str, extra_skill_dirs: list[str] | None = 
                         ref_row.updated_at = datetime.now(UTC)
                         logger.debug("更新 reference: %s / %s", key, title)
 
-            # 删除孤儿 references（SKILL.md 中已移除的条目）
+            # 删除孤儿 references
             for title, ref_row in existing_refs.items():
                 if title not in active_ref_titles:
                     logger.info("删除孤儿 reference: %s / %s", key, title)
@@ -402,25 +432,6 @@ async def seed_builtin_skills(db_url: str, extra_skill_dirs: list[str] | None = 
             if key not in active_keys:
                 logger.info("删除孤儿内置 Skill: %s (%s)", row.name, key)
                 await db.delete(row)
-
-        # 仅在 default_skill_id 未设置时自动写入，不覆盖用户的选择
-        settings_row = await db.get(UserSettingsRow, "default_skill_id")
-        if settings_row is None or not settings_row.value:
-            default_skill = next((s for s in builtin_skills if s["default"]), None)
-            if default_skill and default_skill["source_key"] in skill_ids:
-                default_id = skill_ids[default_skill["source_key"]]
-                if settings_row is None:
-                    db.add(
-                        UserSettingsRow(
-                            key="default_skill_id",
-                            value=default_id,
-                            updated_at=datetime.now(UTC),
-                        )
-                    )
-                else:
-                    settings_row.value = default_id
-                    settings_row.updated_at = datetime.now(UTC)
-                logger.info("默认 Skill 已设置: %s (%s)", default_skill["name"], default_id)
 
         await db.commit()
 

@@ -45,11 +45,21 @@ const args = process.argv.slice(2);
 let targetPath = '';
 let fixSimple = false;
 
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--fix-simple') {
-    fixSimple = true;
-  } else if (!targetPath) {
-    targetPath = args[i];
+if (args.length === 1 && args[0].startsWith('{')) {
+  try {
+    const json = JSON.parse(args[0]);
+    targetPath = json.path || json.targetPath || '';
+    fixSimple = Boolean(json.fix_simple || json.fixSimple);
+  } catch (e) {
+    targetPath = args[0];
+  }
+} else {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--fix-simple') {
+      fixSimple = true;
+    } else if (!targetPath) {
+      targetPath = args[i];
+    }
   }
 }
 

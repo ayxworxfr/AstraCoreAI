@@ -5,8 +5,6 @@ export type ConversationMeta = {
   lastMessagePreview: string;
   messageCount: number;
   pinned: boolean;
-  /** 会话独立 skill：undefined = 使用全局默认，'none' = 禁用，uuid = 指定 skill */
-  skillId?: string | null;
   /** 会话独立模型 Profile：null/undefined = 使用后端默认，string = 指定 profile id */
   modelId?: string | null;
 };
@@ -51,10 +49,12 @@ export type ChatMessage = {
   toolActivity?: ToolActivity[];
   status: MessageStatus;
   createdAt: string;    // ISO string，避免 Date 序列化问题
-  /** 当前激活的主技能名称（用户指定或默认 skill） */
-  anchorSkill?: string | null;
-  /** routing 自动追加的副技能名称列表 */
-  autoSkills?: string[];
   /** 并行子 Agent 活动列表（spawn_agents 触发，仅前端追踪） */
   subAgents?: SubAgentActivity[];
+  /** LLM 调用消耗的输入 token 数（仅 assistant 消息有值） */
+  inputTokens?: number;
+  /** LLM 调用消耗的输出 token 数（仅 assistant 消息有值） */
+  outputTokens?: number;
+  /** 实际使用的模型 ID（仅 assistant 消息有值，持久化到 DB） */
+  model?: string;
 };

@@ -14,7 +14,6 @@ from astracore.sdk.config import AstraCoreConfig
 router = APIRouter()
 
 _SETTINGS_KEYS = {
-    "default_skill_id",
     "global_instruction",
     "temperature",
     "rag_top_k",
@@ -25,7 +24,6 @@ _SETTINGS_KEYS = {
 }
 
 _SETTINGS_DEFAULTS: dict[str, str] = {
-    "default_skill_id": "",
     "global_instruction": "",
     "temperature": "0.7",
     "rag_top_k": "4",
@@ -42,7 +40,6 @@ def _db_url() -> str:
 
 
 class UserSettingsResponse(BaseModel):
-    default_skill_id: str = ""
     global_instruction: str = ""
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     rag_top_k: int = Field(default=4, ge=1, le=20)
@@ -53,7 +50,6 @@ class UserSettingsResponse(BaseModel):
 
 
 class UserSettingsUpdate(BaseModel):
-    default_skill_id: str | None = None
     global_instruction: str | None = None
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     rag_top_k: int | None = Field(default=None, ge=1, le=20)
@@ -74,7 +70,6 @@ def _build_response(data: dict[str, str]) -> UserSettingsResponse:
         return data.get(key, _SETTINGS_DEFAULTS[key])
 
     return UserSettingsResponse(
-        default_skill_id=_get("default_skill_id"),
         global_instruction=_get("global_instruction"),
         temperature=float(_get("temperature")),
         rag_top_k=int(_get("rag_top_k")),
