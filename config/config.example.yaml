@@ -46,15 +46,6 @@ skills:
   #  - D:/my-skills
   #  - ~/shared-skills
 
-skill_routing:
-  mode: off                  # off | vector | llm
-  # vector 模式参数（需要 sentence-transformers，模型由 retrieval.embedding_model 统一配置）
-  threshold: 0.45            # 主技能最低相似度（0~1）
-  secondary_threshold: 0.35  # 副技能最低相似度
-  max_skills: 3              # 同时加载的最大技能数
-  # llm 模式参数
-  # llm_profile: claude-sonnet  # 不填则使用 llm.default_profile
-
 mcp:
   servers:
     - type: filesystem
