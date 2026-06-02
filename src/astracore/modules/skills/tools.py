@@ -6,6 +6,7 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 from astracore.infrastructure.tools.native import NativeToolAdapter
 from astracore.modules.tools.ports.tool import ToolParameter, ToolParameterType
@@ -100,7 +101,9 @@ def build_skill_tools_adapter(db_url: str) -> NativeToolAdapter:
         logger.info("get_skill_reference: %s / %s", skill_id, file)
         return ref_row.content
 
-    async def _run_skill_script(skill_id: str, script: str, args: dict | None = None) -> str:
+    async def _run_skill_script(
+        skill_id: str, script: str, args: dict[str, Any] | None = None
+    ) -> str:
         """Execute a script in the skill's scripts/ directory."""
         import asyncio  # noqa: PLC0415
 

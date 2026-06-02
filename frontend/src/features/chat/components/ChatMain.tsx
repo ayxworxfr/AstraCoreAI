@@ -560,15 +560,16 @@ export default function ChatMain(): JSX.Element {
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const bottomAnchorRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    if (behavior === 'smooth') {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    } else {
-      el.scrollTop = el.scrollHeight;
-    }
+    const scrollBehavior = behavior === 'instant' ? 'auto' : behavior;
+    // SimpleBar 和 Markdown 高亮会在提交后继续更新高度，延后一帧再对齐真实底部锚点。
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        bottomAnchorRef.current?.scrollIntoView({ block: 'end', behavior: scrollBehavior });
+      });
+    });
   }, []);
 
   // 通过 ref 让 handleScroll 始终能拿到最新的 handleScrollLoadMore，
@@ -667,9 +668,10 @@ export default function ChatMain(): JSX.Element {
 
   // 切换/首次进入会话时加载消息，并在加载完成后滚动到底部
   useEffect(() => {
+    if (!activeConversationId) return;
     if (messagesByConversation[activeConversationId] === undefined) {
       shouldScrollToBottomRef.current = true;
-      void loadMessages(activeConversationId);
+      if (!isLoadingMessages) void loadMessages(activeConversationId);
     } else {
       // 已缓存的会话（本次会话内切换回来），直接滚到底部
       scrollToBottom('instant');
@@ -678,6 +680,7 @@ export default function ChatMain(): JSX.Element {
 
   // prepend 旧消息后补偿 scrollTop；初次加载完成后滚到底部
   useLayoutEffect(() => {
+    if (!activeConversationId) return;
     if (prevScrollHeightRef.current !== null) {
       // load-more：维持可视区域不跳动
       const el = scrollContainerRef.current;
@@ -778,7 +781,7 @@ export default function ChatMain(): JSX.Element {
                 />
               ))}
             </div>
-            <div style={{ height: 1 }} />
+            <div ref={bottomAnchorRef} style={{ height: 1 }} />
           </AppScrollArea>
         )}
 

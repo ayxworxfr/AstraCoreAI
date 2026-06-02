@@ -59,6 +59,16 @@ def build_identity_layer(
     return "\n\n".join(parts)
 
 
+def render_skill_prompt(template: str, ai_name: str = "", owner_name: str = "") -> str:
+    """Render a skill prompt template, substituting known placeholders."""
+    result = template.replace("{{current_time_info}}", build_current_time_info())
+    if ai_name:
+        result = result.replace("{{ai_name}}", ai_name)
+    if owner_name:
+        result = result.replace("{{owner_name}}", owner_name)
+    return result
+
+
 def build_skill_manifest(skills: list[SkillRow]) -> str:
     """Build a categorized skill manifest with load_skill usage hint."""
     if not skills:

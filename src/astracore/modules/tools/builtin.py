@@ -206,6 +206,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
     )
 
     # 技能工具：load_skill / get_skill_reference / run_skill_script
+    combined: ToolAdapter
     if db_url:
         from astracore.modules.skills.tools import build_skill_tools_adapter  # noqa: PLC0415
 

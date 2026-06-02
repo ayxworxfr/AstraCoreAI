@@ -10,8 +10,6 @@ from typing import Any
 
 
 def _load_cases(path: str) -> list[Any]:
-    from uuid import UUID
-
     from astracore.eval.dataset import EvalCase
     from astracore.modules.chat.domain.chat_options import ChatOptions
 
@@ -21,7 +19,6 @@ def _load_cases(path: str) -> list[Any]:
         raise ValueError(f"Expected a JSON array in {path}")
     cases = []
     for item in data:
-        skill_id_raw = item.get("skill_id")
         options = ChatOptions(
             model_profile=item.get("model_profile"),
             use_tools=bool(item.get("use_tools", False)),
@@ -29,8 +26,6 @@ def _load_cases(path: str) -> list[Any]:
             thinking_budget=int(item.get("thinking_budget", 8000)),
             enable_rag=bool(item.get("enable_rag", False)),
             enable_web=bool(item.get("enable_web", False)),
-            skill_id=UUID(skill_id_raw) if skill_id_raw else None,
-            disable_skill=bool(item.get("disable_skill", False)),
         )
         cases.append(
             EvalCase(

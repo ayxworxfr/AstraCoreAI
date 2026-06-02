@@ -630,7 +630,6 @@ class WorkflowClient:
                     model_profile=task.metadata.get("model_profile") or model_profile,
                     temperature=task.metadata.get("temperature") or temperature,
                     enable_rag=bool(task.metadata.get("enable_rag", enable_rag)),
-                    disable_skill=True,
                 ),
             )
             return await pipeline.execute(ctx)

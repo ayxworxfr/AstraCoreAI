@@ -156,7 +156,7 @@ def _parse_skill_dir(skill_dir: Path) -> dict[str, Any]:
 
     display_name = str(skill_metadata.get("display_name") or "").strip()
     try:
-        sort_order = int(str(skill_metadata.get("order") or "1000"))
+        sort_order = int(str(skill_metadata.get("order") or meta.get("order") or "1000"))
     except (ValueError, TypeError):
         sort_order = 1000
     category_raw = skill_metadata.get("category")

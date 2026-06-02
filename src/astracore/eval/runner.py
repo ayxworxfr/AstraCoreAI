@@ -96,8 +96,6 @@ class EvalRunner:
                     thinking_budget=opts.thinking_budget,
                     enable_rag=opts.enable_rag,
                     enable_web=opts.enable_web,
-                    skill_id=opts.skill_id,
-                    disable_skill=opts.disable_skill,
                 ):
                     if event.event_type == StreamEventType.TEXT_DELTA:
                         actual_output += event.content
@@ -206,7 +204,6 @@ class EvalRunner:
                     actual=actual[:2000],
                 ),
                 model_profile=self._judge_profile,
-                disable_skill=True,
             )
             raw = result.content.strip()
             m = re.search(r"(\d+(?:\.\d+)?)", raw)
