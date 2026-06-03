@@ -59,6 +59,9 @@ class MCPServerConfig(BaseModel):
 
 
 _SHELL_SERVER_SCRIPT = Path(__file__).parent.parent.parent / "mcp_servers" / "shell_server.py"
+_FILESYSTEM_SERVER_SCRIPT = (
+    Path(__file__).parent.parent.parent / "mcp_servers" / "filesystem_server.py"
+)
 
 
 def _normalize_path(path: str) -> str:
@@ -76,14 +79,10 @@ def build_server_configs(entries: "list[MCPServerEntry]") -> list[MCPServerConfi
     result: list[MCPServerConfig] = []
     for entry in entries:
         if isinstance(entry, FilesystemServerConfig):
-            result.append(
-                MCPServerConfig(
-                    name=entry.name,
-                    command="npx",
-                    args=["-y", "@modelcontextprotocol/server-filesystem"]
-                    + [_normalize_path(path) for path in entry.paths],
-                )
-            )
+            args = [str(_FILESYSTEM_SERVER_SCRIPT)]
+            for p in entry.paths:
+                args += ["--allow-path", _normalize_path(p)]
+            result.append(MCPServerConfig(name=entry.name, command=sys.executable, args=args))
         elif isinstance(entry, ShellServerConfig):
             args = [str(_SHELL_SERVER_SCRIPT)]
             for d in entry.allow_dirs:

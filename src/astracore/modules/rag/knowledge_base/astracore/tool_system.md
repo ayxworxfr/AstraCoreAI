@@ -16,7 +16,9 @@ AstraCoreAI 支持两类工具：原生 Python 工具和 MCP 协议工具，通�
 | `get_current_time()` | 获取当前时间（含时区） |
 | `calculate(expr)` | 安全数学求值（AST 白名单，无 eval） |
 | `web_search(query)` | 联网搜索（Tavily 优先，降级 DuckDuckGo） |
-| `get_skill_reference(skill_id, ref_title)` | 获取技能关联的参考资料 |
+| `load_skill(skill_id)` | 加载 Skill 的完整 instructions、引用列表和脚本列表 |
+| `get_skill_reference(skill_id, file)` | 读取 Skill references/ 目录下的参考文档内容 |
+| `run_skill_script(skill_id, script, args)` | 在 Skill scripts/ 目录内安全执行脚本（防路径穿越，30s 超时） |
 | `spawn_agents(tasks)` | 并行启动 2-5 个子 Agent 执行子任务 |
 
 `spawn_agents` 可通过 `agent.enable_spawn_agents: false` 关闭。
@@ -27,9 +29,9 @@ AstraCoreAI 支持两类工具：原生 Python 工具和 MCP 协议工具，通�
 
 | 类型 | 说明 |
 |------|------|
-| `filesystem` | 文件系统访问（@modelcontextprotocol/server-filesystem）|
-| `shell` | 命令行执行（AstraCore 内置 shell server）|
-| `custom` | 自定义外部 MCP 进程 |
+| `filesystem` | 内置 Python filesystem server（`mcp_servers/filesystem_server.py`），无需 Node.js；提供 read_file / write_file / edit_file / search_files 等 10 个工具 |
+| `shell` | 内置受控 shell server，在 allow_dirs 白名单内执行命令 |
+| `custom` | 自定义外部 MCP 进程，需配置 name/command/args/env |
 
 MCP 服务器在 `config.yaml` 的 `mcp.servers` 中配置。
 

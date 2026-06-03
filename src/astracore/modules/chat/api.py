@@ -20,7 +20,7 @@ from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
 from astracore.modules.chat.domain.chat_context import ChatContext
 from astracore.modules.chat.domain.chat_options import ChatOptions
-from astracore.modules.chat.domain.message import MessageRole
+from astracore.modules.chat.domain.message import Message, MessageRole
 from astracore.modules.chat.pipeline import ChatPipeline
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.modules.rag import api as rag_api
@@ -391,6 +391,22 @@ async def _update_conversation_from_messages(session_id: UUID) -> dict[str, Any]
         }
 
 
+async def _rebuild_short_term_from_runs(session_id: UUID) -> None:
+    """Sync the short-term memory cache with current ChatRunRow state.
+
+    Must be called after any message deletion so the LLM no longer sees
+    deleted messages on the next turn. Rebuilds Message objects from the
+    surviving done-runs and overwrites both Redis and DB caches.
+    """
+    runs = await _load_done_runs(session_id)
+    messages: list[Message] = []
+    for run in runs:
+        messages.append(Message(role=MessageRole.USER, content=run.user_message))
+        if run.assistant_content:
+            messages.append(Message(role=MessageRole.ASSISTANT, content=run.assistant_content))
+    await _get_memory_adapter().save_short_term(session_id, messages)
+
+
 # ------------------------------------------------------------------
 # Chat execution (background tasks)
 # ------------------------------------------------------------------
@@ -697,6 +713,7 @@ async def delete_session_message(
             row.updated_at = datetime.now(UTC)
         await db.commit()
     await _update_conversation_from_messages(session_id)
+    await _rebuild_short_term_from_runs(session_id)
 
 
 @router.get("/sessions/{session_id}/messages", response_model=SessionMessagesResponse)

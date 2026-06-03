@@ -20,7 +20,8 @@ def test_build_server_configs_expands_home_paths(monkeypatch, tmp_path) -> None:
     )
 
     expected = str(home / "develope")
-    assert configs[0].args[-1] == expected
+    # FilesystemServerConfig: args are [script, --allow-path, <path>]
+    assert configs[0].args[configs[0].args.index("--allow-path") + 1] == expected
     assert configs[1].args[configs[1].args.index("--allow-dir") + 1] == expected
 
 

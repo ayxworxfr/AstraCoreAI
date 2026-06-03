@@ -15,25 +15,7 @@ import re
 import sys
 from pathlib import Path
 
-try:
-    from fastmcp import FastMCP
-except ModuleNotFoundError:
-
-    class FastMCP:  # type: ignore[no-redef]
-        """Import-time fallback so helper tests do not require optional MCP deps."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
-
-        def tool(self, *args: object, **kwargs: object) -> object:
-            def decorator(func: object) -> object:
-                return func
-
-            return decorator
-
-        def run(self, *args: object, **kwargs: object) -> None:
-            raise RuntimeError("fastmcp is required to run the shell MCP server")
-
+from astracore.mcp_servers._base import FastMCP, normalize_path, truncate_output
 
 # ---------------------------------------------------------------------------
 # 危险命令黑名单（正则，case-insensitive），匹配即拒绝
@@ -92,16 +74,8 @@ def _parse_args() -> argparse.Namespace:
 _args = _parse_args()
 
 
-def _normalize_path(path: str) -> Path:
-    if path == "~" or path.startswith("~/") or path.startswith("~\\"):
-        home = os.environ.get("HOME") or str(Path.home())
-        suffix = path[2:] if len(path) > 1 else ""
-        return (Path(home) / suffix).resolve()
-    return Path(path).expanduser().resolve()
-
-
 # 将允许目录规范化为绝对路径
-_ALLOWED_DIRS: list[Path] = [_normalize_path(d) for d in _args.allow_dirs]
+_ALLOWED_DIRS: list[Path] = [normalize_path(d) for d in _args.allow_dirs]
 _TIMEOUT: float = _args.timeout
 
 mcp = FastMCP(
@@ -194,9 +168,7 @@ async def run_command(command: str, cwd: str | None = None) -> str:
         output = await asyncio.wait_for(_read(), timeout=_TIMEOUT)
         exit_code = proc.returncode
 
-        result = output[:MAX_OUTPUT_CHARS]
-        if len(output) > MAX_OUTPUT_CHARS:
-            result += f"\n... [输出已截断，共 {len(output)} 字符]"
+        result = truncate_output(output, MAX_OUTPUT_CHARS)
 
         output_line = (
             f"[退出码: {exit_code}]\n{result}" if result else f"[退出码: {exit_code}] (无输出)"

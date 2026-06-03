@@ -187,7 +187,9 @@ src/astracore/
 │   ├── tools/           # native、MCP、composite、parallel agent 工具实现
 │   └── workflow/        # NativeWorkflowOrchestrator（DAG 拓扑排序 + 并行执行）
 ├── mcp_servers/
-│   └── shell_server.py  # 内置 MCP Shell Server（受控命令执行）
+│   ├── _base.py             # MCP server 公共基础（FastMCP 封装、路径规范化、输出截断）
+│   ├── filesystem_server.py # 内置 Python filesystem server（读写/编辑/搜索/元数据，10 个工具）
+│   └── shell_server.py      # 内置 MCP Shell Server（受控命令执行）
 ├── eval/
 │   ├── dataset.py       # EvalCase 数据类
 │   ├── report.py        # EvalResult / EvalReport
@@ -269,7 +271,7 @@ TAVILY_API_KEY=tvly-xxx
 
 | type | 说明 | 必填字段 |
 |------|------|---------|
-| `filesystem` | @modelcontextprotocol/server-filesystem，需 Node.js | `paths: list[str]` |
+| `filesystem` | 内置 Python filesystem server，无需 Node.js；提供 read_file / write_file / edit_file / list_directory / search_files 等 10 个工具 | `paths: list[str]` |
 | `shell` | 内置受控 shell server | `allow_dirs: list[str]`，`timeout: float`（默认 30s） |
 | `custom` | 任意外部 MCP 进程 | `name`, `command`, `args`, `env` |
 

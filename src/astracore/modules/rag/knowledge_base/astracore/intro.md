@@ -13,7 +13,7 @@ related: [astracore/chat_pipeline, astracore/skill_system, astracore/tool_system
 
 - **多 LLM 支持**：Anthropic Claude、OpenAI GPT，通过统一 `LLMAdapter` 接口切换，无需修改业务代码
 - **工具调用（Tool Use）**：支持原生 Python 工具和 MCP 协议工具，多轮自动执行
-- **技能系统（Skills）**：可配置的 AI 能力包，包含专属系统提示和工具权限，支持向量/LLM 自动路由
+- **技能系统（Skills）**：Claude 可按需加载的专业能力包（Agent Skills 标准），三层 System Prompt + Claude 自主路由，无需服务端路由引擎
 - **知识库检索（RAG）**：ChromaDB 向量存储，语义检索自动注入对话上下文
 - **记忆系统（Memory）**：三层记忆架构，LLM 自动抽取并持久化关键信息
 - **并行多 Agent**：主 Agent 可分解任务并发调度多个子 Agent，实时流式进度

@@ -122,7 +122,7 @@ mcp:
 
 支持类型：
 
-- `filesystem`：通过 MCP 文件系统服务访问允许目录。
+- `filesystem`：内置 Python filesystem server（`mcp_servers/filesystem_server.py`），无需 Node.js；提供 `read_file`、`read_multiple_files`、`write_file`、`edit_file`、`list_directory`、`create_directory`、`move_file`、`delete_file`、`search_files`、`get_file_info` 共 10 个工具；`paths` 列表限定可访问目录。
 - `shell`：使用内置受控 shell server，在允许目录内执行命令。
 - `custom`：自定义外部 MCP server，需要配置 `name`、`command`、`args`、`env`。
 
