@@ -20,6 +20,7 @@ _CATEGORY_LABELS: dict[str, str] = {
     "finance": "金融",
     "language": "语言",
     "ops": "运维",
+    "entertainment": "娱乐",
 }
 
 

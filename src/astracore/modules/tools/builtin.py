@@ -129,6 +129,37 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         except Exception as e:
             return f"知识库搜索失败：{e}"
 
+    async def _compact_memory(_context: dict[str, object] | None = None) -> str:
+        from uuid import UUID  # noqa: PLC0415
+
+        from astracore.infrastructure.memory.store import SQLMemoryStore  # noqa: PLC0415
+        from astracore.modules.memory.application.engine import MemoryEngine  # noqa: PLC0415
+
+        ctx = _context or {}
+        session_id_str = ctx.get("session_id")
+        if not session_id_str:
+            return "无法获取当前会话 ID，记忆压缩失败。"
+
+        session_id = UUID(str(session_id_str))
+        from astracore.shared.ports.llm import LLMAdapter  # noqa: PLC0415
+
+        raw_llm = ctx.get("llm_adapter")
+        llm_adapter = raw_llm if isinstance(raw_llm, LLMAdapter) else None
+        model_raw = ctx.get("model")
+        model = str(model_raw) if model_raw is not None else None
+
+        engine = MemoryEngine(SQLMemoryStore(db_url))
+        result = await engine.compact_session_memories(
+            session_id=session_id,
+            llm_adapter=llm_adapter,
+            model=model,
+            force=True,
+        )
+        if result is None:
+            return "当前会话记忆不足，无法压缩（至少需要 2 条可压缩记忆）。"
+        compressed_count = result.metadata.get("compressed_from_count", "若干")
+        return f"记忆压缩完成：已将 {compressed_count} 条会话记忆合并为一条摘要。"
+
     native = NativeToolAdapter()
 
     native.register_tool(
@@ -203,6 +234,16 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=False,
             ),
         ],
+    )
+
+    native.register_tool(
+        name="compact_memory",
+        func=_compact_memory,
+        description=(
+            "将当前会话中积累的多条短期记忆压缩合并为一条摘要，释放记忆槽位。"
+            "当用户要求「压缩记忆」「整理记忆」或会话记忆条数较多时使用。"
+        ),
+        parameters=[],
     )
 
     # 技能工具：load_skill / get_skill_reference / run_skill_script

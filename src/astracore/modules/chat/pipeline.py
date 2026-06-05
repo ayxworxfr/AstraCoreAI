@@ -48,6 +48,13 @@ _ANTHROPIC_BLOCKS_KEY = "anthropic_content_blocks"
 # ------------------------------------------------------------------
 
 
+def _trim_history(messages: list[Message], limit: int) -> list[Message]:
+    """Keep only the most recent *limit* messages; 0 means unlimited."""
+    if limit > 0 and len(messages) > limit:
+        return messages[-limit:]
+    return messages
+
+
 def _strip_dangling_tool_calls(messages: list[Message]) -> list[Message]:
     """Remove trailing ASSISTANT messages that have tool_calls but no following results."""
     msgs = list(messages)
@@ -66,38 +73,6 @@ def _prepare_for_save(messages: list[Message]) -> list[Message]:
         and not (m.role == MessageRole.ASSISTANT and m.tool_calls)
     ]
     return _strip_dangling_tool_calls(msgs)
-
-
-def _needs_summary_fallback(messages: list[Message]) -> bool:
-    """Return True when the tool loop ended without producing visible assistant text."""
-    visible = [m for m in messages if m.role != MessageRole.SYSTEM]
-    if not visible:
-        return False
-    last = visible[-1]
-    if last.role == MessageRole.TOOL and last.has_tool_results():
-        return True
-    return last.role == MessageRole.ASSISTANT and not last.content.strip()
-
-
-def _build_summary_fallback_messages(
-    messages: list[Message], *, hit_iteration_limit: bool
-) -> list[Message]:
-    """Construct a message list that instructs the LLM to summarise without tool calls."""
-    prompt = (
-        "你现在处于工具调用收尾阶段。请只基于已有对话和工具结果给出最终回答，"
-        "不要继续调用工具，也不要继续规划下一步。"
-        "如果信息不足，请明确说明已确认内容和仍然缺失的信息。"
-    )
-    if hit_iteration_limit:
-        prompt = "你已达到工具循环最大轮次，请停止继续探索，直接基于当前工具结果完成总结。" + prompt
-    copied = [m.model_copy(deep=True) for m in messages]
-    if copied and copied[0].role == MessageRole.SYSTEM:
-        copied[0] = copied[0].model_copy(
-            update={"content": f"{copied[0].content}\n\n---\n\n{prompt}"}
-        )
-    else:
-        copied.insert(0, Message(role=MessageRole.SYSTEM, content=prompt))
-    return copied
 
 
 # ------------------------------------------------------------------
@@ -151,6 +126,7 @@ class ChatPipeline:
                     max_tokens=profile.max_tokens,
                     supports_temperature=profile.capabilities.temperature,
                     use_anthropic_blocks=profile.capabilities.anthropic_blocks,
+                    structured_output_via_tools=profile.capabilities.structured_output_via_tools,
                 )
             else:
                 self._llm_adapters[profile.id] = OpenAIAdapter(
@@ -168,12 +144,17 @@ class ChatPipeline:
         profile: LLMProfileConfig,
         tool_adapter: ToolAdapter,
         allowed_tools: frozenset[str] = frozenset(),
+        session_id: UUID | None = None,
     ) -> ToolLoopUseCase:
         cfg = self._config.agent
         extra_context: dict[str, Any] = {}
         if allowed_tools:
             extra_context["allowed_tools"] = allowed_tools
         extra_context["tool_adapter"] = tool_adapter
+        if session_id is not None:
+            extra_context["session_id"] = str(session_id)
+            extra_context["llm_adapter"] = self.get_llm_adapter(profile)
+            extra_context["model"] = profile.model
         return ToolLoopUseCase(
             llm_adapter=self.get_llm_adapter(profile),
             tool_adapter=tool_adapter,
@@ -343,32 +324,29 @@ class ChatPipeline:
 
     async def stream(self, ctx: ChatContext) -> AsyncIterator[StreamEvent]:
         """Stream a chat turn.  Requires a fully-resolved ``ChatContext`` from ``prepare()``."""
-        stored = [
-            m
-            for m in await self._memory.load_short_term(ctx.session_id)
-            if m.role != MessageRole.SYSTEM
-        ]
+        stored = _trim_history(
+            [
+                m
+                for m in await self._memory.load_short_term(ctx.session_id)
+                if m.role != MessageRole.SYSTEM
+            ],
+            ctx.context_max_messages,
+        )
 
         session = SessionState(session_id=ctx.session_id)
 
         if ctx.mode == "tool_loop":
-            # For tool-loop mode: trim stored messages first, then prepend system and add user.
-            # The tool loop operates on the whole session including system message.
-            trimmed = (
-                stored[-ctx.context_max_messages :]
-                if ctx.context_max_messages and len(stored) > ctx.context_max_messages
-                else stored
-            )
+            # tool_loop needs the system message inside the session so the tool loop can see it.
             initial: list[Message] = []
             if ctx.system_prompt:
                 initial.append(Message(role=MessageRole.SYSTEM, content=ctx.system_prompt))
-            initial.extend(trimmed)
+            initial.extend(stored)
             session.restore_messages(initial)
             session.add_message(Message(role=MessageRole.USER, content=ctx.message))
             async for event in self._stream_tool_loop(ctx, session):
                 yield event
         else:
-            # For normal mode: restore stored, add user, then prepend system only for LLM call.
+            # normal mode: system is prepended only at the LLM call site.
             session.restore_messages(stored)
             session.add_message(Message(role=MessageRole.USER, content=ctx.message))
             async for event in self._stream_normal(ctx, session):
@@ -379,8 +357,6 @@ class ChatPipeline:
     ) -> AsyncIterator[StreamEvent]:
         """Stream a single LLM call without tool execution."""
         llm_messages = session.get_messages()
-        if ctx.context_max_messages and len(llm_messages) > ctx.context_max_messages:
-            llm_messages = llm_messages[-ctx.context_max_messages :]
         if ctx.system_prompt:
             llm_messages = [
                 Message(role=MessageRole.SYSTEM, content=ctx.system_prompt)
@@ -429,9 +405,11 @@ class ChatPipeline:
         """
         assert ctx.tool_adapter is not None, "tool_adapter must be set for tool_loop mode"
         tool_loop = self._make_tool_loop(
-            ctx.profile, ctx.tool_adapter, allowed_tools=ctx.allowed_tools
+            ctx.profile,
+            ctx.tool_adapter,
+            allowed_tools=ctx.allowed_tools,
+            session_id=ctx.session_id,
         )
-        round_count = 0
         completed = False
         total_input_tokens = 0
         total_output_tokens = 0
@@ -439,54 +417,22 @@ class ChatPipeline:
             async for event in tool_loop.execute_stream_with_tools(
                 session, allowed_tools=ctx.allowed_tools, **ctx.llm_kwargs
             ):
-                if event.event_type == StreamEventType.ROUND_START:
-                    round_count = int(event.metadata.get("round", round_count + 1))
-                # Filter LLM-level DONE events; we emit the authoritative ones below.
-                # Accumulate usage from each round's DONE before filtering.
                 if event.event_type == StreamEventType.DONE:
-                    _u = event.metadata.get("usage", {})
-                    total_input_tokens += int(_u.get("input_tokens", 0))
-                    total_output_tokens += int(_u.get("output_tokens", 0))
+                    if event.metadata.get("source") == "tool_loop":
+                        # Phase boundary from closing round: pass through so the API
+                        # layer can reset in_tool_round before closing-round text arrives.
+                        yield event
+                    else:
+                        # Accumulate usage; filter out intermediate DONE events.
+                        _u = event.metadata.get("usage", {})
+                        total_input_tokens += int(_u.get("input_tokens", 0))
+                        total_output_tokens += int(_u.get("output_tokens", 0))
                     continue
                 yield event
             completed = True
         finally:
             if not completed:
                 await self._save_session_safe(ctx.session_id, session.get_messages())
-
-        safe_messages = _strip_dangling_tool_calls(session.get_messages())
-        if _needs_summary_fallback(safe_messages):
-            hit_limit = (
-                not tool_loop.unlimited
-                and round_count >= tool_loop.max_iterations
-                and bool(safe_messages)
-                and safe_messages[-1].role == MessageRole.TOOL
-            )
-            # Phase boundary: consumers use this to separate tool-phase from summary text.
-            yield StreamEvent(event_type=StreamEventType.DONE, metadata={"source": "tool_loop"})
-
-            summary_text = ""
-            async for event in self.get_llm_adapter(ctx.profile).generate_stream(
-                messages=_build_summary_fallback_messages(
-                    safe_messages, hit_iteration_limit=hit_limit
-                ),
-                temperature=ctx.temperature,
-            ):
-                if event.event_type == StreamEventType.TEXT_DELTA and event.content:
-                    summary_text += event.content
-                if event.event_type == StreamEventType.DONE:
-                    _u = event.metadata.get("usage", {})
-                    total_input_tokens += int(_u.get("input_tokens", 0))
-                    total_output_tokens += int(_u.get("output_tokens", 0))
-                    continue
-                yield event
-
-            if summary_text.strip():
-                session.add_message(Message(role=MessageRole.ASSISTANT, content=summary_text))
-            else:
-                hint = "信息量较大，本轮分析已暂停。会话已保存，请发送「继续」让 AI 继续完成分析。"
-                session.add_message(Message(role=MessageRole.ASSISTANT, content=hint))
-                yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content=hint)
 
         await self._save_session_safe(ctx.session_id, session.get_messages())
         yield StreamEvent(

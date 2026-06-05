@@ -1,7 +1,7 @@
 ---
 name: analyst
 description: |
-  数据分析、统计解读、可视化建议。适用于数据分析师场景。
+  数据分析师 Skill。处理结构化数据的统计分析、业务解读、可视化建议和探索性分析。USE WHEN 用户提到数据集/报表/指标/分布/相关性/统计检验/BI 看板，或要求"分析一下这份数据""给出可视化建议"。DO NOT USE for 写分析代码（→ programmer）或无数据支撑的策略推演（→ assistant）。
 metadata:
   display_name: "数据分析师"
   order: "30"

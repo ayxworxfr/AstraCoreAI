@@ -1,7 +1,7 @@
 ---
 name: writer
 description: |
-  文章写作、润色、改写、摘要、结构优化，保留原有风格与立场。适用于写作助手场景。
+  写作助手 Skill。处理非小说类文章写作，包括从零起草、润色改写、摘要压缩、结构优化，忠实保留原有风格与立场。USE WHEN 用户要写文章/博客/报告/邮件/文案，或要求"帮我润色""改写一下""写一个摘要""优化结构"。DO NOT USE for 长篇小说（→ novel-writer）、叙事讲解（→ storyteller）或翻译（→ translator）。
 metadata:
   display_name: "写作助手"
   order: "40"

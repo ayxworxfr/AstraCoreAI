@@ -1,7 +1,7 @@
 ---
 name: programmer
 description: |
-  专注编程，覆盖写新代码、调试、重构、代码阅读、技术选型与测试。适用于代码助手场景。
+  代码助手 Skill。专注所有编程任务，包括写新代码、调试报错、重构、代码阅读解释、技术选型、编写测试。USE WHEN 用户提到代码/函数/类/bug/报错/API/算法/数据结构/编程语言/框架，或说"帮我写""帮我改""为什么报错"等编程相关请求。DO NOT USE for OpenClaw 运维（→ openclaw-manager）或纯数据分析（→ analyst）。
 metadata:
   display_name: "代码助手"
   order: "20"

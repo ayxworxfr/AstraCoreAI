@@ -220,10 +220,11 @@ class OpenAIAdapter(LLMAdapter):
     ) -> LLMResponse:
         """Generate a complete response.
 
-        When *response_format* is provided and the protocol is ``openai`` / ``deepseek``
-        (i.e. Chat Completions), ``response_format`` is set to ``json_schema`` so the
-        model is constrained to output valid JSON matching the Pydantic schema.
-        The JSON string is returned in ``LLMResponse.content``.
+        When *response_format* is provided, the Pydantic schema is injected into
+        the system message and ``response_format={"type":"json_object"}`` is sent.
+        ``json_object`` is supported by OpenAI and virtually all third-party proxies;
+        the stricter ``json_schema`` is intentionally avoided because many providers
+        return unexpected payloads when they receive unsupported parameters.
 
         The Responses API (``protocol == "responses"``) does not support structured
         output; *response_format* is ignored for that protocol.
@@ -251,20 +252,40 @@ class OpenAIAdapter(LLMAdapter):
 
         if response_format is not None:
             schema = response_format.model_json_schema()
-            request_params["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": response_format.__name__,
-                    "schema": schema,
-                    "strict": True,
-                },
-            }
+            # Inject schema into the system message so the model knows the expected
+            # shape. json_object is used universally: it is supported by native
+            # OpenAI and virtually all third-party proxies, unlike json_schema/strict
+            # which many providers do not implement.
+            schema_hint = (
+                "\n\n请严格以合法 JSON 格式输出，不包含任何额外文字，"
+                f"结构符合以下 schema：\n{json.dumps(schema, ensure_ascii=False)}"
+            )
+            injected = False
+            for msg in converted_messages:
+                if msg.get("role") == "system":
+                    msg["content"] = (msg.get("content") or "") + schema_hint
+                    injected = True
+                    break
+            if not injected:
+                converted_messages.insert(0, {"role": "system", "content": schema_hint.lstrip()})
+            request_params["response_format"] = {"type": "json_object"}
         else:
             tools = self._tools_for_openai(kwargs)
             if tools:
                 request_params["tools"] = tools
 
         response = await client.chat.completions.create(**request_params)
+
+        # Defensive: some proxy implementations return a raw string instead of a
+        # ChatCompletion object when they encounter unsupported request parameters.
+        if isinstance(response, str):
+            _logger.warning(
+                "OpenAI proxy returned a raw string instead of ChatCompletion; "
+                "treating as content. model=%s base_url=%s",
+                model,
+                self._base_url,
+            )
+            return LLMResponse(content=response, tool_calls=[], model=model)
 
         choice = response.choices[0]
         content = choice.message.content or ""

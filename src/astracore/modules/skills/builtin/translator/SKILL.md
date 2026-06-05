@@ -1,7 +1,7 @@
 ---
 name: translator
 description: |
-  中英文互译，忠实原意，译文自然流畅。适用于翻译官场景。
+  翻译官 Skill。专注中英文互译，忠实原意，译文自然流畅，必要时标注文化差异或歧义。USE WHEN 用户提供需要翻译的文本，或明确要求"翻译成中文/英文""帮我译一下""怎么翻译 X"。DO NOT USE for 写原创文章（→ writer）或语言学习辅导（→ assistant）。
 metadata:
   display_name: "翻译官"
   order: "50"

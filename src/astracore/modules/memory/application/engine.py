@@ -308,7 +308,14 @@ class MemoryEngine:
         llm_adapter: LLMAdapter | None = None,
         model: str | None = None,
         threshold: int = _SESSION_COMPACT_THRESHOLD,
+        force: bool = False,
     ) -> StructuredMemory | None:
+        """压缩当前会话的短期记忆。
+
+        force=True 时跳过条数阈值检查，仅保留 locked 记忆，其余全部压缩；
+        适用于用户主动触发。force=False（默认）用于每轮对话后的自动触发，
+        只有积累到 threshold 条以上才执行。
+        """
         memories = await self._store.list_memories(
             scope=MemoryScope.SESSION,
             session_id=session_id,
@@ -316,11 +323,14 @@ class MemoryEngine:
             limit=threshold + 20,
         )
         unlocked = [memory for memory in memories if not memory.locked]
-        if len(memories) <= threshold or len(unlocked) < 4:
+        min_unlocked = 2 if force else 4
+        if (not force and len(memories) <= threshold) or len(unlocked) < min_unlocked:
             return None
 
         protected = [memory for memory in memories if memory.locked]
-        keep_count = max(3, len(protected))
+        # force 时只保留 locked 记忆，让用户触发的压缩尽量彻底；
+        # 自动触发时保留 top-3 以防高价值记忆被意外合并。
+        keep_count = len(protected) if force else max(3, len(protected))
         ranked = self._rank_memories(memories, "")[:keep_count]
         keep_ids = {memory.id for memory in ranked}
         compressible = [memory for memory in unlocked if memory.id not in keep_ids]

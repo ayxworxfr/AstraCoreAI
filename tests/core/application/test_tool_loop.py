@@ -137,7 +137,9 @@ async def test_execute_with_tools_respects_max_iterations(mock_llm, mock_tools):
     session = SessionState()
     await uc.execute_with_tools(session)
 
-    assert mock_llm.generate.call_count == 3
+    # 3 main iterations + 1 closing round (mock ignores tools=None and returns empty content)
+    assert mock_llm.generate.call_count == 4
+    assert session.get_messages()[-1].role == MessageRole.ASSISTANT
 
 
 async def test_execute_with_tools_skips_tool_execution_on_final_iteration(mock_llm, mock_tools):
@@ -171,10 +173,13 @@ async def test_execute_stream_with_tools_skips_tool_execution_on_final_iteration
     events = [event async for event in uc.execute_stream_with_tools(session)]
 
     mock_tools.execute.assert_not_called()
-    assert len(events) == 3
+    # ROUND_START, TOOL_CALL, THINKING_STOP from main loop (is_last, tools disabled)
+    # + DONE{"source":"tool_loop"} phase boundary + TOOL_CALL from closing round FakeLLM
     assert events[0].event_type == StreamEventType.ROUND_START
     assert events[1].tool_call == tool_call
     assert events[2].event_type == StreamEventType.THINKING_STOP
+    assert events[3].event_type == StreamEventType.DONE
+    assert events[3].metadata.get("source") == "tool_loop"
     assert session.get_messages()[-1].role == MessageRole.ASSISTANT
 
 

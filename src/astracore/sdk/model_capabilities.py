@@ -10,6 +10,7 @@ class LLMCapabilities(BaseModel):
     thinking: bool = False
     temperature: bool = True
     anthropic_blocks: bool = False
+    structured_output_via_tools: bool = True
 
 
 _DEFAULT_CAPABILITIES = LLMCapabilities()
@@ -58,6 +59,17 @@ def infer_model_capabilities(
             thinking=False,
             temperature=True,
             anthropic_blocks=False,
+        )
+
+    # 第三方 Anthropic 兼容端点（如 DeepSeek via api.deepseek.com/anthropic）
+    # 不支持强制 tool_choice，结构化输出必须走 system prompt JSON 注入
+    if normalized_protocol == "anthropic" and "/anthropic" in normalized_base_url:
+        return LLMCapabilities(
+            tools=True,
+            thinking=False,
+            temperature=True,
+            anthropic_blocks=False,
+            structured_output_via_tools=False,
         )
 
     return _DEFAULT_CAPABILITIES.model_copy()

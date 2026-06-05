@@ -12,6 +12,7 @@ const CATEGORY_OPTIONS = [
   { value: 'finance', label: '金融 (finance)' },
   { value: 'language', label: '语言 (language)' },
   { value: 'ops', label: '运维 (ops)' },
+  { value: 'entertainment', label: '娱乐 (entertainment)' },
 ];
 
 type Props = {

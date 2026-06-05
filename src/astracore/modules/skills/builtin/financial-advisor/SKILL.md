@@ -1,7 +1,7 @@
 ---
 name: financial-advisor
 description: |
-  黄金贵金属股票基金债券外汇期货行情分析、资产配置与投资理财建议、宏观经济政策解读。适用于理财顾问场景。
+  理财顾问 Skill。专注金融市场行情分析、资产配置建议和宏观经济政策解读，覆盖黄金/股票/基金/债券/外汇/期货。USE WHEN 用户提到投资/理财/行情/资产配置/市场分析，或询问"买什么好""怎么配置资产""现在市场怎么样"。DO NOT USE for 纯数据统计计算（→ analyst）或非金融写作（→ writer）。
 metadata:
   display_name: "理财顾问"
   order: "25"

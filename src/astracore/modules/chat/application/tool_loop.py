@@ -122,6 +122,26 @@ class ToolLoopUseCase:
             for t in self.tools.get_definitions()
         ]
 
+    def _needs_closing_round(self, messages: list[Message]) -> bool:
+        """Return True if the loop ended without a text response from the assistant."""
+        visible = [m for m in messages if m.role != MessageRole.SYSTEM]
+        if not visible:
+            return False
+        last = visible[-1]
+        return (last.role == MessageRole.TOOL and last.has_tool_results()) or (
+            last.role == MessageRole.ASSISTANT and not last.content.strip()
+        )
+
+    def _build_closing_messages(self, messages: list[Message]) -> list[Message]:
+        """Inject a closing instruction so the LLM must respond without calling tools."""
+        note = "工具调用阶段已结束。请直接基于以上工具结果给出最终回答，禁止继续调用工具。"
+        msgs = list(messages)
+        if msgs and msgs[0].role == MessageRole.SYSTEM:
+            msgs[0] = msgs[0].model_copy(update={"content": f"{msgs[0].content}\n\n---\n\n{note}"})
+        else:
+            msgs.insert(0, Message(role=MessageRole.SYSTEM, content=note))
+        return msgs
+
     # ------------------------------------------------------------------
     # Hook helpers
     # ------------------------------------------------------------------
@@ -520,6 +540,19 @@ class ToolLoopUseCase:
                 Message(role=MessageRole.TOOL, content="", tool_results=tool_results)
             )
 
+        if self._needs_closing_round(session.get_messages()):
+            msgs = self._build_closing_messages(session.get_messages())
+            response = await self.policy.apply_retry_policy(
+                self.llm.generate, messages=msgs, model=model, tools=None
+            )
+            session.add_message(
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    content=response.content or "工具执行完成。",
+                    tool_calls=[],
+                )
+            )
+
         return session
 
     # ------------------------------------------------------------------
@@ -659,4 +692,23 @@ class ToolLoopUseCase:
 
             session.add_message(
                 Message(role=MessageRole.TOOL, content="", tool_results=tool_results)
+            )
+
+        if self._needs_closing_round(session.get_messages()):
+            # Phase boundary: resets in_tool_round in the API layer.
+            yield StreamEvent(event_type=StreamEventType.DONE, metadata={"source": "tool_loop"})
+            msgs = self._build_closing_messages(session.get_messages())
+            closing_content = ""
+            async for event in self.llm.generate_stream(
+                messages=msgs, model=model, tools=None, **llm_kwargs
+            ):
+                if event.event_type == StreamEventType.TEXT_DELTA and event.content:
+                    closing_content += event.content
+                yield event
+            session.add_message(
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    content=closing_content or "工具执行完成。",
+                    tool_calls=[],
+                )
             )

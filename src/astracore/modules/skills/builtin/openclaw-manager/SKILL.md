@@ -1,7 +1,7 @@
 ---
 name: openclaw-manager
 description: |
-  通过原生 CLI 管理 OpenClaw Gateway，处理启动、停止、重启、状态检查、日志查看和基础健康检查。适用于 OpenClaw 运维管理场景。
+  OpenClaw 管理员 Skill。通过原生 CLI 管理 OpenClaw Gateway，处理启动/停止/重启/状态检查/日志查看/健康检查等运维操作。USE WHEN 用户提到 OpenClaw、gateway 启停、查日志、服务状态检查，或发出"重启 OpenClaw""看一下 gateway 日志"等运维指令。DO NOT USE for 一般编程任务（→ programmer）或非 OpenClaw 服务的运维。
 metadata:
   display_name: "OpenClaw 管理员"
   order: "70"

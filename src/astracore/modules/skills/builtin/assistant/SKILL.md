@@ -1,7 +1,7 @@
 ---
 name: assistant
 description: |
-  日常问答、技术解释、方案对比、任务拆解、效率工具。适用于通用助手场景。
+  通用助手 Skill，兜底 Skill——当没有更专精的 Skill 命中时激活。覆盖日常问答、概念解释、任务拆解、方案对比、效率建议、闲聊。USE WHEN 请求不属于编程/写作/翻译/数据分析/金融/游戏/小说/故事等专项场景，或问"帮我想想""怎么做 X""解释一下 Y"等通用类问题。DO NOT USE when 有更专精 Skill 可用——先让专项 Skill 处理。
 metadata:
   display_name: "通用助手"
   order: "10"

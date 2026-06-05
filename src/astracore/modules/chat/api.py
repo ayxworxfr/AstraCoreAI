@@ -426,11 +426,12 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
     async for event in _get_chat_pipeline().stream(ctx):
         if event.event_type == StreamEventType.DONE:
             if event.metadata.get("source") == "tool_loop":
-                # Phase boundary: tool loop ended, summary phase begins.
-                # Flush any buffered intermediate text as final assistant content.
-                for text in round_text_buffer:
-                    accumulated_content += text
-                    _broadcast_run_event(run_id, "message", {"text": text})
+                # Phase boundary: closing round is about to begin.
+                # Flush buffered intermediate text as a single event to avoid queue overflow.
+                if round_text_buffer:
+                    flushed = "".join(round_text_buffer)
+                    accumulated_content += flushed
+                    _broadcast_run_event(run_id, "message", {"text": flushed})
                 round_text_buffer = []
                 in_tool_round = False
             else:
@@ -438,16 +439,18 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
                 _u = event.metadata.get("usage", {})
                 total_input_tokens = int(_u.get("input_tokens", 0))
                 total_output_tokens = int(_u.get("output_tokens", 0))
-                for text in round_text_buffer:
-                    accumulated_content += text
-                    _broadcast_run_event(run_id, "message", {"text": text})
+                if round_text_buffer:
+                    flushed = "".join(round_text_buffer)
+                    accumulated_content += flushed
+                    _broadcast_run_event(run_id, "message", {"text": flushed})
                 break
         elif event.event_type == StreamEventType.ROUND_START:
-            for text in round_text_buffer:
+            if round_text_buffer:
                 if not thinking_blocks:
                     thinking_blocks.append("")
-                thinking_blocks[-1] += text
-                _broadcast_run_event(run_id, "thinking", {"text": text})
+                flushed = "".join(round_text_buffer)
+                thinking_blocks[-1] += flushed
+                _broadcast_run_event(run_id, "thinking", {"text": flushed})
             round_text_buffer = []
             in_tool_round = False
             round_count = int(event.metadata.get("round", round_count + 1))
@@ -490,9 +493,10 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
             if not in_tool_round:
                 if not thinking_blocks:
                     thinking_blocks.append("")
-                for text in round_text_buffer:
-                    thinking_blocks[-1] += text
-                    _broadcast_run_event(run_id, "thinking", {"text": text})
+                if round_text_buffer:
+                    flushed = "".join(round_text_buffer)
+                    thinking_blocks[-1] += flushed
+                    _broadcast_run_event(run_id, "thinking", {"text": flushed})
                 round_text_buffer = []
                 in_tool_round = True
             item: dict[str, Any] = {
@@ -602,7 +606,6 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
             tool_activity=list(tool_activity),
         )
 
-    conv_meta = await _update_conversation_from_messages(ctx.session_id)
     row = await _update_run_row(
         run_id,
         assistant_content=accumulated_content,
@@ -613,6 +616,7 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
         output_tokens=total_output_tokens or None,
         model=ctx.profile.model or None,
     )
+    conv_meta = await _update_conversation_from_messages(ctx.session_id)
     if total_input_tokens or total_output_tokens:
         _broadcast_run_event(
             run_id,

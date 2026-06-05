@@ -90,48 +90,29 @@ def test_get_engine_uses_null_pool_for_sqlite() -> None:
         get_engine.cache_clear()
 
 
-async def test_stream_tool_loop_auto_summarizes_when_no_final_text() -> None:
-    """工具循环结束但没有最终助手文字时，pipeline 应自动发起总结 LLM 调用。"""
-    tool_call = ToolCall(name="read_text_file", arguments={"path": "/tmp/demo"})
+async def test_stream_tool_loop_passes_phase_boundary_from_closing_round() -> None:
+    """pipeline._stream_tool_loop 应透传来自 tool_loop 的 DONE{"source":"tool_loop"} phase boundary。
+
+    收尾轮由 ToolLoopUseCase 内部处理，pipeline 只需透传 phase boundary 信号供 api 层重置状态。
+    """
     mock_memory = AsyncMock(spec=MemoryAdapter)
     mock_memory.save_short_term.return_value = None
     mock_profile = MagicMock()
     mock_profile.id = "test-profile"
 
     class FakeToolLoop:
-        max_iterations = 3
-        unlimited = False
-
         async def execute_stream_with_tools(self, session, **kwargs):
             yield StreamEvent(event_type=StreamEventType.ROUND_START, metadata={"round": 1})
-            yield StreamEvent(event_type=StreamEventType.TOOL_CALL, tool_call=tool_call)
-            session.add_message(
-                Message(role=MessageRole.ASSISTANT, content="", tool_calls=[tool_call])
+            yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content="思考中")
+            # 收尾轮发出 phase boundary
+            yield StreamEvent(event_type=StreamEventType.DONE, metadata={"source": "tool_loop"})
+            yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content="最终回答")
+            # 普通 DONE（不应透传，应累计 usage）
+            yield StreamEvent(
+                event_type=StreamEventType.DONE,
+                metadata={"usage": {"input_tokens": 10, "output_tokens": 5}},
             )
-            session.add_message(
-                Message(
-                    role=MessageRole.TOOL,
-                    content="",
-                    tool_results=[
-                        ToolResult(
-                            tool_call_id=tool_call.id,
-                            name=tool_call.name,
-                            content="file content",
-                        )
-                    ],
-                )
-            )
-
-    class FakeSummaryLLM:
-        def __init__(self) -> None:
-            self.calls: list[list[Message]] = []
-
-        async def generate_stream(self, messages, **kwargs):
-            self.calls.append(messages)
-            yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content="基于工具结果的总结")
-            yield StreamEvent(event_type=StreamEventType.DONE)
-
-    fake_llm = FakeSummaryLLM()
+            session.add_message(Message(role=MessageRole.ASSISTANT, content="最终回答"))
 
     pipeline = ChatPipeline(
         config=MagicMock(),
@@ -140,7 +121,6 @@ async def test_stream_tool_loop_auto_summarizes_when_no_final_text() -> None:
         policy=PolicyEngine(),
         tool_adapter=MagicMock(),
     )
-    pipeline._llm_adapters[mock_profile.id] = fake_llm
     pipeline._make_tool_loop = lambda *args, **kwargs: FakeToolLoop()
 
     ctx = ChatContext(
@@ -160,23 +140,26 @@ async def test_stream_tool_loop_auto_summarizes_when_no_final_text() -> None:
     async for event in pipeline._stream_tool_loop(ctx, session):
         events.append(event)
 
+    done_events = [e for e in events if e.event_type == StreamEventType.DONE]
+    # 应有两个 DONE：一个是 phase boundary，一个是最终 DONE（带 usage）
+    assert len(done_events) == 2
+    assert done_events[0].metadata.get("source") == "tool_loop"
+    assert "usage" in done_events[1].metadata
+    assert done_events[1].metadata["usage"]["input_tokens"] == 10
+
     text_events = [e for e in events if e.event_type == StreamEventType.TEXT_DELTA]
-    assert any("总结" in (e.content or "") for e in text_events)
-    assert len(fake_llm.calls) == 1
+    assert any("最终回答" in (e.content or "") for e in text_events)
 
 
-async def test_stream_tool_loop_auto_summarizes_at_iteration_limit() -> None:
-    """工具循环达到最大轮次时，总结提示应包含"已达到工具循环最大轮次"。"""
+async def test_stream_tool_loop_does_not_summarize_internally() -> None:
+    """pipeline._stream_tool_loop 不再自行发起 LLM 总结调用；收尾由 tool_loop 内部负责。"""
     tool_call = ToolCall(name="read_text_file", arguments={"path": "/tmp/demo"})
     mock_memory = AsyncMock(spec=MemoryAdapter)
     mock_memory.save_short_term.return_value = None
     mock_profile = MagicMock()
     mock_profile.id = "test-profile"
 
-    class FakeToolLoopOneIteration:
-        max_iterations = 1
-        unlimited = False
-
+    class FakeToolLoop:
         async def execute_stream_with_tools(self, session, **kwargs):
             yield StreamEvent(event_type=StreamEventType.ROUND_START, metadata={"round": 1})
             yield StreamEvent(event_type=StreamEventType.TOOL_CALL, tool_call=tool_call)
@@ -196,17 +179,20 @@ async def test_stream_tool_loop_auto_summarizes_at_iteration_limit() -> None:
                     ],
                 )
             )
+            # 收尾轮已在 ToolLoopUseCase 内部完成
+            yield StreamEvent(event_type=StreamEventType.DONE, metadata={"source": "tool_loop"})
+            yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content="收尾文字")
+            session.add_message(Message(role=MessageRole.ASSISTANT, content="收尾文字"))
 
-    class FakeSummaryLLM:
+    class TrackLLM:
         def __init__(self) -> None:
-            self.calls: list[list[Message]] = []
+            self.calls: int = 0
 
         async def generate_stream(self, messages, **kwargs):
-            self.calls.append(messages)
-            yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content="已到达轮次上限的总结")
+            self.calls += 1
             yield StreamEvent(event_type=StreamEventType.DONE)
 
-    fake_llm = FakeSummaryLLM()
+    track_llm = TrackLLM()
 
     pipeline = ChatPipeline(
         config=MagicMock(),
@@ -215,8 +201,8 @@ async def test_stream_tool_loop_auto_summarizes_at_iteration_limit() -> None:
         policy=PolicyEngine(),
         tool_adapter=MagicMock(),
     )
-    pipeline._llm_adapters[mock_profile.id] = fake_llm
-    pipeline._make_tool_loop = lambda *args, **kwargs: FakeToolLoopOneIteration()
+    pipeline._llm_adapters[mock_profile.id] = track_llm
+    pipeline._make_tool_loop = lambda *args, **kwargs: FakeToolLoop()
 
     ctx = ChatContext(
         session_id=uuid4(),
@@ -231,13 +217,8 @@ async def test_stream_tool_loop_auto_summarizes_at_iteration_limit() -> None:
     session = SessionState(session_id=ctx.session_id)
     session.add_message(Message(role=MessageRole.USER, content=ctx.message))
 
-    events: list[StreamEvent] = []
-    async for event in pipeline._stream_tool_loop(ctx, session):
-        events.append(event)
+    async for _ in pipeline._stream_tool_loop(ctx, session):
+        pass
 
-    assert len(fake_llm.calls) == 1
-    assert any(
-        "已达到工具循环最大轮次" in message.content
-        for message in fake_llm.calls[0]
-        if message.role == MessageRole.SYSTEM
-    )
+    # pipeline 层不应发起任何 LLM 调用（总结由 tool_loop 内部负责）
+    assert track_llm.calls == 0

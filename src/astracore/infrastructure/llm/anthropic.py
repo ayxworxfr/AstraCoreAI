@@ -28,6 +28,7 @@ class AnthropicAdapter(LLMAdapter):
         max_tokens: int = 8192,
         supports_temperature: bool = True,
         use_anthropic_blocks: bool = False,
+        structured_output_via_tools: bool = True,
     ):
         self.api_key = api_key
         self.default_model = default_model
@@ -36,6 +37,7 @@ class AnthropicAdapter(LLMAdapter):
         self.max_tokens = max_tokens
         self.supports_temperature = supports_temperature
         self.use_anthropic_blocks = use_anthropic_blocks
+        self.structured_output_via_tools = structured_output_via_tools
         self._client: Any = None
 
     def _get_client(self) -> Any:
@@ -191,14 +193,25 @@ class AnthropicAdapter(LLMAdapter):
 
         if response_format is not None:
             schema = response_format.model_json_schema()
-            request_params["tools"] = [
-                {
-                    "name": "__structured_output__",
-                    "description": "Output structured data as specified.",
-                    "input_schema": schema,
-                }
-            ]
-            request_params["tool_choice"] = {"type": "tool", "name": "__structured_output__"}
+            if self.structured_output_via_tools:
+                # Claude 原生支持强制 tool_choice，用 tool_use 技巧获取结构化输出
+                request_params["tools"] = [
+                    {
+                        "name": "__structured_output__",
+                        "description": "Output structured data as specified.",
+                        "input_schema": schema,
+                    }
+                ]
+                request_params["tool_choice"] = {"type": "tool", "name": "__structured_output__"}
+            else:
+                # 第三方 Anthropic 兼容模型（如 DeepSeek）不支持强制 tool_choice，
+                # 改为 system prompt 注入 JSON schema 约束
+                json_hint = (
+                    "Respond with ONLY a valid JSON object matching this schema, no markdown fences, "
+                    f"no other text:\n{_json_stdlib.dumps(schema, ensure_ascii=False)}"
+                )
+                existing = request_params.get("system", "")
+                request_params["system"] = f"{existing}\n\n{json_hint}" if existing else json_hint
         elif "tools" in kwargs:
             request_params["tools"] = kwargs["tools"]
 

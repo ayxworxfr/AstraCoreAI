@@ -58,10 +58,14 @@ class NativeToolAdapter(MutableToolAdapter):
         start_time = time.time()
 
         try:
+            sig = inspect.signature(func)
+            call_kwargs = dict(arguments)
+            if "_context" in sig.parameters:
+                call_kwargs["_context"] = context
             if inspect.iscoroutinefunction(func):
-                result = await func(**arguments)
+                result = await func(**call_kwargs)
             else:
-                result = func(**arguments)
+                result = func(**call_kwargs)
 
             execution_time = (time.time() - start_time) * 1000
 

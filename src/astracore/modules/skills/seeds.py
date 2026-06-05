@@ -250,6 +250,57 @@ async def _ensure_skill_tables(db_url: str) -> None:
 
     engine = get_engine(db_url)
     async with engine.begin() as conn:
+        # 检测旧 system_prompt 列：SQLite 不支持 DROP COLUMN，需重建表
+        pragma_result = await conn.execute(text("PRAGMA table_info(skills)"))
+        existing_cols = {row[1] for row in pragma_result.fetchall()}
+
+        if "system_prompt" in existing_cols:
+            # 重建 skills 表以移除 system_prompt NOT NULL 列
+            await conn.execute(text("ALTER TABLE skills RENAME TO _skills_bak"))
+            await conn.execute(
+                text("""
+                CREATE TABLE skills (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    instructions TEXT NOT NULL DEFAULT '',
+                    category TEXT,
+                    is_builtin INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 1000,
+                    skill_dir TEXT,
+                    source_key TEXT,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+            """)
+            )
+            await conn.execute(
+                text("""
+                INSERT INTO skills
+                    (id, name, display_name, description, instructions,
+                     category, is_builtin, sort_order, skill_dir, source_key,
+                     created_at, updated_at)
+                SELECT
+                    id, name,
+                    COALESCE(display_name, '') AS display_name,
+                    COALESCE(description, '') AS description,
+                    CASE
+                        WHEN COALESCE(instructions, '') != '' THEN instructions
+                        WHEN COALESCE(system_prompt, '') != '' THEN system_prompt
+                        ELSE ''
+                    END AS instructions,
+                    category,
+                    COALESCE(is_builtin, 0) AS is_builtin,
+                    COALESCE(sort_order, 1000) AS sort_order,
+                    skill_dir, source_key,
+                    created_at, updated_at
+                FROM _skills_bak
+            """)
+            )
+            await conn.execute(text("DROP TABLE _skills_bak"))
+            logger.info("已将 skills 表重建迁移（移除旧 system_prompt 列）")
+
         # 补齐 skills 表列（向后兼容已有数据库）
         for col_name, ddl in [
             ("source_key", "TEXT"),
@@ -264,17 +315,6 @@ async def _ensure_skill_tables(db_url: str) -> None:
                 logger.info("已为 skills 表添加 %s 列", col_name)
             except Exception:
                 pass  # 列已存在
-
-        # 将旧 system_prompt 内容迁移到 instructions（仅在 instructions 为空时）
-        try:
-            await conn.execute(
-                text(
-                    "UPDATE skills SET instructions = system_prompt"
-                    " WHERE instructions = '' AND system_prompt IS NOT NULL AND system_prompt != ''"
-                )
-            )
-        except Exception:
-            pass  # system_prompt 列可能不存在（新建数据库）
 
         # 创建 skill_references 表（若不存在）
         await conn.execute(

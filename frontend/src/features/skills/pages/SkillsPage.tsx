@@ -8,7 +8,7 @@ import type { CreateSkillRequest, Skill } from '@/features/skills/types';
 import GlobalInstructionEditor from '@/features/skills/components/GlobalInstructionEditor';
 import AppScrollArea from '@/shared/components/AppScrollArea';
 
-const CATEGORY_ORDER = ['general', 'coding', 'writing', 'analysis', 'finance', 'language', 'ops'];
+const CATEGORY_ORDER = ['general', 'coding', 'writing', 'analysis', 'finance', 'language', 'ops', 'entertainment'];
 
 export default function SkillsPage(): JSX.Element {
   const { skills, settings, isLoading, error, fetchSkills, fetchSettings, createSkill, updateSkill, deleteSkill, saveSettings, clearError } =
@@ -98,6 +98,7 @@ export default function SkillsPage(): JSX.Element {
     finance: '金融',
     language: '语言',
     ops: '运维',
+    entertainment: '娱乐',
   };
 
   return (
