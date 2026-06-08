@@ -21,6 +21,7 @@ _SETTINGS_KEYS = {
     "ai_name",
     "owner_name",
     "timezone",
+    "thinking_collapse_mode",
 }
 
 _SETTINGS_DEFAULTS: dict[str, str] = {
@@ -31,6 +32,7 @@ _SETTINGS_DEFAULTS: dict[str, str] = {
     "ai_name": "小卡",
     "owner_name": "",
     "timezone": "Asia/Shanghai",
+    "thinking_collapse_mode": "auto",
 }
 
 
@@ -47,6 +49,7 @@ class UserSettingsResponse(BaseModel):
     ai_name: str = "小卡"
     owner_name: str = ""
     timezone: str = "Asia/Shanghai"
+    thinking_collapse_mode: str = "auto"
 
 
 class UserSettingsUpdate(BaseModel):
@@ -57,6 +60,7 @@ class UserSettingsUpdate(BaseModel):
     ai_name: str | None = None
     owner_name: str | None = None
     timezone: str | None = None
+    thinking_collapse_mode: str | None = None
 
 
 async def _load_settings_map(db_url: str) -> dict[str, str]:
@@ -77,6 +81,7 @@ def _build_response(data: dict[str, str]) -> UserSettingsResponse:
         ai_name=_get("ai_name"),
         owner_name=_get("owner_name"),
         timezone=_get("timezone"),
+        thinking_collapse_mode=_get("thinking_collapse_mode"),
     )
 
 

@@ -253,7 +253,7 @@ function RuntimeParamsTab(): JSX.Element {
   const { settings, fetchSettings, saveSettings } = useSkillStore();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [form] = Form.useForm<Pick<UserSettings, 'temperature' | 'rag_top_k' | 'context_max_messages' | 'timezone'>>();
+  const [form] = Form.useForm<Pick<UserSettings, 'temperature' | 'rag_top_k' | 'context_max_messages' | 'timezone' | 'thinking_collapse_mode'>>();
 
   useEffect(() => {
     void fetchSettings();
@@ -265,6 +265,7 @@ function RuntimeParamsTab(): JSX.Element {
       rag_top_k: settings.rag_top_k,
       context_max_messages: settings.context_max_messages,
       timezone: settings.timezone,
+      thinking_collapse_mode: settings.thinking_collapse_mode,
     });
   }, [settings, form]);
 
@@ -365,9 +366,25 @@ function RuntimeParamsTab(): JSX.Element {
           <ParamRow
             title="显示时区"
             description="控制前端所有时间展示和会话日期分组。默认使用北京时间。"
+            style={DIVIDER_STYLE}
           >
             <Form.Item name="timezone" noStyle rules={[{ required: true }]}>
               <Select options={TIMEZONE_OPTIONS} style={{ width: 260 }} />
+            </Form.Item>
+          </ParamRow>
+
+          <ParamRow
+            title="思考过程折叠"
+            description="控制 AI 思考过程（Extended Thinking）的折叠行为。"
+          >
+            <Form.Item name="thinking_collapse_mode" noStyle rules={[{ required: true }]}>
+              <Select
+                style={{ width: 260 }}
+                options={[
+                  { value: 'auto', label: '流式时展开' },
+                  { value: 'always_collapsed', label: '始终折叠' },
+                ]}
+              />
             </Form.Item>
           </ParamRow>
         </Form>

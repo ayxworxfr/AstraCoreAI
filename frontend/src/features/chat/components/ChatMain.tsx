@@ -28,6 +28,7 @@ const SUGGESTED_PROMPTS = [
   { key: '1', label: '你能做什么？', icon: <ThunderboltOutlined /> },
   { key: '2', label: 'RAG 检索怎么用？', icon: <ThunderboltOutlined /> },
   { key: '3', label: '给我讲个故事吧', icon: <ThunderboltOutlined /> },
+  { key: '4', label: '我们来玩个游戏吧', icon: <ThunderboltOutlined /> },
 ];
 
 function ThinkingBlock({
@@ -35,11 +36,13 @@ function ThinkingBlock({
   streaming,
   roundLabel,
   mode,
+  collapseMode,
 }: {
   thinking: string;
   streaming: boolean;
   roundLabel?: string;
   mode: ThinkingMode;
+  collapseMode: 'auto' | 'always_collapsed';
 }) {
   const { token } = theme.useToken();
   const isDark = token.colorBgBase < '#888888';
@@ -51,10 +54,24 @@ function ThinkingBlock({
   const textColor = isDark ? '#c084fc' : '#7c3aed';
   const contentColor = isDark ? '#a78bfa' : '#6b21a8';
 
+  const [activeKey, setActiveKey] = useState<string[]>(
+    collapseMode === 'auto' && streaming ? ['thinking'] : [],
+  );
+  useEffect(() => {
+    if (collapseMode === 'always_collapsed') {
+      setActiveKey([]);
+    } else if (streaming) {
+      setActiveKey(['thinking']);
+    } else {
+      setActiveKey([]);
+    }
+  }, [streaming, collapseMode]);
+
   return (
     <Collapse
       size="small"
-      defaultActiveKey={streaming ? ['thinking'] : []}
+      activeKey={activeKey}
+      onChange={(keys) => setActiveKey(keys as string[])}
       style={{
         marginBottom: 10,
         background: blockBg,
@@ -414,6 +431,7 @@ function AssistantContent({ message }: { message: ChatMessage }) {
   const blocks = message.thinkingBlocks ?? [];
   const isStreaming = message.status === 'streaming';
   const mode: ThinkingMode = message.thinkingMode ?? (message.toolActivity?.length ? 'tool' : 'normal');
+  const collapseMode = useSkillStore((s) => s.settings.thinking_collapse_mode);
 
   // 只渲染有内容的块，或最后一个正在流式生成的块（内容还没来）
   const visible = blocks
@@ -435,6 +453,7 @@ function AssistantContent({ message }: { message: ChatMessage }) {
           streaming={streaming}
           roundLabel={multiRound ? `第 ${renderedIdx + 1} 轮思考` : undefined}
           mode={mode}
+          collapseMode={collapseMode}
         />
       ))}
       {message.toolActivity && message.toolActivity.length > 0 && (

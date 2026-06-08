@@ -35,6 +35,7 @@ export const useSkillStore = create<SkillStore>()((set) => ({
     ai_name: '小卡',
     owner_name: '',
     timezone: 'Asia/Shanghai',
+    thinking_collapse_mode: 'auto',
   },
   isLoading: false,
   error: null,

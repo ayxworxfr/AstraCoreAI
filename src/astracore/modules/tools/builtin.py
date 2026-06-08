@@ -160,6 +160,102 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         compressed_count = result.metadata.get("compressed_from_count", "若干")
         return f"记忆压缩完成：已将 {compressed_count} 条会话记忆合并为一条摘要。"
 
+    async def _save_memory(
+        content: str,
+        subject: str = "",
+        memory_type: str = "fact",
+        scope: str = "user",
+        importance: int = 3,
+        _context: dict[str, object] | None = None,
+    ) -> str:
+        from uuid import UUID  # noqa: PLC0415
+
+        from astracore.infrastructure.memory.store import SQLMemoryStore  # noqa: PLC0415
+        from astracore.modules.memory.application.engine import MemoryEngine  # noqa: PLC0415
+        from astracore.modules.memory.domain import MemoryScope, MemoryType  # noqa: PLC0415
+
+        _VALID_TYPES = {"fact", "preference", "decision", "constraint", "state", "plan", "lesson"}
+        _VALID_SCOPES = {"user", "session", "global"}
+
+        if memory_type not in _VALID_TYPES:
+            memory_type = "fact"
+        if scope not in _VALID_SCOPES:
+            scope = "user"
+        importance = max(1, min(5, importance))
+
+        ctx = _context or {}
+        session_id_str = ctx.get("session_id")
+        session_id = UUID(str(session_id_str)) if session_id_str else None
+
+        engine = MemoryEngine(SQLMemoryStore(db_url))
+        memory = await engine.create_memory(
+            scope=MemoryScope(scope),
+            memory_type=MemoryType(memory_type),
+            content=content,
+            subject=subject,
+            summary=content[:120],
+            session_id=session_id,
+            importance=importance,
+            confidence=1.0,
+        )
+        preview = content[:80] + ("…" if len(content) > 80 else "")
+        return f"记忆已保存（ID: {memory.id}，范围: {scope}，类型: {memory_type}）：{preview}"
+
+    async def _recall_memory(
+        query: str,
+        scope: str = "",
+        memory_type: str = "",
+        limit: int = 10,
+        _context: dict[str, object] | None = None,
+    ) -> str:
+        from uuid import UUID  # noqa: PLC0415
+
+        from astracore.infrastructure.memory.store import SQLMemoryStore  # noqa: PLC0415
+        from astracore.modules.memory.application.engine import MemoryEngine  # noqa: PLC0415
+        from astracore.modules.memory.domain import MemoryScope, MemoryType  # noqa: PLC0415
+
+        ctx = _context or {}
+        session_id_str = ctx.get("session_id")
+
+        resolved_scope = MemoryScope(scope) if scope in {s.value for s in MemoryScope} else None
+        resolved_type = (
+            MemoryType(memory_type) if memory_type in {t.value for t in MemoryType} else None
+        )
+        limit = max(1, min(20, limit))
+
+        session_id = (
+            UUID(str(session_id_str))
+            if (session_id_str and resolved_scope == MemoryScope.SESSION)
+            else None
+        )
+
+        engine = MemoryEngine(SQLMemoryStore(db_url))
+        memories = await engine.list_memories(
+            scope=resolved_scope,
+            memory_type=resolved_type,
+            session_id=session_id,
+            query=query,
+            limit=limit,
+        )
+        if not memories:
+            return "未找到相关记忆。"
+        parts = [
+            f"[{m.id}]\n范围: {m.scope}  类型: {m.type}  重要度: {m.importance}\n主题: {m.subject or '—'}\n{m.content}"
+            for m in memories
+        ]
+        return "\n\n".join(parts)
+
+    async def _delete_memory(memory_id: str) -> str:
+        from astracore.infrastructure.memory.store import SQLMemoryStore  # noqa: PLC0415
+        from astracore.modules.memory.application.engine import MemoryEngine  # noqa: PLC0415
+
+        engine = MemoryEngine(SQLMemoryStore(db_url))
+        existing = await engine.get_memory(memory_id)
+        if existing is None:
+            return f"未找到 ID 为 {memory_id!r} 的记忆。"
+        await engine.delete_memory(memory_id)
+        return f"记忆已删除（ID: {memory_id}）。"
+
     native = NativeToolAdapter()
 
     native.register_tool(
@@ -244,6 +340,107 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
             "当用户要求「压缩记忆」「整理记忆」或会话记忆条数较多时使用。"
         ),
         parameters=[],
+    )
+
+    native.register_tool(
+        name="save_memory",
+        func=_save_memory,
+        description=(
+            "将重要信息主动写入长期记忆，无需等待对话结束后的自动提取。"
+            "当用户明确表达偏好、做出决策、提到项目状态、约束条件或有长期价值的背景信息时，"
+            "应主动调用此工具保存，以便未来对话中复用。"
+            "普通闲聊、一次性问答、临时指令无需保存。"
+        ),
+        parameters=[
+            ToolParameter(
+                name="content",
+                type=ToolParameterType.STRING,
+                description="要记住的具体内容，完整、准确",
+                required=True,
+            ),
+            ToolParameter(
+                name="subject",
+                type=ToolParameterType.STRING,
+                description="记忆主题或标题（简短，便于检索），选填",
+                required=False,
+            ),
+            ToolParameter(
+                name="memory_type",
+                type=ToolParameterType.STRING,
+                description=(
+                    "记忆类型（选填，默认 fact）："
+                    "fact（事实）/ preference（偏好）/ decision（决策）/ "
+                    "constraint（约束）/ state（项目状态）/ plan（计划）/ lesson（经验教训）"
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="scope",
+                type=ToolParameterType.STRING,
+                description="范围（选填，默认 user）：user（跨会话持久）/ session（仅本次会话）/ global",
+                required=False,
+            ),
+            ToolParameter(
+                name="importance",
+                type=ToolParameterType.NUMBER,
+                description="重要程度 1-5（选填，默认 3），5 为最重要",
+                required=False,
+            ),
+        ],
+    )
+
+    native.register_tool(
+        name="recall_memory",
+        func=_recall_memory,
+        description=(
+            "从长期记忆中检索与查询相关的信息。"
+            "当需要回顾用户偏好、过往决策、项目状态或历史背景时使用。"
+            "返回结果包含记忆 ID，可配合 delete_memory 删除。"
+        ),
+        parameters=[
+            ToolParameter(
+                name="query",
+                type=ToolParameterType.STRING,
+                description="搜索关键词或问题",
+                required=True,
+            ),
+            ToolParameter(
+                name="scope",
+                type=ToolParameterType.STRING,
+                description="范围筛选（选填）：user / session / global / project",
+                required=False,
+            ),
+            ToolParameter(
+                name="memory_type",
+                type=ToolParameterType.STRING,
+                description="类型筛选（选填）：fact / preference / decision / constraint / state / plan / lesson",
+                required=False,
+            ),
+            ToolParameter(
+                name="limit",
+                type=ToolParameterType.NUMBER,
+                description="返回条数，默认 10，最多 20",
+                required=False,
+            ),
+        ],
+    )
+
+    native.register_tool(
+        name="delete_memory",
+        func=_delete_memory,
+        description=(
+            "删除一条指定的记忆。"
+            "当用户要求删除某条记忆、或发现记忆内容有误/过时时使用。"
+            "需先通过 recall_memory 获取记忆 ID。"
+        ),
+        parameters=[
+            ToolParameter(
+                name="memory_id",
+                type=ToolParameterType.STRING,
+                description="记忆 ID（从 recall_memory 返回结果中获取）",
+                required=True,
+            ),
+        ],
     )
 
     # 技能工具：load_skill / get_skill_reference / run_skill_script

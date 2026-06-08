@@ -422,6 +422,7 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
     in_tool_round = False
     total_input_tokens = 0
     total_output_tokens = 0
+    memory_saved_by_tool = False  # AI 本轮是否主动调用了 save_memory
 
     async for event in _get_chat_pipeline().stream(ctx):
         if event.event_type == StreamEventType.DONE:
@@ -499,6 +500,8 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
                     _broadcast_run_event(run_id, "thinking", {"text": flushed})
                 round_text_buffer = []
                 in_tool_round = True
+            if event.tool_call.name == "save_memory":
+                memory_saved_by_tool = True
             item: dict[str, Any] = {
                 "name": event.tool_call.name,
                 "tool_call_id": event.tool_call.id,
@@ -627,19 +630,22 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
                 "model": ctx.profile.model,
             },
         )
-    logger.info("记忆提取: run_id=%s, content_len=%d", run_id, len(accumulated_content))
-    try:
-        await _get_memory_engine().extract_and_store(
-            session_id=ctx.session_id,
-            user_message=ctx.message,
-            assistant_content=accumulated_content,
-            source_run_id=run_id,
-            llm_adapter=_get_chat_pipeline().get_llm_adapter(ctx.profile),
-            model=ctx.profile.model,
-        )
-        logger.info("记忆提取完成: run_id=%s", run_id)
-    except Exception:
-        logger.exception("Memory 自动提取失败，run_id=%s", run_id)
+    if memory_saved_by_tool:
+        logger.info("本轮已调用 save_memory，跳过自动提取: run_id=%s", run_id)
+    else:
+        logger.info("记忆自动提取: run_id=%s, content_len=%d", run_id, len(accumulated_content))
+        try:
+            await _get_memory_engine().extract_and_store(
+                session_id=ctx.session_id,
+                user_message=ctx.message,
+                assistant_content=accumulated_content,
+                source_run_id=run_id,
+                llm_adapter=_get_chat_pipeline().get_llm_adapter(ctx.profile),
+                model=ctx.profile.model,
+            )
+            logger.info("记忆自动提取完成: run_id=%s", run_id)
+        except Exception:
+            logger.exception("Memory 自动提取失败，run_id=%s", run_id)
     if row:
         _broadcast_snapshot(run_id, row)
     _broadcast_run_event(run_id, "done", {"conversation": conv_meta} if conv_meta else {})

@@ -33,6 +33,7 @@ def infer_model_capabilities(
             thinking=True,
             temperature=True,
             anthropic_blocks=False,
+            structured_output_via_tools=False,  # thinking 模式不支持 tool_choice
         )
 
     if normalized_model == "claude-opus-4-7":
@@ -53,6 +54,7 @@ def infer_model_capabilities(
                 thinking=True,
                 temperature=True,
                 anthropic_blocks=True,
+                structured_output_via_tools=False,  # thinking 模式不支持 tool_choice
             )
         return LLMCapabilities(
             tools=True,

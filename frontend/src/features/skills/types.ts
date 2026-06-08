@@ -37,4 +37,5 @@ export type UserSettings = {
   ai_name: string;
   owner_name: string;
   timezone: string;
+  thinking_collapse_mode: 'auto' | 'always_collapsed';
 };
