@@ -3,12 +3,13 @@
 from datetime import UTC, datetime
 from functools import lru_cache
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from astracore.infrastructure.db.models import UserSettingsRow
+from astracore.infrastructure.db.models import UserRow, UserSettingsRow
 from astracore.infrastructure.db.session import get_session
+from astracore.modules.auth.dependencies import get_current_user
 from astracore.sdk.config import AstraCoreConfig
 
 router = APIRouter()
@@ -63,9 +64,9 @@ class UserSettingsUpdate(BaseModel):
     thinking_collapse_mode: str | None = None
 
 
-async def _load_settings_map(db_url: str) -> dict[str, str]:
+async def _load_settings_map(db_url: str, user_id: str) -> dict[str, str]:
     async with get_session(db_url) as db:
-        result = await db.execute(select(UserSettingsRow))
+        result = await db.execute(select(UserSettingsRow).where(UserSettingsRow.user_id == user_id))
         return {row.key: row.value for row in result.scalars().all()}
 
 
@@ -86,25 +87,37 @@ def _build_response(data: dict[str, str]) -> UserSettingsResponse:
 
 
 @router.get("/", response_model=UserSettingsResponse)
-async def get_settings() -> UserSettingsResponse:
-    data = await _load_settings_map(_db_url())
+async def get_settings(
+    current_user: UserRow = Depends(get_current_user),
+) -> UserSettingsResponse:
+    data = await _load_settings_map(_db_url(), current_user.id)
     return _build_response(data)
 
 
 @router.put("/", response_model=UserSettingsResponse)
-async def update_settings(body: UserSettingsUpdate) -> UserSettingsResponse:
+async def update_settings(
+    body: UserSettingsUpdate,
+    current_user: UserRow = Depends(get_current_user),
+) -> UserSettingsResponse:
     patch: dict[str, str] = {
         k: str(v) for k, v in body.model_dump().items() if v is not None and k in _SETTINGS_KEYS
     }
     async with get_session(_db_url()) as db:
         for key, value in patch.items():
-            row = await db.get(UserSettingsRow, key)
+            row = await db.get(UserSettingsRow, {"user_id": current_user.id, "key": key})
             if row is None:
-                db.add(UserSettingsRow(key=key, value=value, updated_at=datetime.now(UTC)))
+                db.add(
+                    UserSettingsRow(
+                        user_id=current_user.id,
+                        key=key,
+                        value=value,
+                        updated_at=datetime.now(UTC),
+                    )
+                )
             else:
                 row.value = value
                 row.updated_at = datetime.now(UTC)
         await db.commit()
 
-    data = await _load_settings_map(_db_url())
+    data = await _load_settings_map(_db_url(), current_user.id)
     return _build_response(data)

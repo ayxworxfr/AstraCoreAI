@@ -1,7 +1,9 @@
-import { Layout, Menu, Button, Typography } from 'antd';
-import { BulbOutlined, MoonOutlined, RocketOutlined } from '@ant-design/icons';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { useRef, useState } from 'react';
+import { Avatar, Button, Dropdown, Layout, Menu, Space, Typography } from 'antd';
+import { LogoutOutlined, MoonOutlined, RocketOutlined, SunOutlined } from '@ant-design/icons';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
+import { useAuthStore } from '@/features/auth/store/authStore';
 
 const { Header, Content } = Layout;
 
@@ -16,6 +18,16 @@ const NAV_ITEMS = [
 export default function AppShell(): JSX.Element {
   const { theme, toggleTheme } = useSettingsStore();
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, logout } = useAuthStore();
+
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const keepOpenRef = useRef(false);
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login', { replace: true });
+  };
 
   return (
     <Layout style={{ height: '100vh', overflow: 'hidden' }}>
@@ -54,22 +66,84 @@ export default function AppShell(): JSX.Element {
           />
         </div>
         <div style={{ width: 200, flexShrink: 0, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
-          <Button
-            type="text"
-            size="large"
-            icon={theme === 'dark' ? <BulbOutlined /> : <MoonOutlined />}
-            onClick={toggleTheme}
-            style={{
-              color: theme === 'light' ? 'rgba(0, 0, 0, 0.65)' : 'rgba(255,255,255,0.75)',
-              width: 36,
-              height: 36,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 8,
-            }}
-            title={theme === 'dark' ? '切换浅色' : '切换深色'}
-          />
+          {user && (
+            <Dropdown
+              trigger={['click']}
+              placement="bottomRight"
+              open={dropdownOpen}
+              onOpenChange={(next, info) => {
+                if (!next && info.source === 'menu' && keepOpenRef.current) {
+                  keepOpenRef.current = false;
+                  return;
+                }
+                keepOpenRef.current = false;
+                setDropdownOpen(next);
+              }}
+              menu={{
+                items: [
+                  {
+                    key: 'info',
+                    label: (
+                      <div style={{ padding: '2px 0', pointerEvents: 'none', userSelect: 'none' }}>
+                        <Typography.Text strong style={{ fontSize: 13, display: 'block' }}>{user.username}</Typography.Text>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          {user.role === 'admin' ? '管理员' : '普通用户'}
+                        </Typography.Text>
+                      </div>
+                    ),
+                    disabled: true,
+                  },
+                  { type: 'divider' as const },
+                  {
+                    key: 'theme',
+                    icon: <SunOutlined />,
+                    label: (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', minWidth: 148 }}>
+                        <span>主题</span>
+                        <Space.Compact size="small" onClick={(e) => e.stopPropagation()}>
+                          <Button
+                            size="small"
+                            type={theme === 'light' ? 'primary' : 'default'}
+                            icon={<SunOutlined />}
+                            onClick={(e) => { e.stopPropagation(); if (theme !== 'light') toggleTheme(); }}
+                          />
+                          <Button
+                            size="small"
+                            type={theme === 'dark' ? 'primary' : 'default'}
+                            icon={<MoonOutlined />}
+                            onClick={(e) => { e.stopPropagation(); if (theme !== 'dark') toggleTheme(); }}
+                          />
+                        </Space.Compact>
+                      </div>
+                    ),
+                    onClick: () => { keepOpenRef.current = true; },
+                  },
+                  { type: 'divider' as const },
+                  {
+                    key: 'logout',
+                    icon: <LogoutOutlined />,
+                    label: '退出登录',
+                    danger: true,
+                    onClick: handleLogout,
+                  },
+                ],
+              }}
+            >
+              <Avatar
+                size={32}
+                style={{
+                  backgroundColor: user.role === 'admin' ? '#faad14' : '#1677ff',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  flexShrink: 0,
+                }}
+              >
+                {user.username[0].toUpperCase()}
+              </Avatar>
+            </Dropdown>
+          )}
         </div>
       </Header>
       <Content style={{ flex: '1 1 0', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>

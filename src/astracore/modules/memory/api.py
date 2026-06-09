@@ -4,10 +4,12 @@ from functools import lru_cache
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from astracore.infrastructure.db.models import UserRow
 from astracore.infrastructure.memory.store import SQLMemoryStore
+from astracore.modules.auth.dependencies import get_current_user
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.modules.memory.domain import MemoryScope, MemoryStatus, MemoryType, StructuredMemory
 from astracore.sdk.config import AstraCoreConfig
@@ -20,9 +22,8 @@ def _get_db_url() -> str:
     return AstraCoreConfig().memory.db_url
 
 
-@lru_cache(maxsize=1)
-def _get_memory_engine() -> MemoryEngine:
-    return MemoryEngine(SQLMemoryStore(_get_db_url()))
+def _get_user_engine(user_id: str) -> MemoryEngine:
+    return MemoryEngine(SQLMemoryStore(_get_db_url()), user_id=user_id)
 
 
 class MemoryResponse(BaseModel):
@@ -129,8 +130,9 @@ async def list_memory(
     project_id: str | None = None,
     q: str | None = None,
     limit: int = 100,
+    current_user: UserRow = Depends(get_current_user),
 ) -> MemoryListResponse:
-    memories = await _get_memory_engine().list_memories(
+    memories = await _get_user_engine(current_user.id).list_memories(
         scope=MemoryScope(scope) if scope else None,
         memory_type=MemoryType(type) if type else None,
         session_id=session_id,
@@ -145,8 +147,11 @@ async def list_memory(
 
 
 @router.post("/", response_model=MemoryResponse, status_code=status.HTTP_201_CREATED)
-async def create_memory(body: MemoryCreate) -> MemoryResponse:
-    memory = await _get_memory_engine().create_memory(
+async def create_memory(
+    body: MemoryCreate,
+    current_user: UserRow = Depends(get_current_user),
+) -> MemoryResponse:
+    memory = await _get_user_engine(current_user.id).create_memory(
         scope=MemoryScope(body.scope),
         memory_type=MemoryType(body.type),
         content=body.content,
@@ -165,8 +170,12 @@ async def create_memory(body: MemoryCreate) -> MemoryResponse:
 
 
 @router.patch("/{memory_id}", response_model=MemoryResponse)
-async def update_memory(memory_id: str, body: MemoryUpdate) -> MemoryResponse:
-    engine = _get_memory_engine()
+async def update_memory(
+    memory_id: str,
+    body: MemoryUpdate,
+    current_user: UserRow = Depends(get_current_user),
+) -> MemoryResponse:
+    engine = _get_user_engine(current_user.id)
     memory = await engine.get_memory(memory_id)
     if memory is None:
         raise HTTPException(status_code=404, detail="Memory not found")
@@ -196,5 +205,8 @@ async def update_memory(memory_id: str, body: MemoryUpdate) -> MemoryResponse:
 
 
 @router.delete("/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_memory(memory_id: str) -> None:
-    await _get_memory_engine().delete_memory(memory_id)
+async def delete_memory(
+    memory_id: str,
+    current_user: UserRow = Depends(get_current_user),
+) -> None:
+    await _get_user_engine(current_user.id).delete_memory(memory_id)

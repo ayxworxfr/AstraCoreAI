@@ -217,6 +217,7 @@ class ChatRunRow(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     session_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
     request: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     user_message: Mapped[str] = mapped_column(Text, nullable=False)
@@ -251,6 +252,7 @@ class ConversationRow(Base):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     title: Mapped[str] = mapped_column(String(256), nullable=False, default="新会话")
     pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -268,14 +270,40 @@ class ConversationRow(Base):
         onupdate=lambda: datetime.now(UTC),
     )
 
+    __table_args__ = (Index("ix_conversations_user_id_updated", "user_id", "updated_at"),)
+
 
 class UserSettingsRow(Base):
-    """Key-value store for user preferences."""
+    """Per-user key-value store for preferences."""
 
     __tablename__ = "user_settings"
 
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class UserRow(Base):
+    """Application user account."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    username: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    hashed_password: Mapped[str] = mapped_column(String(256), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="user")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

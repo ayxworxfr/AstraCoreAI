@@ -156,6 +156,14 @@ class SkillsConfig(BaseModel):
     """Additional directories to scan for skill .md files (appended after the built-in dir)."""
 
 
+class AuthConfig(BaseModel):
+    """Authentication configuration."""
+
+    secret_key: str = "change-me-in-production"
+    token_expire_days: int = 30
+    allow_registration: bool = True
+
+
 class MCPConfig(BaseModel):
     """MCP server connection configuration.
 
@@ -222,6 +230,7 @@ class AstraCoreConfig(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
     def __init__(self, **data: object) -> None:
         if not data:

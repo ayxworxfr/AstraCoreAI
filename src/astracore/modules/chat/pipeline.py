@@ -171,9 +171,9 @@ class ChatPipeline:
     # DB helpers
     # ------------------------------------------------------------------
 
-    async def _get_setting(self, key: str) -> str:
+    async def _get_setting(self, key: str, user_id: str = "default") -> str:
         async with get_session(self._config.memory.db_url) as db:
-            row = await db.get(UserSettingsRow, key)
+            row = await db.get(UserSettingsRow, {"user_id": user_id, "key": key})
             return row.value if row else ""
 
     async def _load_all_skills(self) -> list[SkillRow]:
@@ -187,9 +187,9 @@ class ChatPipeline:
     # Prompt composition helpers
     # ------------------------------------------------------------------
 
-    async def _build_rag_context(self, query: str) -> str | None:
+    async def _build_rag_context(self, query: str, user_id: str = "default") -> str | None:
         try:
-            top_k = int(await self._get_setting("rag_top_k") or "4")
+            top_k = int(await self._get_setting("rag_top_k", user_id) or "4")
             chunks = await self._rag_pipeline.retrieve_with_citations(query=query, top_k=top_k)
             if not chunks:
                 return None
@@ -209,11 +209,12 @@ class ChatPipeline:
         session_id: UUID,
         enable_rag: bool,
         message: str,
+        user_id: str = "default",
     ) -> str | None:
         """Compose system prompt: identity layer + skill manifest + memory + RAG context."""
-        ai_name = await self._get_setting("ai_name") or "小卡"
-        owner_name = await self._get_setting("owner_name")
-        global_instruction = await self._get_setting("global_instruction")
+        ai_name = await self._get_setting("ai_name", user_id) or "小卡"
+        owner_name = await self._get_setting("owner_name", user_id)
+        global_instruction = await self._get_setting("global_instruction", user_id)
 
         identity = build_identity_layer(ai_name, owner_name, global_instruction)
 
@@ -225,7 +226,10 @@ class ChatPipeline:
             parts.append(manifest)
 
         try:
-            memory_context = await self._memory_engine.build_memory_context(
+            memory_engine = MemoryEngine(
+                SQLMemoryStore(self._config.memory.db_url), user_id=user_id
+            )
+            memory_context = await memory_engine.build_memory_context(
                 session_id=session_id,
                 message=message,
             )
@@ -235,18 +239,18 @@ class ChatPipeline:
             logger.exception("Memory context 构建失败，跳过本轮记忆注入")
 
         if enable_rag:
-            rag_ctx = await self._build_rag_context(message)
+            rag_ctx = await self._build_rag_context(message, user_id)
             if rag_ctx:
                 parts.append(rag_ctx)
 
         return "\n\n---\n\n".join(parts) or None
 
     async def _resolve_temperature(
-        self, temperature: float | None, profile: LLMProfileConfig
+        self, temperature: float | None, profile: LLMProfileConfig, user_id: str = "default"
     ) -> float:
         if temperature is not None:
             return temperature
-        saved = await self._get_setting("temperature")
+        saved = await self._get_setting("temperature", user_id)
         return float(saved) if saved else profile.temperature
 
     # ------------------------------------------------------------------
@@ -260,6 +264,7 @@ class ChatPipeline:
         options: ChatOptions | None = None,
         *,
         tool_adapter: ToolAdapter | None = None,
+        user_id: str = "default",
     ) -> ChatContext:
         """Resolve all options and return an immutable ``ChatContext``.
 
@@ -276,11 +281,12 @@ class ChatPipeline:
             session_id=session_id,
             enable_rag=opts.enable_rag,
             message=message,
+            user_id=user_id,
         )
 
         # 2. Resolve temperature and context window size
-        resolved_temp = await self._resolve_temperature(opts.temperature, profile)
-        context_max = int(await self._get_setting("context_max_messages") or "20")
+        resolved_temp = await self._resolve_temperature(opts.temperature, profile, user_id)
+        context_max = int(await self._get_setting("context_max_messages", user_id) or "20")
 
         # 3. Build LLM kwargs
         llm_kwargs: dict[str, Any] = {}

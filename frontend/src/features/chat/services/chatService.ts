@@ -1,5 +1,5 @@
 import type { ChatRequest, ChatResponse, ChatRunResponse, ChatRunState } from '@/shared/types/api';
-import { apiClient, normalizeError } from '@/shared/services/apiClient';
+import { apiClient, getAuthHeaders, normalizeError } from '@/shared/services/apiClient';
 
 export type SessionMessagesResponse = {
   messages: Array<{
@@ -179,7 +179,7 @@ export async function sendChatStream(
       `${import.meta.env.VITE_API_BASE_URL ?? ''}/api/v1/chat/stream`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ ...payload, stream: true }),
         signal,
       },
@@ -262,7 +262,7 @@ export async function subscribeChatRun(
   try {
     response = await fetch(
       `${import.meta.env.VITE_API_BASE_URL ?? ''}/api/v1/chat/runs/${runId}/stream`,
-      { method: 'GET', signal },
+      { method: 'GET', headers: getAuthHeaders(), signal },
     );
   } catch (e) {
     if ((e as Error).name === 'AbortError') return;

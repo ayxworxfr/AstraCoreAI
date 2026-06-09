@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
@@ -13,9 +13,11 @@ from astracore.infrastructure.db.models import (
     ChatSessionRow,
     ConversationProjectBindingRow,
     ConversationRow,
+    UserRow,
 )
 from astracore.infrastructure.db.session import get_session
 from astracore.infrastructure.memory.store import SQLMemoryStore
+from astracore.modules.auth.dependencies import get_current_user
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.sdk.config import AstraCoreConfig
 
@@ -71,10 +73,14 @@ class PatchConversationRequest(BaseModel):
 
 
 @router.get("/", response_model=list[ConversationItem])
-async def list_conversations() -> list[ConversationItem]:
+async def list_conversations(
+    current_user: UserRow = Depends(get_current_user),
+) -> list[ConversationItem]:
     async with get_session(_get_db_url()) as db:
         result = await db.execute(
-            select(ConversationRow).order_by(
+            select(ConversationRow)
+            .where(ConversationRow.user_id == current_user.id)
+            .order_by(
                 ConversationRow.pinned.desc(),
                 ConversationRow.updated_at.desc(),
             )
@@ -83,9 +89,13 @@ async def list_conversations() -> list[ConversationItem]:
 
 
 @router.post("/", response_model=ConversationItem, status_code=status.HTTP_201_CREATED)
-async def create_conversation(body: CreateConversationRequest) -> ConversationItem:
+async def create_conversation(
+    body: CreateConversationRequest,
+    current_user: UserRow = Depends(get_current_user),
+) -> ConversationItem:
     row = ConversationRow(
         id=body.id,
+        user_id=current_user.id,
         title=body.title,
         model_id=body.model_id,
     )
@@ -100,9 +110,16 @@ async def create_conversation(body: CreateConversationRequest) -> ConversationIt
 async def patch_conversation(
     conversation_id: UUID,
     body: PatchConversationRequest,
+    current_user: UserRow = Depends(get_current_user),
 ) -> ConversationItem:
     async with get_session(_get_db_url()) as db:
-        row = await db.get(ConversationRow, str(conversation_id))
+        result = await db.execute(
+            select(ConversationRow).where(
+                ConversationRow.id == str(conversation_id),
+                ConversationRow.user_id == current_user.id,
+            )
+        )
+        row = result.scalar_one_or_none()
         if row is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -125,9 +142,22 @@ async def patch_conversation(
 
 
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_conversation(conversation_id: UUID) -> None:
+async def delete_conversation(
+    conversation_id: UUID,
+    current_user: UserRow = Depends(get_current_user),
+) -> None:
     """Delete conversation metadata, message history, runs, bindings, and scoped memory."""
     cid = str(conversation_id)
+    async with get_session(_get_db_url()) as db:
+        result = await db.execute(
+            select(ConversationRow).where(
+                ConversationRow.id == cid,
+                ConversationRow.user_id == current_user.id,
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
     await _get_memory_engine().delete_conversation_memories(conversation_id)
     async with get_session(_get_db_url()) as db:
         row = await db.get(ConversationRow, cid)

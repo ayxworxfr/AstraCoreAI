@@ -4,10 +4,12 @@ from functools import lru_cache
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from astracore.infrastructure.db.models import UserRow
 from astracore.infrastructure.memory.store import SQLMemoryStore
+from astracore.modules.auth.dependencies import get_current_user
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.modules.memory.domain import ConversationProjectBinding, Project
 from astracore.sdk.config import AstraCoreConfig
@@ -20,9 +22,8 @@ def _get_db_url() -> str:
     return AstraCoreConfig().memory.db_url
 
 
-@lru_cache(maxsize=1)
-def _get_memory_engine() -> MemoryEngine:
-    return MemoryEngine(SQLMemoryStore(_get_db_url()))
+def _get_user_engine(user_id: str) -> MemoryEngine:
+    return MemoryEngine(SQLMemoryStore(_get_db_url()), user_id=user_id)
 
 
 class ProjectCreate(BaseModel):
@@ -78,13 +79,21 @@ def _binding_response(binding: ConversationProjectBinding) -> ConversationProjec
 
 
 @router.get("/", response_model=list[ProjectResponse])
-async def list_projects() -> list[ProjectResponse]:
-    return [_project_response(project) for project in await _get_memory_engine().list_projects()]
+async def list_projects(
+    current_user: UserRow = Depends(get_current_user),
+) -> list[ProjectResponse]:
+    return [
+        _project_response(project)
+        for project in await _get_user_engine(current_user.id).list_projects()
+    ]
 
 
 @router.post("/", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
-async def create_project(body: ProjectCreate) -> ProjectResponse:
-    project = await _get_memory_engine().create_project(
+async def create_project(
+    body: ProjectCreate,
+    current_user: UserRow = Depends(get_current_user),
+) -> ProjectResponse:
+    project = await _get_user_engine(current_user.id).create_project(
         name=body.name,
         root_paths=body.root_paths,
         description=body.description,
@@ -93,8 +102,11 @@ async def create_project(body: ProjectCreate) -> ProjectResponse:
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
-async def get_project(project_id: str) -> ProjectResponse:
-    project = await _get_memory_engine().get_project(project_id)
+async def get_project(
+    project_id: str,
+    current_user: UserRow = Depends(get_current_user),
+) -> ProjectResponse:
+    project = await _get_user_engine(current_user.id).get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return _project_response(project)
@@ -103,8 +115,11 @@ async def get_project(project_id: str) -> ProjectResponse:
 @router.get(
     "/conversations/{conversation_id}/project", response_model=ConversationProjectResponse | None
 )
-async def get_conversation_project(conversation_id: UUID) -> ConversationProjectResponse | None:
-    binding = await _get_memory_engine().get_conversation_binding(conversation_id)
+async def get_conversation_project(
+    conversation_id: UUID,
+    current_user: UserRow = Depends(get_current_user),
+) -> ConversationProjectResponse | None:
+    binding = await _get_user_engine(current_user.id).get_conversation_binding(conversation_id)
     return _binding_response(binding) if binding else None
 
 
@@ -112,9 +127,10 @@ async def get_conversation_project(conversation_id: UUID) -> ConversationProject
 async def bind_conversation_project(
     conversation_id: UUID,
     body: ConversationProjectBind,
+    current_user: UserRow = Depends(get_current_user),
 ) -> ConversationProjectResponse:
     try:
-        binding = await _get_memory_engine().bind_conversation(
+        binding = await _get_user_engine(current_user.id).bind_conversation(
             conversation_id=conversation_id,
             project_id=body.project_id,
             locked=body.locked,

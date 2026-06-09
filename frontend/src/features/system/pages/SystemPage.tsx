@@ -1,28 +1,49 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  Avatar,
   Badge,
   Button,
   Card,
   Descriptions,
+  Dropdown,
   Flex,
   Form,
+  Input,
   InputNumber,
+  List,
+  Modal,
   Select,
   Slider,
   Switch,
+  Tag,
   Tabs,
   Tooltip,
   Typography,
+  message,
 } from 'antd';
-import { ReloadOutlined, SyncOutlined } from '@ant-design/icons';
+import {
+  CheckCircleOutlined,
+  CrownOutlined,
+  DeleteOutlined,
+  LockOutlined,
+  MoreOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  StopOutlined,
+  SyncOutlined,
+  UserOutlined,
+} from '@ant-design/icons';
 import HealthStatusCard, { type CheckResult } from '@/features/system/components/HealthStatusCard';
 import { getHealth, getReady } from '@/features/system/services/healthService';
 import { getSystemInfo } from '@/features/system/services/systemService';
 import { normalizeError } from '@/shared/services/apiClient';
 import { useSkillStore } from '@/features/skills/store/skillStore';
+import { useAuthStore } from '@/features/auth/store/authStore';
 import type { SystemInfo } from '@/features/system/types';
 import type { UserSettings } from '@/features/skills/types';
+import type { UserItem } from '@/features/users/services/userService';
+import { createUser, deleteUser, listUsers, patchUser } from '@/features/users/services/userService';
 import AppScrollArea from '@/shared/components/AppScrollArea';
 
 const TIMEZONE_OPTIONS = [
@@ -463,22 +484,269 @@ function RuntimeParamsTab(): JSX.Element {
   );
 }
 
+// ─── 用户管理 Tab ───────────────────────────────────────────────────────────────
+
+type CreateForm = { username: string; password: string; role: string };
+type ResetForm = { password: string };
+
+function UserManagementTab(): JSX.Element {
+  const currentUser = useAuthStore((s) => s.user);
+  const [users, setUsers] = useState<UserItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [resetTarget, setResetTarget] = useState<UserItem | null>(null);
+  const [createForm] = Form.useForm<CreateForm>();
+  const [resetForm] = Form.useForm<ResetForm>();
+  const [messageApi, contextHolder] = message.useMessage();
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setUsers(await listUsers());
+    } catch (e) {
+      void messageApi.error(normalizeError(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [messageApi]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const handleCreate = async (values: CreateForm) => {
+    try {
+      const user = await createUser(values);
+      setUsers((prev) => [...prev, user]);
+      setCreateOpen(false);
+      createForm.resetFields();
+      void messageApi.success('用户已创建');
+    } catch (e) {
+      void messageApi.error(normalizeError(e));
+    }
+  };
+
+  const handleToggleActive = async (user: UserItem) => {
+    try {
+      const updated = await patchUser(user.id, { is_active: !user.is_active });
+      setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+    } catch (e) {
+      void messageApi.error(normalizeError(e));
+    }
+  };
+
+  const handleDelete = async (userId: string) => {
+    try {
+      await deleteUser(userId);
+      setUsers((prev) => prev.filter((u) => u.id !== userId));
+      void messageApi.success('用户已删除');
+    } catch (e) {
+      void messageApi.error(normalizeError(e));
+    }
+  };
+
+  const handleResetPassword = async (values: ResetForm) => {
+    if (!resetTarget) return;
+    try {
+      await patchUser(resetTarget.id, { password: values.password });
+      setResetTarget(null);
+      resetForm.resetFields();
+      void messageApi.success('密码已重置');
+    } catch (e) {
+      void messageApi.error(normalizeError(e));
+    }
+  };
+
+  const filteredUsers = useMemo(
+    () => users.filter((u) => u.username.toLowerCase().includes(searchText.toLowerCase())),
+    [users, searchText],
+  );
+
+  const makeMenuItems = (user: UserItem) => [
+    {
+      key: 'reset',
+      icon: <LockOutlined />,
+      label: '重置密码',
+      onClick: () => setResetTarget(user),
+    },
+    {
+      key: 'toggle',
+      icon: user.is_active ? <StopOutlined /> : <CheckCircleOutlined />,
+      label: user.is_active ? '停用账户' : '启用账户',
+      onClick: () => { void handleToggleActive(user); },
+    },
+    { type: 'divider' as const },
+    {
+      key: 'delete',
+      icon: <DeleteOutlined />,
+      label: '删除用户',
+      danger: true,
+      disabled: user.id === currentUser?.id,
+      onClick: () => {
+        Modal.confirm({
+          title: `删除用户 "${user.username}"？`,
+          content: '此操作不可撤销，用户的所有数据将永久删除。',
+          okText: '确认删除',
+          okType: 'danger',
+          cancelText: '取消',
+          onOk: () => { void handleDelete(user.id); },
+        });
+      },
+    },
+  ];
+
+  return (
+    <Flex vertical gap={16}>
+      {contextHolder}
+
+      {/* 页头 */}
+      <Flex justify="space-between" align="center">
+        <div>
+          <Flex align="center" gap={8}>
+            <Typography.Text strong style={{ fontSize: 14 }}>用户账户</Typography.Text>
+            {!loading && (
+              <Tag style={{ borderRadius: 10, fontSize: 11, margin: 0 }}>{users.length} 人</Tag>
+            )}
+          </Flex>
+          <Typography.Text type="secondary" style={{ fontSize: 12, marginTop: 3, display: 'block' }}>
+            管理所有系统用户的角色与访问权限
+          </Typography.Text>
+        </div>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+          新建用户
+        </Button>
+      </Flex>
+
+      {/* 搜索栏 */}
+      <Input.Search
+        placeholder="搜索用户名…"
+        allowClear
+        value={searchText}
+        onChange={(e) => setSearchText(e.target.value)}
+        style={{ maxWidth: 320 }}
+      />
+
+      {/* 用户列表 */}
+      <List
+        bordered
+        style={{ borderRadius: 8, overflow: 'hidden' }}
+        loading={loading}
+        dataSource={filteredUsers}
+        locale={{ emptyText: searchText ? `未找到"${searchText}"` : '暂无用户' }}
+        renderItem={(user) => (
+          <List.Item
+            style={{
+              padding: '10px 16px',
+              opacity: user.is_active ? 1 : 0.5,
+              transition: 'opacity 0.2s',
+              background: user.id === currentUser?.id ? 'rgba(22,119,255,0.02)' : undefined,
+            }}
+          >
+            <Flex align="center" gap={12} style={{ width: '100%' }}>
+              {/* 头像 */}
+              <Avatar
+                style={{ backgroundColor: user.role === 'admin' ? '#faad14' : '#1677ff', fontWeight: 600, flexShrink: 0 }}
+              >
+                {user.username[0].toUpperCase()}
+              </Avatar>
+
+              {/* 用户名（弹性区，吸收剩余空间） */}
+              <Flex align="center" gap={8} style={{ flex: 1, minWidth: 0 }}>
+                <Typography.Text strong style={{ fontSize: 13 }}>{user.username}</Typography.Text>
+                {user.id === currentUser?.id && (
+                  <Tag color="blue" style={{ fontSize: 11, lineHeight: '18px', padding: '0 5px', borderRadius: 4, margin: 0 }}>我</Tag>
+                )}
+              </Flex>
+
+              {/* 右侧元信息（固定不伸缩） */}
+              <Flex align="center" gap={16} style={{ flexShrink: 0 }}>
+                {user.role === 'admin' ? (
+                  <Tag icon={<CrownOutlined />} color="gold" style={{ borderRadius: 4, margin: 0 }}>管理员</Tag>
+                ) : (
+                  <Tag icon={<UserOutlined />} style={{ borderRadius: 4, margin: 0 }}>普通用户</Tag>
+                )}
+                <Badge
+                  status={user.is_active ? 'success' : 'default'}
+                  text={
+                    <Typography.Text style={{ fontSize: 12, color: user.is_active ? undefined : 'rgba(0,0,0,0.35)' }}>
+                      {user.is_active ? '活跃' : '停用'}
+                    </Typography.Text>
+                  }
+                />
+                <Typography.Text type="secondary" style={{ fontSize: 12, width: 68, textAlign: 'right' }}>
+                  {new Date(user.created_at).toLocaleDateString('zh-CN')}
+                </Typography.Text>
+                <Dropdown trigger={['click']} menu={{ items: makeMenuItems(user) }}>
+                  <Button type="text" size="small" icon={<MoreOutlined />} style={{ color: 'rgba(0,0,0,0.45)' }} />
+                </Dropdown>
+              </Flex>
+            </Flex>
+          </List.Item>
+        )}
+      />
+
+      {/* 新建用户 Modal */}
+      <Modal
+        title="新建用户"
+        open={createOpen}
+        onCancel={() => { setCreateOpen(false); createForm.resetFields(); }}
+        onOk={() => { void createForm.validateFields().then((v) => handleCreate(v)); }}
+        okText="创建"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Form form={createForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item name="username" label="用户名" rules={[{ required: true, message: '请输入用户名' }]}>
+            <Input placeholder="3-32 位字母或数字" autoComplete="off" />
+          </Form.Item>
+          <Form.Item name="password" label="初始密码" rules={[{ required: true, min: 6, message: '密码至少 6 位' }]}>
+            <Input.Password placeholder="至少 6 位" autoComplete="new-password" />
+          </Form.Item>
+          <Form.Item name="role" label="角色" initialValue="user">
+            <Select options={[{ value: 'user', label: '普通用户' }, { value: 'admin', label: '管理员' }]} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 重置密码 Modal */}
+      <Modal
+        title={`重置密码 — ${resetTarget?.username ?? ''}`}
+        open={!!resetTarget}
+        onCancel={() => { setResetTarget(null); resetForm.resetFields(); }}
+        onOk={() => { void resetForm.validateFields().then((v) => handleResetPassword(v)); }}
+        okText="确认重置"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Form form={resetForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item name="password" label="新密码" rules={[{ required: true, min: 6, message: '密码至少 6 位' }]}>
+            <Input.Password placeholder="至少 6 位" autoComplete="new-password" />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </Flex>
+  );
+}
+
 // ─── SystemPage ────────────────────────────────────────────────────────────────
 
 export default function SystemPage(): JSX.Element {
+  const user = useAuthStore((s) => s.user);
+  const isAdmin = user?.role === 'admin';
+
+  const tabs = [
+    { key: 'status', label: '系统状态', children: <StatusTab /> },
+    { key: 'llm', label: 'LLM 信息', children: <LLMInfoTab /> },
+    { key: 'runtime', label: '运行参数', children: <RuntimeParamsTab /> },
+    ...(isAdmin ? [{ key: 'users', label: '用户管理', children: <UserManagementTab /> }] : []),
+  ];
+
   return (
     <AppScrollArea style={{ height: '100%' }}>
       <Flex vertical style={{ padding: 24 }} gap={16}>
       <Typography.Title level={4} style={{ margin: 0 }}>
         系统
       </Typography.Title>
-      <Tabs
-        items={[
-          { key: 'status', label: '系统状态', children: <StatusTab /> },
-          { key: 'llm', label: 'LLM 信息', children: <LLMInfoTab /> },
-          { key: 'runtime', label: '运行参数', children: <RuntimeParamsTab /> },
-        ]}
-      />
+      <Tabs items={tabs} />
       </Flex>
     </AppScrollArea>
   );

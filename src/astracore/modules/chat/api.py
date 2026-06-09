@@ -8,16 +8,17 @@ from functools import lru_cache
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.orm.attributes import flag_modified as _flag_modified
 from sse_starlette.sse import EventSourceResponse
 
-from astracore.infrastructure.db.models import ChatRunRow, ChatSessionRow, ConversationRow
+from astracore.infrastructure.db.models import ChatRunRow, ChatSessionRow, ConversationRow, UserRow
 from astracore.infrastructure.db.session import get_session
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
+from astracore.modules.auth.dependencies import get_current_user
 from astracore.modules.chat.domain.chat_context import ChatContext
 from astracore.modules.chat.domain.chat_options import ChatOptions
 from astracore.modules.chat.domain.message import Message, MessageRole
@@ -344,12 +345,15 @@ async def _update_run_row(run_id: str, **patch: Any) -> ChatRunRow | None:
         return row
 
 
-async def _create_run_row(request: ChatRequest, session_id: UUID) -> ChatRunRow:
+async def _create_run_row(
+    request: ChatRequest, session_id: UUID, user_id: str = "default"
+) -> ChatRunRow:
     run_id = str(uuid4())
     now = datetime.now(UTC)
     row = ChatRunRow(
         id=run_id,
         session_id=str(session_id),
+        user_id=user_id,
         status="running",
         request=request.model_dump(mode="json"),
         user_message=request.message,
@@ -412,7 +416,7 @@ async def _rebuild_short_term_from_runs(session_id: UUID) -> None:
 # ------------------------------------------------------------------
 
 
-async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
+async def _execute_run(*, run_id: str, ctx: ChatContext, user_id: str = "default") -> None:
     """Stream a fully-resolved ChatContext and broadcast SSE events for the run."""
     accumulated_content = ""
     thinking_blocks: list[str] = []
@@ -635,7 +639,9 @@ async def _execute_run(*, run_id: str, ctx: ChatContext) -> None:
     else:
         logger.info("记忆自动提取: run_id=%s, content_len=%d", run_id, len(accumulated_content))
         try:
-            await _get_memory_engine().extract_and_store(
+            cfg = _get_settings()
+            user_engine = MemoryEngine(SQLMemoryStore(cfg.memory.db_url), user_id=user_id)
+            await user_engine.extract_and_store(
                 session_id=ctx.session_id,
                 user_message=ctx.message,
                 assistant_content=accumulated_content,
@@ -657,6 +663,7 @@ async def _run_chat_in_background(
     request: ChatRequest,
     session_id: UUID,
     tool_adapter: ToolAdapter,
+    user_id: str = "default",
 ) -> None:
     try:
         ctx = await _get_chat_pipeline().prepare(
@@ -664,8 +671,9 @@ async def _run_chat_in_background(
             session_id=session_id,
             options=request.to_options(),
             tool_adapter=tool_adapter,
+            user_id=user_id,
         )
-        await _execute_run(run_id=run_id, ctx=ctx)
+        await _execute_run(run_id=run_id, ctx=ctx, user_id=user_id)
     except asyncio.CancelledError:
         row = await _update_run_row(run_id, status="cancelled", error="用户已停止生成")
         if row:
@@ -688,7 +696,10 @@ async def _run_chat_in_background(
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
-async def delete_session(session_id: UUID) -> None:
+async def delete_session(
+    session_id: UUID,
+    current_user: UserRow = Depends(get_current_user),
+) -> None:
     logger.info("删除会话: session_id=%s", session_id)
     await _get_memory_adapter().delete_session_memory(session_id)
     await _get_memory_engine().delete_conversation_memories(session_id)
@@ -705,6 +716,7 @@ async def delete_session_message(
     session_id: UUID,
     role: Literal["user", "assistant"],
     message_id: str,
+    current_user: UserRow = Depends(get_current_user),
 ) -> None:
     """Delete a visible history message using its run-based message id."""
     run_id = message_id.removesuffix(":assistant")
@@ -731,6 +743,7 @@ async def get_session_messages(
     session_id: UUID,
     limit: int = 30,
     offset: int = 0,
+    current_user: UserRow = Depends(get_current_user),
 ) -> SessionMessagesResponse:
     runs = await _load_done_runs(session_id)
     messages = [message for run in runs for message in _run_row_to_messages(run)]
@@ -738,7 +751,10 @@ async def get_session_messages(
 
 
 @router.get("/sessions/{session_id}/runs/active", response_model=ChatRunStateResponse | None)
-async def get_active_run(session_id: UUID) -> ChatRunStateResponse | None:
+async def get_active_run(
+    session_id: UUID,
+    current_user: UserRow = Depends(get_current_user),
+) -> ChatRunStateResponse | None:
     for active in _ACTIVE_RUNS.values():
         if active.state.get("session_id") == str(session_id):
             return ChatRunStateResponse(**active.payload())
@@ -750,7 +766,11 @@ async def get_active_run(session_id: UUID) -> ChatRunStateResponse | None:
 
 
 @router.post("/runs", response_model=ChatRunResponse, status_code=202)
-async def create_chat_run(request: ChatRequest, http_request: Request) -> ChatRunResponse:
+async def create_chat_run(
+    request: ChatRequest,
+    http_request: Request,
+    current_user: UserRow = Depends(get_current_user),
+) -> ChatRunResponse:
     session_id = request.session_id or uuid4()
     active = await _get_active_run_row(session_id)
     if active is not None and active.id in _ACTIVE_RUNS:
@@ -758,7 +778,7 @@ async def create_chat_run(request: ChatRequest, http_request: Request) -> ChatRu
     if active is not None:
         await _update_run_row(active.id, status="error", error="服务重启导致生成任务中断")
 
-    row = await _create_run_row(request, session_id)
+    row = await _create_run_row(request, session_id, user_id=current_user.id)
     tool_adapter = _resolve_tool_adapter(http_request)
     active_run = _ActiveRun(row)
     _ACTIVE_RUNS[row.id] = active_run
@@ -768,6 +788,7 @@ async def create_chat_run(request: ChatRequest, http_request: Request) -> ChatRu
             request=request,
             session_id=session_id,
             tool_adapter=tool_adapter,
+            user_id=current_user.id,
         )
     )
     logger.info("创建后台 chat run: run_id=%s, session=%s", row.id, session_id)
@@ -775,12 +796,18 @@ async def create_chat_run(request: ChatRequest, http_request: Request) -> ChatRu
 
 
 @router.get("/runs/{run_id}/stream")
-async def stream_chat_run(run_id: UUID) -> EventSourceResponse:
+async def stream_chat_run(
+    run_id: UUID,
+    current_user: UserRow = Depends(get_current_user),
+) -> EventSourceResponse:
     async def event_generator() -> AsyncIterator[dict[str, str]]:
         rid = str(run_id)
         row = await _get_run_row(rid)
         if row is None:
             yield {"event": "error", "data": _json_event({"message": "Run not found"})}
+            return
+        if row.user_id != current_user.id and current_user.role != "admin":
+            yield {"event": "error", "data": _json_event({"message": "Access denied"})}
             return
 
         active = _ACTIVE_RUNS.get(rid)
@@ -821,8 +848,16 @@ async def stream_chat_run(run_id: UUID) -> EventSourceResponse:
 
 
 @router.post("/runs/{run_id}/cancel", response_model=ChatRunStateResponse)
-async def cancel_chat_run(run_id: UUID) -> ChatRunStateResponse:
+async def cancel_chat_run(
+    run_id: UUID,
+    current_user: UserRow = Depends(get_current_user),
+) -> ChatRunStateResponse:
     rid = str(run_id)
+    row = await _get_run_row(rid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if row.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
     active = _ACTIVE_RUNS.get(rid)
     if active is not None and active.task is not None:
         active.task.cancel()
@@ -840,16 +875,21 @@ async def cancel_chat_run(run_id: UUID) -> ChatRunStateResponse:
 
 
 @router.post("/", response_model=ChatResponse)
-async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
+async def chat(
+    request: ChatRequest,
+    http_request: Request,
+    current_user: UserRow = Depends(get_current_user),
+) -> ChatResponse:
     """Simple (non-streaming) chat. Routing to tool loop is handled by pipeline.prepare()."""
     session_id = request.session_id or uuid4()
-    row = await _create_run_row(request, session_id)
+    row = await _create_run_row(request, session_id, user_id=current_user.id)
     try:
         ctx = await _get_chat_pipeline().prepare(
             message=request.message,
             session_id=session_id,
             options=request.to_options(),
             tool_adapter=_resolve_tool_adapter(http_request),
+            user_id=current_user.id,
         )
         content = await _get_chat_pipeline().execute(ctx)
         await _update_run_row(
@@ -860,7 +900,9 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             status="done",
         )
         try:
-            await _get_memory_engine().extract_and_store(
+            cfg = _get_settings()
+            user_engine = MemoryEngine(SQLMemoryStore(cfg.memory.db_url), user_id=current_user.id)
+            await user_engine.extract_and_store(
                 session_id=session_id,
                 user_message=request.message,
                 assistant_content=content,
@@ -883,7 +925,11 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
 
 
 @router.post("/stream")
-async def chat_stream(request: ChatRequest, http_request: Request) -> EventSourceResponse:
+async def chat_stream(
+    request: ChatRequest,
+    http_request: Request,
+    current_user: UserRow = Depends(get_current_user),
+) -> EventSourceResponse:
     """Legacy streaming entry point: creates a background run and subscribes to it."""
-    run = await create_chat_run(request, http_request)
-    return await stream_chat_run(UUID(run.run_id))
+    run = await create_chat_run(request, http_request, current_user)
+    return await stream_chat_run(UUID(run.run_id), current_user)
