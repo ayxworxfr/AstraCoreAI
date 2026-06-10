@@ -401,7 +401,8 @@ async with AstraCoreClient() as client:
 
 ## 许可证
 
-查看 [Apache-2.0 License](./LICENSE) 了解许可条款。
+AstraCoreAI 使用 [PolyForm Noncommercial License 1.0.0](./LICENSE)。
+个人学习、研究和非商业用途可按许可证使用；商业用途需要单独授权，查看 [Commercial Licensing](./COMMERCIAL.md)。
 
 ## 贡献
 

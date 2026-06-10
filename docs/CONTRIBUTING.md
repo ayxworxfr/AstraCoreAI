@@ -25,8 +25,8 @@
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/astracore/astracore-ai.git
-cd astracore-ai
+git clone https://github.com/ayxworxfr/AstraCoreAI.git
+cd AstraCoreAI
 
 # 2. 一键初始化（安装 Hatch + 后端依赖 + ChromaDB）
 make setup
