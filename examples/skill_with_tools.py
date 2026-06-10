@@ -14,7 +14,6 @@
 
 import asyncio
 import sys  # sys.argv 仍需要
-from uuid import UUID
 
 from dotenv import load_dotenv
 
@@ -81,7 +80,6 @@ async def main() -> None:
             logger.warning("未找到包含 '%s' 的 Skill", name_hint)
             return
 
-        skill_id = UUID(skill["id"])
         logger.info("=== Skill + 工具联动示例 ===")
         logger.info("已选 Skill: 【%s】", skill["name"])
         logger.info("描述: %s", skill["description"] or "（无）")
@@ -89,7 +87,7 @@ async def main() -> None:
         if not tools_ok:
             logger.warning("当前 profile '%s' 不支持工具调用，use_tools 将被忽略", profile.id)
 
-        conv = client.conversation(skill_id=skill_id, use_tools=tools_ok)
+        conv = client.conversation(use_tools=tools_ok)
 
         # 第一轮：Skill + 工具
         await _stream_turn(conv, "列出当前目录下有哪些文件，并简单说明一下。")

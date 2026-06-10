@@ -32,6 +32,7 @@ import type { MemoryApiItem, ProjectApiItem } from '@/shared/types/api';
 import type { ConversationMeta } from '@/features/chat/types';
 import AppScrollArea from '@/shared/components/AppScrollArea';
 import { useSkillStore } from '@/features/skills/store/skillStore';
+import { useAuthStore } from '@/features/auth/store/authStore';
 import { formatAppDateTime } from '@/shared/utils/time';
 
 const SCOPE_OPTIONS: Array<{ label: string; value: MemoryScope }> = [
@@ -75,6 +76,7 @@ const TYPE_COLOR: Record<MemoryType, string> = {
 export default function MemoryPage(): JSX.Element {
   const timezone = useSkillStore((s) => s.settings.timezone);
   const fetchSettings = useSkillStore((s) => s.fetchSettings);
+  const currentUsername = useAuthStore((s) => s.user?.username ?? 'User Memory');
   const [items, setItems] = useState<MemoryApiItem[]>([]);
   const [projects, setProjects] = useState<ProjectApiItem[]>([]);
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
@@ -340,7 +342,7 @@ export default function MemoryPage(): JSX.Element {
                   : item.scope === 'project'
                     ? project?.name || '未知项目'
                     : item.scope === 'user'
-                      ? item.user_id
+                      ? currentUsername
                       : 'Global';
                 const secondary = item.scope === 'session'
                   ? ''

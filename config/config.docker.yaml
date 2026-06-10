@@ -20,10 +20,12 @@ memory:
   db_url: sqlite+aiosqlite:////app/data/astracore.db
 
 retrieval:
+  # 设为 false 可完全关闭 RAG 功能（不注册 /api/v1/rag 路由，不加载向量模型）
+  # enabled: false
   collection_name: astracore
   persist_directory: /app/data/chroma_db
-  # embedding_model: all-MiniLM-L6-v2          # 默认，英文场景
-  # embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言场景
+  # embedding_model: all-MiniLM-L6-v2          # 默认，英文场景，~90MB
+  # embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言场景，~420MB
 
 mcp:
   servers: []

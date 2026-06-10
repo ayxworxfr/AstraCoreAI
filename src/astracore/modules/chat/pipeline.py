@@ -107,7 +107,7 @@ class ChatPipeline:
         self._rag_pipeline = rag_pipeline
         self._policy = policy
         self._default_tool_adapter = tool_adapter
-        self._memory_engine = memory_engine or MemoryEngine(SQLMemoryStore(config.memory.db_url))
+        self._injected_memory_engine = memory_engine
         self._hooks = hooks
         self._llm_adapters: dict[str, LLMAdapter] = {}
 
@@ -145,12 +145,14 @@ class ChatPipeline:
         tool_adapter: ToolAdapter,
         allowed_tools: frozenset[str] = frozenset(),
         session_id: UUID | None = None,
+        user_id: str = "default",
     ) -> ToolLoopUseCase:
         cfg = self._config.agent
         extra_context: dict[str, Any] = {}
         if allowed_tools:
             extra_context["allowed_tools"] = allowed_tools
         extra_context["tool_adapter"] = tool_adapter
+        extra_context["user_id"] = user_id
         if session_id is not None:
             extra_context["session_id"] = str(session_id)
             extra_context["llm_adapter"] = self.get_llm_adapter(profile)
@@ -226,7 +228,7 @@ class ChatPipeline:
             parts.append(manifest)
 
         try:
-            memory_engine = MemoryEngine(
+            memory_engine = self._injected_memory_engine or MemoryEngine(
                 SQLMemoryStore(self._config.memory.db_url), user_id=user_id
             )
             memory_context = await memory_engine.build_memory_context(
@@ -313,6 +315,7 @@ class ChatPipeline:
 
         return ChatContext(
             session_id=session_id,
+            user_id=user_id,
             message=message,
             profile=profile,
             temperature=resolved_temp,
@@ -415,6 +418,7 @@ class ChatPipeline:
             ctx.tool_adapter,
             allowed_tools=ctx.allowed_tools,
             session_id=ctx.session_id,
+            user_id=ctx.user_id,
         )
         completed = False
         total_input_tokens = 0

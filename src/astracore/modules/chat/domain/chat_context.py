@@ -35,6 +35,9 @@ class ChatContext:
     session_id: UUID
     """当前对话的会话 ID，用于读写短期记忆（HybridMemoryAdapter）。"""
 
+    user_id: str
+    """当前登录用户的 ID，用于工具调用时的记忆隔离。"""
+
     message: str
     """用户本轮输入的原始消息文本。"""
 

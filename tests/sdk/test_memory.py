@@ -208,6 +208,7 @@ async def test_sdk_chat_triggers_memory_extraction(sdk_client: AstraCoreClient) 
             )
             fake_ctx = ChatContext(
                 session_id=uuid4(),
+                user_id="default",
                 message="测试消息",
                 profile=profile,
                 temperature=0.7,

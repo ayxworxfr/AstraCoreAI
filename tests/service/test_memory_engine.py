@@ -57,14 +57,10 @@ async def memory_db(tmp_path, monkeypatch):
     monkeypatch.setattr(memory_api, "_get_db_url", lambda: db_url)
     monkeypatch.setattr(projects_api, "_get_db_url", lambda: db_url)
     conversations_api._get_memory_engine.cache_clear()
-    memory_api._get_memory_engine.cache_clear()
-    projects_api._get_memory_engine.cache_clear()
 
     yield db_url
 
     conversations_api._get_memory_engine.cache_clear()
-    memory_api._get_memory_engine.cache_clear()
-    projects_api._get_memory_engine.cache_clear()
     get_engine.cache_clear()
 
 
@@ -120,20 +116,25 @@ async def test_memory_engine_formats_relevant_context(memory_db) -> None:
 
 
 async def test_memory_api_crud_and_project_binding(memory_db) -> None:
+    from types import SimpleNamespace
+
     from astracore.modules.memory import api as memory_api
     from astracore.modules.projects import api as projects_api
 
+    mock_user = SimpleNamespace(id="default")
     conversation_id = uuid4()
     project = await projects_api.create_project(
         projects_api.ProjectCreate(
             name="StoryVault",
             root_paths=["D:/project/StoryVault"],
             description="小说项目",
-        )
+        ),
+        current_user=mock_user,
     )
     binding = await projects_api.bind_conversation_project(
         conversation_id,
         projects_api.ConversationProjectBind(project_id=project.id, locked=True, source="manual"),
+        current_user=mock_user,
     )
     created = await memory_api.create_memory(
         memory_api.MemoryCreate(
@@ -142,13 +143,17 @@ async def test_memory_api_crud_and_project_binding(memory_db) -> None:
             content="卷一《观察期》已完结，卷二进入《贸易战》。",
             project_id=project.id,
             importance=5,
-        )
+        ),
+        current_user=mock_user,
     )
 
-    page = await memory_api.list_memory(scope="project", project_id=project.id)
+    page = await memory_api.list_memory(
+        scope="project", project_id=project.id, current_user=mock_user
+    )
     updated = await memory_api.update_memory(
         created.id,
         memory_api.MemoryUpdate(content="卷二《贸易战》聚焦贸易网络冲突。", locked=True),
+        current_user=mock_user,
     )
 
     assert binding.project_id == project.id
@@ -157,8 +162,10 @@ async def test_memory_api_crud_and_project_binding(memory_db) -> None:
     assert updated.locked is True
     assert updated.content == "卷二《贸易战》聚焦贸易网络冲突。"
 
-    await memory_api.delete_memory(created.id)
-    empty = await memory_api.list_memory(scope="project", project_id=project.id)
+    await memory_api.delete_memory(created.id, current_user=mock_user)
+    empty = await memory_api.list_memory(
+        scope="project", project_id=project.id, current_user=mock_user
+    )
 
     assert empty.total == 0
 
@@ -347,10 +354,12 @@ async def test_delete_conversation_cleans_related_memory_and_history(memory_db) 
         )
         await db.commit()
 
+    mock_user = SimpleNamespace(id="default")
     await conversations_api.create_conversation(
-        conversations_api.CreateConversationRequest(id=str(conversation_id), title="待删除")
+        conversations_api.CreateConversationRequest(id=str(conversation_id), title="待删除"),
+        current_user=mock_user,
     )
-    await conversations_api.delete_conversation(conversation_id)
+    await conversations_api.delete_conversation(conversation_id, current_user=mock_user)
 
     assert await engine.get_memory(memory.id) is None
     async with get_session(memory_db) as db:

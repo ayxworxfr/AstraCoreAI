@@ -24,7 +24,7 @@ export default function TokenUsageBar({ inputTokens, outputTokens, model }: Prop
           padding: '6px 0 16px',
         }}
       >
-        <Tooltip title="展开用量统计">
+        <Tooltip title="会话累计用量">
           <button
             onClick={() => setCollapsed(false)}
             style={{

@@ -66,7 +66,7 @@ async def main() -> None:
 
         # 3. RAG 增强对话
         logger.info("=== RAG 对话 ===")
-        conv = client.conversation(enable_rag=True, disable_skill=True)
+        conv = client.conversation(enable_rag=True)
         question = "AstraCore 的 Skill 是什么，怎么使用？"
         result = await conv.send(question)
         logger.info("Q: %s", question)

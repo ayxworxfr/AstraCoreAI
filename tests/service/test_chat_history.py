@@ -125,6 +125,7 @@ async def test_non_streaming_chat_persists_done_run_for_history(
         async def prepare(self, **kwargs):
             return ChatContext(
                 session_id=kwargs["session_id"],
+                user_id=kwargs.get("user_id", "default"),
                 message=kwargs["message"],
                 profile=SimpleNamespace(id="profile-a", model="model-a"),
                 temperature=0.7,
@@ -142,6 +143,7 @@ async def test_non_streaming_chat_persists_done_run_for_history(
     response = await chat.chat(
         chat.ChatRequest(message="user request", session_id=session_id),
         SimpleNamespace(),
+        SimpleNamespace(id="default"),
     )
     page = await chat.get_session_messages(session_id, limit=30, offset=0)
 

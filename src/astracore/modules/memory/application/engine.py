@@ -225,6 +225,7 @@ class MemoryEngine:
             await self._store.list_memories(
                 scope=MemoryScope.SESSION,
                 session_id=session_id,
+                user_id=self._user_id,
                 status=MemoryStatus.ACTIVE,
                 limit=min(max_items, _DEFAULT_SCOPE_LIMITS[MemoryScope.SESSION]),
             )
@@ -234,6 +235,7 @@ class MemoryEngine:
                 await self._store.list_memories(
                     scope=MemoryScope.PROJECT,
                     project_id=binding.project_id,
+                    user_id=self._user_id,
                     status=MemoryStatus.ACTIVE,
                     limit=min(max_items, _DEFAULT_SCOPE_LIMITS[MemoryScope.PROJECT]),
                 )
@@ -249,6 +251,7 @@ class MemoryEngine:
         memories.extend(
             await self._store.list_memories(
                 scope=MemoryScope.GLOBAL,
+                user_id=self._user_id,
                 status=MemoryStatus.ACTIVE,
                 limit=min(max_items, _DEFAULT_SCOPE_LIMITS[MemoryScope.GLOBAL]),
             )
@@ -319,6 +322,7 @@ class MemoryEngine:
         memories = await self._store.list_memories(
             scope=MemoryScope.SESSION,
             session_id=session_id,
+            user_id=self._user_id,
             status=MemoryStatus.ACTIVE,
             limit=threshold + 20,
         )

@@ -8,6 +8,8 @@ import SystemPage from '@/features/system/pages/SystemPage';
 import LoginPage from '@/features/auth/pages/LoginPage';
 import { useAuthStore } from '@/features/auth/store/authStore';
 
+const RAG_ENABLED = import.meta.env.VITE_FEATURE_RAG !== 'false';
+
 function ProtectedRoute(): JSX.Element {
   const token = useAuthStore((s) => s.token);
   if (!token) return <Navigate to="/login" replace />;
@@ -26,7 +28,7 @@ export const router = createBrowserRouter([
           { index: true, element: <Navigate to="/chat" replace /> },
           { path: 'chat', element: <ChatPage /> },
           { path: 'memory', element: <MemoryPage /> },
-          { path: 'rag', element: <RagPage /> },
+          ...(RAG_ENABLED ? [{ path: 'rag', element: <RagPage /> }] : []),
           { path: 'skills', element: <SkillsPage /> },
           { path: 'system', element: <SystemPage /> },
         ],

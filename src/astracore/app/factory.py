@@ -75,12 +75,13 @@ async def lifespan(app: FastAPI) -> Any:
     except Exception:
         logger.exception("内置 Skill 种子写入失败，不影响服务启动")
 
-    try:
-        pipeline = rag._get_rag_pipeline()
-        # Run in background so slow model downloads don't block server startup
-        asyncio.create_task(seed_documents(pipeline))
-    except Exception:
-        logger.exception("种子文档写入失败，不影响服务启动")
+    if cfg.retrieval.enabled:
+        try:
+            pipeline = rag._get_rag_pipeline()
+            # Run in background so slow model downloads don't block server startup
+            asyncio.create_task(seed_documents(pipeline))
+        except Exception:
+            logger.exception("种子文档写入失败，不影响服务启动")
 
     mcp_adapter = None
     if cfg.mcp.servers:
@@ -126,6 +127,9 @@ async def lifespan(app: FastAPI) -> Any:
 
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
+    from astracore.sdk.config import AstraCoreConfig  # noqa: PLC0415
+
+    cfg = AstraCoreConfig()
     app = FastAPI(
         title="AstraCore AI",
         description="Enterprise-grade AI Framework API",
@@ -152,7 +156,8 @@ def create_app() -> FastAPI:
     app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
     app.include_router(chat.router, prefix="/api/v1/chat", tags=["chat"])
     app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["conversations"])
-    app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
+    if cfg.retrieval.enabled:
+        app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
     app.include_router(skills.router, prefix="/api/v1/skills", tags=["skills"])
     app.include_router(memory.router, prefix="/api/v1/memory", tags=["memory"])
     app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])

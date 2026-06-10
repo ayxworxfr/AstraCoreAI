@@ -100,7 +100,7 @@ async def main() -> None:
         await conv.clear()
         logger.info("已清除手动记忆、Project（含级联记忆）与会话记忆")
 
-        projects = await client.projects.list()
+        projects = await client.projects.list_all()
         logger.info("当前 Project 数量：%d", len(projects))
 
 

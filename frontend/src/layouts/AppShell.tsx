@@ -7,11 +7,13 @@ import { useAuthStore } from '@/features/auth/store/authStore';
 
 const { Header, Content } = Layout;
 
+const RAG_ENABLED = import.meta.env.VITE_FEATURE_RAG !== 'false';
+
 const NAV_ITEMS = [
   { key: '/chat', label: <NavLink to="/chat">对话</NavLink> },
   { key: '/skills', label: <NavLink to="/skills">Skill</NavLink> },
   { key: '/memory', label: <NavLink to="/memory">Memory</NavLink> },
-  { key: '/rag', label: <NavLink to="/rag">RAG</NavLink> },
+  ...(RAG_ENABLED ? [{ key: '/rag', label: <NavLink to="/rag">RAG</NavLink> }] : []),
   { key: '/system', label: <NavLink to="/system">系统</NavLink> },
 ];
 

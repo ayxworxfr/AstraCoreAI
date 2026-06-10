@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
 from astracore.infrastructure.db.models import (
     ConversationProjectBindingRow,
@@ -224,7 +224,10 @@ class SQLMemoryStore(MemoryStore):
         query: str | None = None,
         limit: int = 100,
     ) -> list[StructuredMemory]:
-        stmt = select(StructuredMemoryRow).where(StructuredMemoryRow.status == status.value)
+        stmt = select(StructuredMemoryRow).where(
+            StructuredMemoryRow.status == status.value,
+            StructuredMemoryRow.user_id == user_id,
+        )
         if scope is not None:
             stmt = stmt.where(StructuredMemoryRow.scope == scope.value)
         if memory_type is not None:
@@ -233,10 +236,15 @@ class SQLMemoryStore(MemoryStore):
             stmt = stmt.where(StructuredMemoryRow.session_id == str(session_id))
         if project_id is not None:
             stmt = stmt.where(StructuredMemoryRow.project_id == project_id)
-        if scope == MemoryScope.USER:
-            stmt = stmt.where(StructuredMemoryRow.user_id == user_id)
         if query:
-            stmt = stmt.where(StructuredMemoryRow.content.ilike(f"%{query}%"))
+            for token in query.split():
+                if token:
+                    stmt = stmt.where(
+                        or_(
+                            StructuredMemoryRow.content.ilike(f"%{token}%"),
+                            StructuredMemoryRow.subject.ilike(f"%{token}%"),
+                        )
+                    )
         stmt = stmt.order_by(
             StructuredMemoryRow.importance.desc(),
             StructuredMemoryRow.updated_at.desc(),

@@ -402,22 +402,22 @@ export const useChatStore = create<ChatStore>()(
         try {
           const result = await fetchSessionMessages(convId, PAGE_SIZE, 0);
           const messages: ChatMessage[] = result.messages.map((m, i) => toChatMessage(convId, i, m));
-          const lastWithTokens = [...messages].reverse().find(
-            (m) => m.role === 'assistant' && (m.inputTokens != null || m.outputTokens != null),
-          );
+          const assistantMsgs = messages.filter((m) => m.role === 'assistant');
+          const sessionInputTokens = assistantMsgs.reduce((sum, m) => sum + (m.inputTokens ?? 0), 0);
+          const sessionOutputTokens = assistantMsgs.reduce((sum, m) => sum + (m.outputTokens ?? 0), 0);
+          const lastModel = [...assistantMsgs].reverse().find((m) => m.model)?.model ?? '';
           set((s) => ({
             messagesByConversation: { ...s.messagesByConversation, [convId]: messages },
             messagesOffset: { ...s.messagesOffset, [convId]: result.messages.length },
             hasMoreMessages: { ...s.hasMoreMessages, [convId]: result.has_more },
             isLoadingMessages: false,
-            latestUsageByConversation: lastWithTokens
+            latestUsageByConversation: sessionInputTokens || sessionOutputTokens
               ? {
                   ...s.latestUsageByConversation,
                   [convId]: {
-                    inputTokens: lastWithTokens.inputTokens ?? 0,
-                    outputTokens: lastWithTokens.outputTokens ?? 0,
-                    // DB 存了 model，优先用；退而保留 onUsage 已写入的值
-                    model: lastWithTokens.model || s.latestUsageByConversation[convId]?.model || '',
+                    inputTokens: sessionInputTokens,
+                    outputTokens: sessionOutputTokens,
+                    model: lastModel || s.latestUsageByConversation[convId]?.model || '',
                   },
                 }
               : s.latestUsageByConversation,
@@ -673,12 +673,19 @@ export const useChatStore = create<ChatStore>()(
               });
             },
             onUsage: (inputTokens, outputTokens, model) => {
-              set((s) => ({
-                latestUsageByConversation: {
-                  ...s.latestUsageByConversation,
-                  [conversationId]: { inputTokens, outputTokens, model },
-                },
-              }));
+              set((s) => {
+                const prev = s.latestUsageByConversation[conversationId];
+                return {
+                  latestUsageByConversation: {
+                    ...s.latestUsageByConversation,
+                    [conversationId]: {
+                      inputTokens: (prev?.inputTokens ?? 0) + inputTokens,
+                      outputTokens: (prev?.outputTokens ?? 0) + outputTokens,
+                      model,
+                    },
+                  },
+                };
+              });
             },
             onDone: () => clearRunState(),
             onError: (msg) => {
@@ -991,12 +998,19 @@ export const useChatStore = create<ChatStore>()(
                   updateAssistant({ thinkingBlocks: getUpdatedBlocks(), status: 'streaming' });
                 },
                 onUsage: (inputTokens, outputTokens, model) => {
-                  set((s) => ({
-                    latestUsageByConversation: {
-                      ...s.latestUsageByConversation,
-                      [activeConversationId]: { inputTokens, outputTokens, model },
-                    },
-                  }));
+                  set((s) => {
+                    const prev = s.latestUsageByConversation[activeConversationId];
+                    return {
+                      latestUsageByConversation: {
+                        ...s.latestUsageByConversation,
+                        [activeConversationId]: {
+                          inputTokens: (prev?.inputTokens ?? 0) + inputTokens,
+                          outputTokens: (prev?.outputTokens ?? 0) + outputTokens,
+                          model,
+                        },
+                      },
+                    };
+                  });
                 },
                 onDone: (conv?: ConversationUpdate) => {
                   set((s) => ({

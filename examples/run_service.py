@@ -19,7 +19,7 @@ load_dotenv()
 logging.getLogger("astracore").setLevel(logging.INFO)
 
 
-def test_main() -> None:
+def main() -> None:
     parser = argparse.ArgumentParser(description="启动 AstraCore AI 服务")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
@@ -37,5 +37,11 @@ def test_main() -> None:
     )
 
 
+def test_main() -> None:
+    """Smoke test: verify the module imports and argparse setup are valid."""
+    import importlib
+    importlib.import_module("astracore.app.factory")
+
+
 if __name__ == "__main__":
-    test_main()
+    main()

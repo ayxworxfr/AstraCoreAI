@@ -147,8 +147,9 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         llm_adapter = raw_llm if isinstance(raw_llm, LLMAdapter) else None
         model_raw = ctx.get("model")
         model = str(model_raw) if model_raw is not None else None
+        user_id = str(ctx.get("user_id") or "default")
 
-        engine = MemoryEngine(SQLMemoryStore(db_url))
+        engine = MemoryEngine(SQLMemoryStore(db_url), user_id=user_id)
         result = await engine.compact_session_memories(
             session_id=session_id,
             llm_adapter=llm_adapter,
@@ -186,8 +187,9 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         ctx = _context or {}
         session_id_str = ctx.get("session_id")
         session_id = UUID(str(session_id_str)) if session_id_str else None
+        user_id = str(ctx.get("user_id") or "default")
 
-        engine = MemoryEngine(SQLMemoryStore(db_url))
+        engine = MemoryEngine(SQLMemoryStore(db_url), user_id=user_id)
         memory = await engine.create_memory(
             scope=MemoryScope(scope),
             memory_type=MemoryType(memory_type),
@@ -216,6 +218,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
 
         ctx = _context or {}
         session_id_str = ctx.get("session_id")
+        user_id = str(ctx.get("user_id") or "default")
 
         resolved_scope = MemoryScope(scope) if scope in {s.value for s in MemoryScope} else None
         resolved_type = (
@@ -229,7 +232,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
             else None
         )
 
-        engine = MemoryEngine(SQLMemoryStore(db_url))
+        engine = MemoryEngine(SQLMemoryStore(db_url), user_id=user_id)
         memories = await engine.list_memories(
             scope=resolved_scope,
             memory_type=resolved_type,
@@ -245,11 +248,13 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         ]
         return "\n\n".join(parts)
 
-    async def _delete_memory(memory_id: str) -> str:
+    async def _delete_memory(memory_id: str, _context: dict[str, object] | None = None) -> str:
         from astracore.infrastructure.memory.store import SQLMemoryStore  # noqa: PLC0415
         from astracore.modules.memory.application.engine import MemoryEngine  # noqa: PLC0415
 
-        engine = MemoryEngine(SQLMemoryStore(db_url))
+        ctx = _context or {}
+        user_id = str(ctx.get("user_id") or "default")
+        engine = MemoryEngine(SQLMemoryStore(db_url), user_id=user_id)
         existing = await engine.get_memory(memory_id)
         if existing is None:
             return f"未找到 ID 为 {memory_id!r} 的记忆。"

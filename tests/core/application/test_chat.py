@@ -62,6 +62,7 @@ def pipeline(mock_memory, mock_llm, mock_profile):
 def ctx(session_id, mock_profile):
     return ChatContext(
         session_id=session_id,
+        user_id="default",
         message="Hi there",
         profile=mock_profile,
         temperature=0.7,
@@ -98,6 +99,7 @@ async def test_execute_includes_user_message_in_llm_call(
 
     ctx = ChatContext(
         session_id=session_id,
+        user_id="default",
         message="Tell me a joke",
         profile=mock_profile,
         temperature=0.7,
@@ -142,6 +144,7 @@ async def test_execute_does_not_double_count_tokens_on_existing_session(
 
     ctx = ChatContext(
         session_id=session_id,
+        user_id="default",
         message="new question",
         profile=mock_profile,
         temperature=0.7,

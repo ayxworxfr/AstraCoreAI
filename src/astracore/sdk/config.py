@@ -98,6 +98,7 @@ class MemoryConfig(BaseModel):
 class RetrievalConfig(BaseModel):
     """Retrieval configuration."""
 
+    enabled: bool = True
     collection_name: str = "astracore"
     persist_directory: str | None = None
     embedding_model: str = "all-MiniLM-L6-v2"

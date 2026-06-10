@@ -125,6 +125,7 @@ async def test_stream_tool_loop_passes_phase_boundary_from_closing_round() -> No
 
     ctx = ChatContext(
         session_id=uuid4(),
+        user_id="default",
         message="帮我分析一下",
         profile=mock_profile,
         temperature=0.7,
@@ -206,6 +207,7 @@ async def test_stream_tool_loop_does_not_summarize_internally() -> None:
 
     ctx = ChatContext(
         session_id=uuid4(),
+        user_id="default",
         message="帮我分析一下",
         profile=mock_profile,
         temperature=0.7,
