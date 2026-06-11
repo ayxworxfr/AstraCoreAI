@@ -24,6 +24,7 @@ class MemoryType(StrEnum):
     PLAN = "plan"
     SUMMARY = "summary"
     LESSON = "lesson"
+    PROCEDURE = "procedure"
 
 
 class MemoryStatus(StrEnum):

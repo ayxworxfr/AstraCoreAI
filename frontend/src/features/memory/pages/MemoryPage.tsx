@@ -51,6 +51,7 @@ const TYPE_OPTIONS: Array<{ label: string; value: MemoryType }> = [
   { label: 'Plan', value: 'plan' },
   { label: 'Summary', value: 'summary' },
   { label: 'Lesson', value: 'lesson' },
+  { label: 'Procedure', value: 'procedure' },
 ];
 
 type MemoryFormValue = MemoryCreateRequest;
@@ -71,6 +72,7 @@ const TYPE_COLOR: Record<MemoryType, string> = {
   plan: 'gold',
   summary: 'volcano',
   lesson: 'magenta',
+  procedure: 'orange',
 };
 
 export default function MemoryPage(): JSX.Element {

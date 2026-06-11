@@ -6,16 +6,16 @@ import {
   Button,
   Card,
   Descriptions,
-  Dropdown,
   Flex,
   Form,
   Input,
   InputNumber,
-  List,
   Modal,
   Select,
   Slider,
+  Space,
   Switch,
+  Table,
   Tag,
   Tabs,
   Tooltip,
@@ -23,14 +23,11 @@ import {
   message,
 } from 'antd';
 import {
-  CheckCircleOutlined,
   CrownOutlined,
   DeleteOutlined,
   LockOutlined,
-  MoreOutlined,
   PlusOutlined,
   ReloadOutlined,
-  StopOutlined,
   SyncOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -561,41 +558,124 @@ function UserManagementTab(): JSX.Element {
     [users, searchText],
   );
 
-  const makeMenuItems = (user: UserItem) => [
+  const columns = [
     {
-      key: 'reset',
-      icon: <LockOutlined />,
-      label: '重置密码',
-      onClick: () => setResetTarget(user),
+      title: '用户',
+      key: 'user',
+      ellipsis: true,
+      render: (_: unknown, user: UserItem) => (
+        <Flex align="center" gap={10}>
+          <Avatar
+            style={{
+              backgroundColor: user.role === 'admin' ? '#faad14' : '#1677ff',
+              fontWeight: 600,
+              flexShrink: 0,
+            }}
+          >
+            {user.username[0].toUpperCase()}
+          </Avatar>
+          <Flex align="center" gap={6}>
+            <Typography.Text strong style={{ fontSize: 13 }}>
+              {user.username}
+            </Typography.Text>
+            {user.id === currentUser?.id && (
+              <Tag
+                color="blue"
+                style={{ fontSize: 11, lineHeight: '18px', padding: '0 5px', borderRadius: 4, margin: 0 }}
+              >
+                我
+              </Tag>
+            )}
+          </Flex>
+        </Flex>
+      ),
     },
     {
-      key: 'toggle',
-      icon: user.is_active ? <StopOutlined /> : <CheckCircleOutlined />,
-      label: user.is_active ? '停用账户' : '启用账户',
-      onClick: () => { void handleToggleActive(user); },
+      title: '角色',
+      key: 'role',
+      width: 110,
+      align: 'center' as const,
+      render: (_: unknown, user: UserItem) =>
+        user.role === 'admin' ? (
+          <Tag icon={<CrownOutlined />} color="gold" style={{ borderRadius: 4, margin: 0 }}>
+            管理员
+          </Tag>
+        ) : (
+          <Tag icon={<UserOutlined />} style={{ borderRadius: 4, margin: 0 }}>
+            普通用户
+          </Tag>
+        ),
     },
-    { type: 'divider' as const },
     {
-      key: 'delete',
-      icon: <DeleteOutlined />,
-      label: '删除用户',
-      danger: true,
-      disabled: user.id === currentUser?.id,
-      onClick: () => {
-        Modal.confirm({
-          title: `删除用户 "${user.username}"？`,
-          content: '此操作不可撤销，用户的所有数据将永久删除。',
-          okText: '确认删除',
-          okType: 'danger',
-          cancelText: '取消',
-          onOk: () => { void handleDelete(user.id); },
-        });
+      title: '状态',
+      key: 'status',
+      width: 90,
+      align: 'center' as const,
+      render: (_: unknown, user: UserItem) => (
+        <Tooltip title={user.is_active ? '点击停用' : '点击启用'}>
+          <Switch
+            size="small"
+            checked={user.is_active}
+            onChange={() => { void handleToggleActive(user); }}
+          />
+        </Tooltip>
+      ),
+    },
+    {
+      title: '加入时间',
+      key: 'created_at',
+      width: 130,
+      render: (_: unknown, user: UserItem) => (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {new Date(user.created_at).toLocaleDateString('zh-CN')}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 90,
+      align: 'right' as const,
+      render: (_: unknown, user: UserItem) => {
+        const isSelf = user.id === currentUser?.id;
+        return (
+          <Space size={0}>
+            <Tooltip title="重置密码">
+              <Button
+                type="text"
+                size="small"
+                icon={<LockOutlined />}
+                style={{ color: 'rgba(0,0,0,0.45)' }}
+                onClick={() => setResetTarget(user)}
+              />
+            </Tooltip>
+            <Tooltip title={isSelf ? '不能删除当前用户' : '删除用户'}>
+              <Button
+                type="text"
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                disabled={isSelf}
+                onClick={() => {
+                  Modal.confirm({
+                    title: `删除用户 "${user.username}"？`,
+                    content: '此操作不可撤销，用户的所有数据将永久删除。',
+                    okText: '确认删除',
+                    okType: 'danger',
+                    cancelText: '取消',
+                    onOk: () => { void handleDelete(user.id); },
+                  });
+                }}
+              />
+            </Tooltip>
+          </Space>
+        );
       },
     },
   ];
 
   return (
-    <Flex vertical gap={16}>
+    <Flex vertical gap={20}>
       {contextHolder}
 
       {/* 页头 */}
@@ -622,66 +702,26 @@ function UserManagementTab(): JSX.Element {
         allowClear
         value={searchText}
         onChange={(e) => setSearchText(e.target.value)}
-        style={{ maxWidth: 320 }}
+        style={{ maxWidth: 280 }}
       />
 
-      {/* 用户列表 */}
-      <List
-        bordered
-        style={{ borderRadius: 8, overflow: 'hidden' }}
+      {/* 用户表格 */}
+      <Table
+        size="middle"
+        rowKey="id"
         loading={loading}
         dataSource={filteredUsers}
+        columns={columns}
+        pagination={false}
         locale={{ emptyText: searchText ? `未找到"${searchText}"` : '暂无用户' }}
-        renderItem={(user) => (
-          <List.Item
-            style={{
-              padding: '10px 16px',
-              opacity: user.is_active ? 1 : 0.5,
-              transition: 'opacity 0.2s',
-              background: user.id === currentUser?.id ? 'rgba(22,119,255,0.02)' : undefined,
-            }}
-          >
-            <Flex align="center" gap={12} style={{ width: '100%' }}>
-              {/* 头像 */}
-              <Avatar
-                style={{ backgroundColor: user.role === 'admin' ? '#faad14' : '#1677ff', fontWeight: 600, flexShrink: 0 }}
-              >
-                {user.username[0].toUpperCase()}
-              </Avatar>
-
-              {/* 用户名（弹性区，吸收剩余空间） */}
-              <Flex align="center" gap={8} style={{ flex: 1, minWidth: 0 }}>
-                <Typography.Text strong style={{ fontSize: 13 }}>{user.username}</Typography.Text>
-                {user.id === currentUser?.id && (
-                  <Tag color="blue" style={{ fontSize: 11, lineHeight: '18px', padding: '0 5px', borderRadius: 4, margin: 0 }}>我</Tag>
-                )}
-              </Flex>
-
-              {/* 右侧元信息（固定不伸缩） */}
-              <Flex align="center" gap={16} style={{ flexShrink: 0 }}>
-                {user.role === 'admin' ? (
-                  <Tag icon={<CrownOutlined />} color="gold" style={{ borderRadius: 4, margin: 0 }}>管理员</Tag>
-                ) : (
-                  <Tag icon={<UserOutlined />} style={{ borderRadius: 4, margin: 0 }}>普通用户</Tag>
-                )}
-                <Badge
-                  status={user.is_active ? 'success' : 'default'}
-                  text={
-                    <Typography.Text style={{ fontSize: 12, color: user.is_active ? undefined : 'rgba(0,0,0,0.35)' }}>
-                      {user.is_active ? '活跃' : '停用'}
-                    </Typography.Text>
-                  }
-                />
-                <Typography.Text type="secondary" style={{ fontSize: 12, width: 68, textAlign: 'right' }}>
-                  {new Date(user.created_at).toLocaleDateString('zh-CN')}
-                </Typography.Text>
-                <Dropdown trigger={['click']} menu={{ items: makeMenuItems(user) }}>
-                  <Button type="text" size="small" icon={<MoreOutlined />} style={{ color: 'rgba(0,0,0,0.45)' }} />
-                </Dropdown>
-              </Flex>
-            </Flex>
-          </List.Item>
-        )}
+        onRow={(user) => ({
+          style: {
+            background: user.id === currentUser?.id ? 'rgba(22,119,255,0.04)' : undefined,
+            opacity: user.is_active ? 1 : 0.55,
+            filter: user.is_active ? undefined : 'grayscale(30%)',
+            transition: 'opacity 0.2s',
+          },
+        })}
       />
 
       {/* 新建用户 Modal */}

@@ -18,6 +18,7 @@ from astracore.infrastructure.db.models import ChatRunRow, ChatSessionRow, Conve
 from astracore.infrastructure.db.session import get_session
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
+from astracore.infrastructure.memory.vector import MemoryVectorAdapter
 from astracore.modules.auth.dependencies import get_current_user
 from astracore.modules.chat.domain.chat_context import ChatContext
 from astracore.modules.chat.domain.chat_options import ChatOptions
@@ -123,9 +124,12 @@ def _get_memory_adapter() -> HybridMemoryAdapter:
 
 
 @lru_cache(maxsize=1)
-def _get_memory_engine() -> MemoryEngine:
+def _get_vector_adapter() -> MemoryVectorAdapter:
     cfg = _get_settings()
-    return MemoryEngine(SQLMemoryStore(cfg.memory.db_url))
+    return MemoryVectorAdapter(
+        persist_directory=cfg.retrieval.persist_directory,
+        embedding_model=cfg.retrieval.embedding_model,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -137,7 +141,7 @@ def _get_chat_pipeline() -> ChatPipeline:
         rag_pipeline=rag_api._get_rag_pipeline(),
         policy=PolicyEngine(),
         tool_adapter=build_tool_adapter(db_url=cfg.memory.db_url),
-        memory_engine=_get_memory_engine(),
+        vector_adapter=_get_vector_adapter(),
     )
 
 
@@ -701,8 +705,13 @@ async def delete_session(
     current_user: UserRow = Depends(get_current_user),
 ) -> None:
     logger.info("删除会话: session_id=%s", session_id)
+    cfg = _get_settings()
     await _get_memory_adapter().delete_session_memory(session_id)
-    await _get_memory_engine().delete_conversation_memories(session_id)
+    await MemoryEngine(
+        SQLMemoryStore(cfg.memory.db_url),
+        user_id=current_user.id,
+        vector_adapter=_get_vector_adapter(),
+    ).delete_conversation_memories(session_id)
     async with get_session(_get_settings().memory.db_url) as db:
         await db.execute(delete(ChatRunRow).where(ChatRunRow.session_id == str(session_id)))
         session_row = await db.get(ChatSessionRow, str(session_id))

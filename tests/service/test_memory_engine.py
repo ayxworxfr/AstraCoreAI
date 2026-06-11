@@ -11,7 +11,9 @@ from astracore.modules.chat.domain.message import Message
 from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent
 
 
-class _MemoryDecisionLLM(LLMAdapter):
+class _ExtractionBatchLLM(LLMAdapter):
+    """Stub LLM that returns a batch extraction JSON payload."""
+
     def __init__(self, payload: str) -> None:
         self._payload = payload
 
@@ -56,15 +58,41 @@ async def memory_db(tmp_path, monkeypatch):
     monkeypatch.setattr(conversations_api, "_get_db_url", lambda: db_url)
     monkeypatch.setattr(memory_api, "_get_db_url", lambda: db_url)
     monkeypatch.setattr(projects_api, "_get_db_url", lambda: db_url)
-    conversations_api._get_memory_engine.cache_clear()
+    conversations_api._get_vector_adapter.cache_clear()
 
     yield db_url
 
-    conversations_api._get_memory_engine.cache_clear()
+    conversations_api._get_vector_adapter.cache_clear()
     get_engine.cache_clear()
 
 
-async def test_memory_engine_formats_relevant_context(memory_db) -> None:
+async def test_build_profile_context_formats_user_memories(memory_db) -> None:
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryType
+
+    engine = MemoryEngine(SQLMemoryStore(memory_db))
+    await engine.create_memory(
+        scope=MemoryScope.USER,
+        memory_type=MemoryType.PREFERENCE,
+        content="用户偏好直接务实的工程回答。",
+        importance=5,
+    )
+    await engine.create_memory(
+        scope=MemoryScope.USER,
+        memory_type=MemoryType.PROCEDURE,
+        content="询问代码时先确认语言版本和运行环境。",
+        importance=4,
+    )
+
+    context = await engine.build_profile_context()
+
+    assert "## 用户画像与行为规范" in context
+    assert "用户偏好直接务实的工程回答。" in context
+    assert "询问代码时先确认语言版本和运行环境。" in context
+
+
+async def test_build_turn_context_formats_session_and_project_memories(memory_db) -> None:
     from astracore.infrastructure.memory.store import SQLMemoryStore
     from astracore.modules.memory.application.engine import MemoryEngine
     from astracore.modules.memory.domain import MemoryScope, MemoryType
@@ -96,23 +124,16 @@ async def test_memory_engine_formats_relevant_context(memory_db) -> None:
         project_id=project.id,
         importance=4,
     )
-    await engine.create_memory(
-        scope=MemoryScope.USER,
-        memory_type=MemoryType.PREFERENCE,
-        content="用户偏好直接务实的工程回答。",
-        importance=5,
-    )
 
-    context = await engine.build_memory_context(
+    # No Chroma in tests → SQL ILIKE fallback (query="" matches all)
+    context = await engine.build_turn_context(
         session_id=session_id,
         message="继续设计 Memory Engine",
     )
 
-    assert "## Relevant Memory" in context
-    assert "### Current Project State" in context
+    assert "【记忆快照】" in context
     assert "Memory 系统采用混合 project 识别。" in context
     assert "AstraCoreAI 使用 FastAPI Service 和 React SPA。" in context
-    assert "用户偏好直接务实的工程回答。" in context
 
 
 async def test_memory_api_crud_and_project_binding(memory_db) -> None:
@@ -201,10 +222,12 @@ async def test_llm_memory_extraction_creates_session_memory(memory_db) -> None:
         user_message="记录下当前工作目录",
         assistant_content="当前项目工作目录是 D:/project/study/AstraCoreAI",
         source_run_id=str(uuid4()),
-        llm_adapter=_MemoryDecisionLLM(
-            '{"should_remember": true, "scope": "session", "type": "fact", '
+        llm_adapter=_ExtractionBatchLLM(
+            '{"memories": [{'
+            '"action": "create", "scope": "session", "type": "fact", '
             '"subject": "工作目录", "content": "当前项目工作目录是 D:/project/study/AstraCoreAI", '
-            '"summary": "项目工作目录", "importance": 4, "confidence": 0.95}'
+            '"summary": "项目工作目录", "importance": 4, "confidence": 0.95'
+            "}]}"
         ),
         model="fake",
     )
@@ -240,10 +263,12 @@ async def test_memory_extraction_updates_existing_subject_instead_of_creating_du
         user_message="确认一下工作目录",
         assistant_content="当前项目工作目录是 D:/project/study/AstraCoreAI",
         source_run_id=str(uuid4()),
-        llm_adapter=_MemoryDecisionLLM(
-            '{"should_remember": true, "scope": "session", "type": "fact", '
+        llm_adapter=_ExtractionBatchLLM(
+            '{"memories": [{'
+            '"action": "update", "scope": "session", "type": "fact", '
             '"subject": "工作目录", "content": "当前项目工作目录是 D:/project/study/AstraCoreAI", '
-            '"importance": 4, "confidence": 0.9, "action": "update"}'
+            '"importance": 4, "confidence": 0.9'
+            "}]}"
         ),
         model="fake",
     )
@@ -278,10 +303,12 @@ async def test_memory_extraction_does_not_overwrite_locked_conflict(memory_db) -
         user_message="阶段已经变了",
         assistant_content="当前阶段是直接实现。",
         source_run_id=str(uuid4()),
-        llm_adapter=_MemoryDecisionLLM(
-            '{"should_remember": true, "scope": "session", "type": "state", '
+        llm_adapter=_ExtractionBatchLLM(
+            '{"memories": [{'
+            '"action": "create", "scope": "session", "type": "state", '
             '"subject": "阶段状态", "content": "当前阶段是直接实现。", '
-            '"importance": 4, "confidence": 0.9}'
+            '"importance": 4, "confidence": 0.9'
+            "}]}"
         ),
         model="fake",
     )
@@ -366,7 +393,7 @@ async def test_delete_conversation_cleans_related_memory_and_history(memory_db) 
         assert await db.get(ChatSessionRow, str(conversation_id)) is None
 
 
-async def test_chat_pipeline_injects_memory_context() -> None:
+async def test_chat_pipeline_injects_profile_context() -> None:
     from unittest.mock import AsyncMock, MagicMock
 
     from astracore.modules.chat.pipeline import ChatPipeline
@@ -374,8 +401,11 @@ async def test_chat_pipeline_injects_memory_context() -> None:
     from astracore.shared.policy.engine import PolicyEngine
 
     class _MemoryEngineStub:
-        async def build_memory_context(self, *, session_id, message):
-            return "## Relevant Memory\n\n### User Preferences\n- 用户偏好直接回答。"
+        async def build_profile_context(self) -> str:
+            return "## 用户画像与行为规范\n\n### 用户偏好\n- 用户偏好直接回答。"
+
+        async def build_turn_context(self, *, session_id, message) -> str:
+            return ""
 
     pipeline = ChatPipeline(
         config=SimpleNamespace(memory=SimpleNamespace(db_url="sqlite+aiosqlite:///:memory:")),
@@ -395,5 +425,5 @@ async def test_chat_pipeline_injects_memory_context() -> None:
     )
 
     assert system_prompt is not None
-    assert "## Relevant Memory" in system_prompt
+    assert "## 用户画像与行为规范" in system_prompt
     assert "用户偏好直接回答。" in system_prompt

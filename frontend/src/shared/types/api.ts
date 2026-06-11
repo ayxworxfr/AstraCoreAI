@@ -12,7 +12,7 @@ export type ConversationApiItem = {
 export type MemoryApiItem = {
   id: string;
   scope: 'session' | 'project' | 'user' | 'global';
-  type: 'fact' | 'preference' | 'decision' | 'constraint' | 'state' | 'plan' | 'summary' | 'lesson';
+  type: 'fact' | 'preference' | 'decision' | 'constraint' | 'state' | 'plan' | 'summary' | 'lesson' | 'procedure';
   subject: string;
   content: string;
   summary: string;

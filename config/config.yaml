@@ -72,3 +72,6 @@ mcp:
     - type: shell
       allow_dirs:
         - ~/develope
+
+debug:
+  log_prompts: false

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from astracore.infrastructure.db.models import UserRow
 from astracore.infrastructure.memory.store import SQLMemoryStore
+from astracore.infrastructure.memory.vector import MemoryVectorAdapter
 from astracore.modules.auth.dependencies import get_current_user
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.modules.memory.domain import MemoryScope, MemoryStatus, MemoryType, StructuredMemory
@@ -22,8 +23,21 @@ def _get_db_url() -> str:
     return AstraCoreConfig().memory.db_url
 
 
+@lru_cache(maxsize=1)
+def _get_vector_adapter() -> MemoryVectorAdapter:
+    cfg = AstraCoreConfig()
+    return MemoryVectorAdapter(
+        persist_directory=cfg.retrieval.persist_directory,
+        embedding_model=cfg.retrieval.embedding_model,
+    )
+
+
 def _get_user_engine(user_id: str) -> MemoryEngine:
-    return MemoryEngine(SQLMemoryStore(_get_db_url()), user_id=user_id)
+    return MemoryEngine(
+        SQLMemoryStore(_get_db_url()),
+        user_id=user_id,
+        vector_adapter=_get_vector_adapter(),
+    )
 
 
 class MemoryResponse(BaseModel):
@@ -57,7 +71,15 @@ class MemoryListResponse(BaseModel):
 class MemoryCreate(BaseModel):
     scope: Literal["session", "project", "user", "global"]
     type: Literal[
-        "fact", "preference", "decision", "constraint", "state", "plan", "summary", "lesson"
+        "fact",
+        "preference",
+        "decision",
+        "constraint",
+        "state",
+        "plan",
+        "summary",
+        "lesson",
+        "procedure",
     ]
     content: str = Field(min_length=1)
     subject: str = ""
@@ -76,7 +98,15 @@ class MemoryUpdate(BaseModel):
     scope: Literal["session", "project", "user", "global"] | None = None
     type: (
         Literal[
-            "fact", "preference", "decision", "constraint", "state", "plan", "summary", "lesson"
+            "fact",
+            "preference",
+            "decision",
+            "constraint",
+            "state",
+            "plan",
+            "summary",
+            "lesson",
+            "procedure",
         ]
         | None
     ) = None
@@ -122,7 +152,15 @@ def _to_response(memory: StructuredMemory) -> MemoryResponse:
 async def list_memory(
     scope: Literal["session", "project", "user", "global"] | None = None,
     type: Literal[
-        "fact", "preference", "decision", "constraint", "state", "plan", "summary", "lesson"
+        "fact",
+        "preference",
+        "decision",
+        "constraint",
+        "state",
+        "plan",
+        "summary",
+        "lesson",
+        "procedure",
     ]
     | None = None,
     status: Literal["active", "stale", "archived", "rejected"] = "active",

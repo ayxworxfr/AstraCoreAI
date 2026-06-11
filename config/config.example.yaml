@@ -48,6 +48,10 @@ skills:
   #  - D:/my-skills
   #  - ~/shared-skills
 
+# 开发者调试配置
+debug:
+  log_prompts: false         # true 时在每次 LLM 调用前把完整提示词（system prompt + 消息列表）打印到 stdout
+
 mcp:
   servers:
     - type: filesystem

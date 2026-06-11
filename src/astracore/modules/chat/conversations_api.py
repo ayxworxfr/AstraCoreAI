@@ -17,6 +17,7 @@ from astracore.infrastructure.db.models import (
 )
 from astracore.infrastructure.db.session import get_session
 from astracore.infrastructure.memory.store import SQLMemoryStore
+from astracore.infrastructure.memory.vector import MemoryVectorAdapter
 from astracore.modules.auth.dependencies import get_current_user
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.sdk.config import AstraCoreConfig
@@ -30,8 +31,12 @@ def _get_db_url() -> str:
 
 
 @lru_cache(maxsize=1)
-def _get_memory_engine() -> MemoryEngine:
-    return MemoryEngine(SQLMemoryStore(_get_db_url()))
+def _get_vector_adapter() -> MemoryVectorAdapter:
+    cfg = AstraCoreConfig()
+    return MemoryVectorAdapter(
+        persist_directory=cfg.retrieval.persist_directory,
+        embedding_model=cfg.retrieval.embedding_model,
+    )
 
 
 def _row_to_item(row: ConversationRow) -> "ConversationItem":
@@ -158,7 +163,11 @@ async def delete_conversation(
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-    await _get_memory_engine().delete_conversation_memories(conversation_id)
+    await MemoryEngine(
+        SQLMemoryStore(_get_db_url()),
+        user_id=current_user.id,
+        vector_adapter=_get_vector_adapter(),
+    ).delete_conversation_memories(conversation_id)
     async with get_session(_get_db_url()) as db:
         row = await db.get(ConversationRow, cid)
         if row is not None:

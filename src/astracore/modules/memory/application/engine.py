@@ -5,7 +5,7 @@ import re
 from collections import defaultdict
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -22,26 +22,61 @@ from astracore.modules.memory.domain import (
 from astracore.modules.memory.ports.store import MemoryStore
 from astracore.shared.ports.llm import LLMAdapter
 
+if TYPE_CHECKING:
+    from astracore.infrastructure.memory.vector import MemoryVectorAdapter
+
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
 
-class _MemoryDecision(BaseModel):
-    """LLM 结构化输出：记忆抽取决策。"""
+# ------------------------------------------------------------------
+# LLM output schemas
+# ------------------------------------------------------------------
 
-    should_remember: bool
+
+class _MemoryItemDecision(BaseModel):
+    """Single memory item within an extraction batch."""
+
+    action: Literal["create", "update", "ignore"] = "create"
     scope: Literal["session", "project", "user", "global"] = "session"
     type: Literal[
-        "fact", "preference", "decision", "constraint", "state", "plan", "summary", "lesson"
+        "fact",
+        "preference",
+        "decision",
+        "constraint",
+        "state",
+        "plan",
+        "summary",
+        "lesson",
+        "procedure",
     ] = "fact"
     subject: str = ""
     content: str = ""
     summary: str = ""
     importance: int = Field(default=3, ge=1, le=5)
     confidence: float = Field(default=0.7, ge=0.0, le=1.0)
-    action: str = ""
+    target_memory_id: str | None = None
 
+
+class _ExtractionBatch(BaseModel):
+    """Batch of memory extraction decisions from one turn (0-N items)."""
+
+    memories: list[_MemoryItemDecision] = Field(default_factory=list)
+
+
+class _PromotionDecision(BaseModel):
+    """LLM decision for promoting a session memory to a broader scope."""
+
+    action: Literal["promote_user", "promote_project", "keep", "archive"]
+    reason: str = ""
+    new_importance: int = Field(default=3, ge=1, le=5)
+
+
+# ------------------------------------------------------------------
+# Type metadata tables
+# ------------------------------------------------------------------
 
 _TYPE_TITLES: dict[MemoryType, str] = {
+    MemoryType.PROCEDURE: "行为规范",
     MemoryType.CONSTRAINT: "Constraints",
     MemoryType.STATE: "Current Project State",
     MemoryType.PREFERENCE: "User Preferences",
@@ -53,14 +88,27 @@ _TYPE_TITLES: dict[MemoryType, str] = {
 }
 
 _TYPE_ORDER: dict[MemoryType, int] = {
-    MemoryType.CONSTRAINT: 0,
-    MemoryType.DECISION: 1,
-    MemoryType.STATE: 2,
-    MemoryType.PREFERENCE: 3,
-    MemoryType.PLAN: 4,
-    MemoryType.FACT: 5,
-    MemoryType.LESSON: 6,
-    MemoryType.SUMMARY: 7,
+    MemoryType.PROCEDURE: 0,
+    MemoryType.CONSTRAINT: 1,
+    MemoryType.DECISION: 2,
+    MemoryType.STATE: 3,
+    MemoryType.PREFERENCE: 4,
+    MemoryType.PLAN: 5,
+    MemoryType.FACT: 6,
+    MemoryType.LESSON: 7,
+    MemoryType.SUMMARY: 8,
+}
+
+_TIER1_SECTION_TITLES: dict[MemoryType, str] = {
+    MemoryType.PROCEDURE: "行为规范",
+    MemoryType.CONSTRAINT: "已确认约束",
+    MemoryType.PREFERENCE: "用户偏好",
+    MemoryType.DECISION: "已确认决策",
+    MemoryType.FACT: "已知事实",
+    MemoryType.LESSON: "经验教训",
+    MemoryType.STATE: "当前状态",
+    MemoryType.PLAN: "计划",
+    MemoryType.SUMMARY: "摘要",
 }
 
 _DEFAULT_SCOPE_LIMITS: dict[MemoryScope, int] = {
@@ -73,13 +121,33 @@ _DEFAULT_SCOPE_LIMITS: dict[MemoryScope, int] = {
 _SESSION_COMPACT_THRESHOLD = 12
 _SIMILARITY_THRESHOLD = 0.72
 
+# Heuristic thresholds for promotion eligibility
+_PROMOTE_USE_COUNT = 5
+_PROMOTE_HIGH_IMPORTANCE = 4
+_PROMOTE_HIGH_USE_COUNT = 3
+
 
 class MemoryEngine:
-    """High-level service for project binding, memory retrieval, and extraction."""
+    """High-level service for project binding, memory retrieval, and extraction.
 
-    def __init__(self, store: MemoryStore, *, user_id: str = "default") -> None:
+    Accepts an optional ``vector_adapter`` for semantic Tier-2 retrieval and Chroma
+    synchronization on writes.  When absent, all operations degrade to SQL-only.
+    """
+
+    def __init__(
+        self,
+        store: MemoryStore,
+        *,
+        user_id: str = "default",
+        vector_adapter: "MemoryVectorAdapter | None" = None,
+    ) -> None:
         self._store = store
         self._user_id = user_id
+        self._vector_adapter = vector_adapter
+
+    # ------------------------------------------------------------------
+    # Project management
+    # ------------------------------------------------------------------
 
     async def create_project(
         self,
@@ -127,6 +195,10 @@ class MemoryEngine:
     ) -> ConversationProjectBinding | None:
         return await self._store.get_conversation_binding(conversation_id)
 
+    # ------------------------------------------------------------------
+    # Memory CRUD (with Chroma sync)
+    # ------------------------------------------------------------------
+
     async def create_memory(
         self,
         *,
@@ -144,7 +216,7 @@ class MemoryEngine:
         locked: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> StructuredMemory:
-        return await self._store.create_memory(
+        memory = await self._store.create_memory(
             StructuredMemory(
                 scope=scope,
                 type=memory_type,
@@ -162,9 +234,15 @@ class MemoryEngine:
                 metadata=metadata or {},
             )
         )
+        if self._vector_adapter is not None:
+            await self._vector_adapter.upsert(memory)
+        return memory
 
     async def update_memory(self, memory: StructuredMemory) -> StructuredMemory:
-        return await self._store.update_memory(memory)
+        updated = await self._store.update_memory(memory)
+        if self._vector_adapter is not None:
+            await self._vector_adapter.upsert(updated)
+        return updated
 
     async def get_memory(self, memory_id: str) -> StructuredMemory | None:
         return await self._store.get_memory(memory_id)
@@ -193,6 +271,8 @@ class MemoryEngine:
 
     async def delete_memory(self, memory_id: str) -> None:
         await self._store.delete_memory(memory_id)
+        if self._vector_adapter is not None:
+            await self._vector_adapter.delete(memory_id)
 
     async def delete_session_memories(self, session_id: UUID) -> int:
         return await self._store.delete_memories(
@@ -200,83 +280,146 @@ class MemoryEngine:
             session_id=session_id,
         )
 
-    async def delete_conversation_memories(
-        self,
-        conversation_id: UUID,
-    ) -> int:
+    async def delete_conversation_memories(self, conversation_id: UUID) -> int:
         deleted = await self._store.delete_memories(
             scope=MemoryScope.SESSION,
             session_id=conversation_id,
         )
         deleted += await self._store.delete_memories(conversation_id=conversation_id)
+        if self._vector_adapter is not None:
+            await self._vector_adapter.delete_by_conversation(
+                str(conversation_id), user_id=self._user_id
+            )
         return deleted
 
-    async def build_memory_context(
-        self,
-        *,
-        session_id: UUID,
-        message: str,
-        max_items: int = 12,
-        max_chars: int = 4000,
-    ) -> str:
-        binding = await self._store.get_conversation_binding(session_id)
-        memories: list[StructuredMemory] = []
-        memories.extend(
-            await self._store.list_memories(
-                scope=MemoryScope.SESSION,
-                session_id=session_id,
-                user_id=self._user_id,
-                status=MemoryStatus.ACTIVE,
-                limit=min(max_items, _DEFAULT_SCOPE_LIMITS[MemoryScope.SESSION]),
-            )
+    # ------------------------------------------------------------------
+    # Tier-1: stable user profile → System Prompt
+    # ------------------------------------------------------------------
+
+    async def build_profile_context(self, *, max_chars: int = 800) -> str:
+        """Build Tier-1 context from user+global scope memories (SQL full load).
+
+        Returns an empty string when no relevant memories exist.
+        """
+        user_memories = await self._store.list_memories(
+            scope=MemoryScope.USER,
+            user_id=self._user_id,
+            status=MemoryStatus.ACTIVE,
+            limit=50,
         )
-        if binding is not None:
-            memories.extend(
-                await self._store.list_memories(
-                    scope=MemoryScope.PROJECT,
-                    project_id=binding.project_id,
-                    user_id=self._user_id,
-                    status=MemoryStatus.ACTIVE,
-                    limit=min(max_items, _DEFAULT_SCOPE_LIMITS[MemoryScope.PROJECT]),
-                )
-            )
-        memories.extend(
-            await self._store.list_memories(
-                scope=MemoryScope.USER,
-                user_id=self._user_id,
-                status=MemoryStatus.ACTIVE,
-                limit=min(max_items, _DEFAULT_SCOPE_LIMITS[MemoryScope.USER]),
-            )
+        global_memories = await self._store.list_memories(
+            scope=MemoryScope.GLOBAL,
+            user_id=self._user_id,
+            status=MemoryStatus.ACTIVE,
+            limit=20,
         )
-        memories.extend(
-            await self._store.list_memories(
-                scope=MemoryScope.GLOBAL,
-                user_id=self._user_id,
-                status=MemoryStatus.ACTIVE,
-                limit=min(max_items, _DEFAULT_SCOPE_LIMITS[MemoryScope.GLOBAL]),
-            )
-        )
-        if not memories:
+
+        all_memories = self._dedupe(user_memories + global_memories)
+        if not all_memories:
             return ""
 
-        ranked = self._rank_memories(self._dedupe(memories), message)[:max_items]
         grouped: dict[MemoryType, list[StructuredMemory]] = defaultdict(list)
-        for memory in ranked:
+        for memory in all_memories:
             grouped[memory.type].append(memory)
 
         lines = [
-            "## Relevant Memory",
+            "## 用户画像与行为规范",
             "",
-            "以下记忆来自系统长期记忆。请优先遵守 Constraints 和 Recent Decisions；如果用户明确纠正，以用户最新消息为准。",
+            "以下来自长期记忆，请严格遵守 Constraints 和 Procedures；如用户明确纠正，以最新消息为准。",
         ]
+
         for memory_type in sorted(grouped, key=lambda t: _TYPE_ORDER[t]):
-            title = _TYPE_TITLES[memory_type]
+            title = _TIER1_SECTION_TITLES.get(memory_type, _TYPE_TITLES[memory_type])
             lines.extend(["", f"### {title}"])
             for memory in grouped[memory_type]:
                 lines.append(f"- {memory.content}")
 
         context = "\n".join(lines).strip()
         return context[:max_chars].rstrip()
+
+    # ------------------------------------------------------------------
+    # Tier-2: dynamic turn context → synthetic assistant message
+    # ------------------------------------------------------------------
+
+    async def build_turn_context(
+        self,
+        *,
+        session_id: UUID,
+        message: str,
+        max_chars: int = 1200,
+    ) -> str:
+        """Build Tier-2 context from session+project scope memories (Chroma or SQL fallback).
+
+        Returns an empty string when no relevant memories exist.
+        """
+        binding = await self._store.get_conversation_binding(session_id)
+        session_docs: list[str] = []
+        project_docs: list[str] = []
+
+        if self._vector_adapter is not None:
+            session_docs = await self._vector_adapter.query(
+                message,
+                user_id=self._user_id,
+                scope_filter=["session"],
+                session_id=str(session_id),
+                n_results=6,
+            )
+            if binding is not None:
+                project_docs = await self._vector_adapter.query(
+                    message,
+                    user_id=self._user_id,
+                    scope_filter=["project"],
+                    project_id=binding.project_id,
+                    n_results=4,
+                )
+
+        # SQL fallback: always used when Chroma is unavailable OR returned empty results.
+        # Covers memories created/updated without Chroma sync (e.g. via the REST API on an
+        # older deployment) so they are never silently dropped from Tier-2 context.
+        if not session_docs:
+            session_memories = await self._store.list_memories(
+                scope=MemoryScope.SESSION,
+                session_id=session_id,
+                user_id=self._user_id,
+                status=MemoryStatus.ACTIVE,
+                limit=_DEFAULT_SCOPE_LIMITS[MemoryScope.SESSION],
+            )
+            session_docs = [
+                f"{m.subject}: {m.content}" if m.subject else m.content
+                for m in self._rank_memories(session_memories, message)
+            ]
+        if binding is not None and not project_docs:
+            project_memories = await self._store.list_memories(
+                scope=MemoryScope.PROJECT,
+                project_id=binding.project_id,
+                user_id=self._user_id,
+                status=MemoryStatus.ACTIVE,
+                limit=_DEFAULT_SCOPE_LIMITS[MemoryScope.PROJECT],
+            )
+            project_docs = [
+                f"{m.subject}: {m.content}" if m.subject else m.content
+                for m in self._rank_memories(project_memories, message)
+            ]
+
+        if not session_docs and not project_docs:
+            return ""
+
+        lines = ["【记忆快照】"]
+        if session_docs:
+            lines.extend(["", "### 当前会话状态"])
+            for doc in session_docs:
+                lines.append(f"- {doc}")
+        if project_docs:
+            lines.extend(["", "### 项目上下文"])
+            for doc in project_docs:
+                lines.append(f"- {doc}")
+
+        context = "\n".join(lines).strip()
+        return context[:max_chars]
+
+    # ------------------------------------------------------------------
+    # Memory extraction and compaction
+    # ------------------------------------------------------------------
 
     async def extract_and_store(
         self,
@@ -300,6 +443,9 @@ class MemoryEngine:
             model=model,
         )
         await self.compact_session_memories(
+            session_id=session_id, llm_adapter=llm_adapter, model=model
+        )
+        await self._evaluate_and_promote(
             session_id=session_id, llm_adapter=llm_adapter, model=model
         )
         return extracted or []
@@ -344,7 +490,7 @@ class MemoryEngine:
         summary = await self._summarize_memories(compressible, llm_adapter=llm_adapter, model=model)
         now = datetime.now(UTC)
         compressed_ids = [memory.id for memory in compressible]
-        memory = await self.create_memory(
+        new_memory = await self.create_memory(
             scope=MemoryScope.SESSION,
             memory_type=MemoryType.SUMMARY,
             subject="session-summary",
@@ -362,8 +508,136 @@ class MemoryEngine:
             },
         )
         for memory_id in compressed_ids:
-            await self._store.delete_memory(memory_id)
-        return memory
+            await self.delete_memory(memory_id)
+        return new_memory
+
+    # ------------------------------------------------------------------
+    # LLM promotion: session → user/project
+    # ------------------------------------------------------------------
+
+    async def _evaluate_and_promote(
+        self,
+        *,
+        session_id: UUID,
+        llm_adapter: LLMAdapter,
+        model: str | None,
+    ) -> None:
+        """Heuristic filter + LLM evaluation to promote high-value session memories."""
+        session_memories = await self._store.list_memories(
+            scope=MemoryScope.SESSION,
+            session_id=session_id,
+            user_id=self._user_id,
+            status=MemoryStatus.ACTIVE,
+            limit=50,
+        )
+        candidates = [
+            m
+            for m in session_memories
+            if (
+                m.use_count >= _PROMOTE_USE_COUNT
+                or (
+                    m.importance >= _PROMOTE_HIGH_IMPORTANCE
+                    and m.use_count >= _PROMOTE_HIGH_USE_COUNT
+                )
+                or m.locked
+            )
+        ]
+        if not candidates:
+            return
+
+        binding = await self._store.get_conversation_binding(session_id)
+        for memory in candidates:
+            try:
+                await self._promote_one(
+                    memory=memory,
+                    binding=binding,
+                    llm_adapter=llm_adapter,
+                    model=model,
+                )
+            except Exception:
+                pass  # promotion failures are non-critical; keep memory in session scope
+
+    async def _promote_one(
+        self,
+        *,
+        memory: StructuredMemory,
+        binding: ConversationProjectBinding | None,
+        llm_adapter: LLMAdapter,
+        model: str | None,
+    ) -> None:
+        response = await llm_adapter.generate(
+            messages=[
+                Message(
+                    role=MessageRole.SYSTEM,
+                    content=(
+                        "你是 AstraCoreAI 的记忆晋升评估器。判断一条 session 记忆是否值得晋升为长期记忆。\n"
+                        "选项：\n"
+                        "- promote_user：晋升为用户级永久记忆（偏好、稳定事实等）\n"
+                        "- promote_project：晋升为项目级记忆（项目状态、决策等）\n"
+                        "- keep：保留在 session，无需晋升\n"
+                        "- archive：归档，已过时或无价值"
+                    ),
+                ),
+                Message(
+                    role=MessageRole.USER,
+                    content=(
+                        f"记忆内容：{memory.content}\n"
+                        f"类型：{memory.type.value}\n"
+                        f"使用次数：{memory.use_count}\n"
+                        f"重要性：{memory.importance}\n"
+                        f"创建于：{memory.created_at.isoformat()}"
+                    ),
+                ),
+            ],
+            model=model,
+            temperature=0.0,
+            response_format=_PromotionDecision,
+        )
+        decision = self._parse_memory_decision(response.content)
+        if decision is None:
+            return
+
+        action = str(decision.get("action") or "keep").lower()
+        new_importance = self._clamp_int(decision.get("new_importance"), 1, 5, memory.importance)
+        now_iso = datetime.now(UTC).isoformat()
+
+        if action == "promote_user":
+            await self.create_memory(
+                scope=MemoryScope.USER,
+                memory_type=memory.type,
+                content=memory.content,
+                subject=memory.subject,
+                summary=memory.summary,
+                importance=new_importance,
+                confidence=memory.confidence,
+                metadata={"promoted_from": memory.id, "promoted_at": now_iso},
+            )
+            memory.status = MemoryStatus.ARCHIVED
+            await self.update_memory(memory)
+
+        elif action == "promote_project" and binding is not None:
+            await self.create_memory(
+                scope=MemoryScope.PROJECT,
+                memory_type=memory.type,
+                content=memory.content,
+                subject=memory.subject,
+                summary=memory.summary,
+                project_id=binding.project_id,
+                importance=new_importance,
+                confidence=memory.confidence,
+                metadata={"promoted_from": memory.id, "promoted_at": now_iso},
+            )
+            memory.status = MemoryStatus.ARCHIVED
+            await self.update_memory(memory)
+
+        elif action == "archive":
+            memory.status = MemoryStatus.ARCHIVED
+            await self.update_memory(memory)
+        # "keep" → no action
+
+    # ------------------------------------------------------------------
+    # LLM extraction (batch)
+    # ------------------------------------------------------------------
 
     async def _extract_with_llm(
         self,
@@ -380,18 +654,29 @@ class MemoryEngine:
                 Message(
                     role=MessageRole.SYSTEM,
                     content=(
-                        "你是 AstraCoreAI 的长期记忆抽取器。判断一轮对话是否值得写入长期记忆。\n"
-                        "只记住未来仍有用的信息，例如：用户稳定偏好、项目路径、项目状态、明确决策、"
-                        "长期约束、后续计划、重要事实或可复用经验。\n"
-                        "不要记住寒暄、一次性问题、临时命令、普通解释、敏感密钥、完整代码块或低价值细节。\n"
-                        "如果能判断写入动作，action 字段填 create|update|merge|ignore|archive|conflict。\n"
-                        "如果不需要记忆，将 should_remember 设为 false，其余字段可留空。"
+                        "你是 AstraCoreAI 的记忆抽取器。从一轮对话中提取需要长期保留的信息。\n\n"
+                        "**默认立场：提取。** 只有明确属于以下情形才跳过：\n"
+                        "纯寒暄问候、一次性临时命令、完整代码块（过长）、敏感密钥、"
+                        "与已有记忆完全重复的内容。\n\n"
+                        "**必须提取的内容：**\n"
+                        "- 用户明确说出的偏好（语言、工具、风格、习惯、喜好）\n"
+                        "- 项目关键状态、决策、约束、计划、待办\n"
+                        "- 用户确认的事实（项目名称、技术栈、目录路径、团队成员等）\n"
+                        "- 经验教训（哪个方案有效/失败，原因是什么）\n"
+                        "- AI 的行为规范（用户要求 AI 怎么做或不能做什么）\n\n"
+                        "不确定是否值得保留时：填 importance=2, confidence=0.5，不要丢弃。\n\n"
+                        "scope: session（本次会话）/ user（跨会话永久）/ project（项目级）\n"
+                        "type: fact / preference / decision / constraint / state / plan / lesson / procedure\n"
+                        "action 固定填 create（系统自动按 subject 去重合并，无需手动指定 update）。\n"
+                        "content 须完整可独立理解，不能依赖上下文。subject 简短（< 20字）便于检索。\n\n"
+                        '确实无内容可提取时才输出 {"memories": []}，这应是少数情况。'
                     ),
                 ),
                 Message(
                     role=MessageRole.USER,
                     content=(
-                        "请判断下面这轮对话是否需要写入长期记忆。\n\n"
+                        "请从下面这轮对话中提取需要长期保留的信息。\n"
+                        "积极提取，不要遗漏有价值的内容。\n\n"
                         f"用户消息：\n{user_message[:4000]}\n\n"
                         f"AI 回复：\n{assistant_content[:4000]}"
                     ),
@@ -399,41 +684,54 @@ class MemoryEngine:
             ],
             model=model,
             temperature=0.0,
-            response_format=_MemoryDecision,
+            response_format=_ExtractionBatch,
         )
-        decision = self._parse_memory_decision(response.content)
-        if decision is None:
-            return None
-        if not self._coerce_bool(decision.get("should_remember")):
-            return []
 
-        content = str(decision.get("content") or "").strip()
-        if not content:
+        raw = self._parse_memory_decision(response.content)
+        if raw is None:
+            return None
+
+        memories_raw = raw.get("memories", [])
+        if not isinstance(memories_raw, list):
             return []
 
         binding = await self._store.get_conversation_binding(session_id)
-        scope = self._coerce_scope(decision.get("scope"))
-        memory_type = self._coerce_type(decision.get("type"))
-        project_id = (
-            binding.project_id if binding is not None and scope == MemoryScope.PROJECT else None
-        )
-        if scope == MemoryScope.PROJECT and project_id is None:
-            scope = MemoryScope.SESSION
+        results: list[StructuredMemory] = []
 
-        memory = await self._consolidate_candidate(
-            scope=scope,
-            memory_type=memory_type,
-            subject=str(decision.get("subject") or "").strip()[:128],
-            content=content,
-            summary=str(decision.get("summary") or "").strip(),
-            session_id=session_id,
-            project_id=project_id,
-            source_run_id=source_run_id,
-            action=str(decision.get("action") or "").strip().lower(),
-            importance=self._clamp_int(decision.get("importance"), 1, 5, 3),
-            confidence=self._clamp_float(decision.get("confidence"), 0.0, 1.0, 0.7),
-        )
-        return [memory]
+        for item in memories_raw:
+            if not isinstance(item, dict):
+                continue
+            action = str(item.get("action") or "create").strip().lower()
+            if action == "ignore":
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+
+            scope = self._coerce_scope(item.get("scope"))
+            memory_type = self._coerce_type(item.get("type"))
+            project_id = (
+                binding.project_id if binding is not None and scope == MemoryScope.PROJECT else None
+            )
+            if scope == MemoryScope.PROJECT and project_id is None:
+                scope = MemoryScope.SESSION
+
+            memory = await self._consolidate_candidate(
+                scope=scope,
+                memory_type=memory_type,
+                subject=str(item.get("subject") or "").strip()[:128],
+                content=content,
+                summary=str(item.get("summary") or "").strip(),
+                session_id=session_id,
+                project_id=project_id,
+                source_run_id=source_run_id,
+                action=action,
+                importance=self._clamp_int(item.get("importance"), 1, 5, 3),
+                confidence=self._clamp_float(item.get("confidence"), 0.0, 1.0, 0.7),
+            )
+            results.append(memory)
+
+        return results
 
     async def _consolidate_candidate(
         self,
@@ -522,7 +820,7 @@ class MemoryEngine:
             decision="update" if should_update else "merge",
             source_run_id=source_run_id,
         )
-        return await self._store.update_memory(target)
+        return await self.update_memory(target)
 
     async def _create_candidate_memory(
         self,
@@ -556,7 +854,10 @@ class MemoryEngine:
             status=status,
             metadata=metadata,
         )
-        return await self._store.create_memory(memory)
+        created = await self._store.create_memory(memory)
+        if self._vector_adapter is not None and status == MemoryStatus.ACTIVE:
+            await self._vector_adapter.upsert(created)
+        return created
 
     async def _summarize_memories(
         self,
@@ -584,6 +885,10 @@ class MemoryEngine:
         )
         content = response.content.strip()
         return content or self._fallback_summary(memories)
+
+    # ------------------------------------------------------------------
+    # JSON parsing helpers
+    # ------------------------------------------------------------------
 
     def _parse_memory_decision(self, raw: str) -> dict[str, Any] | None:
         text = _JSON_FENCE_RE.sub("", raw.strip()).strip()
@@ -634,6 +939,10 @@ class MemoryEngine:
             return min(high, max(low, float(raw)))
         except (TypeError, ValueError):
             return default
+
+    # ------------------------------------------------------------------
+    # Text processing helpers
+    # ------------------------------------------------------------------
 
     def _normalize_key(self, value: str) -> str:
         text = value.strip().lower()

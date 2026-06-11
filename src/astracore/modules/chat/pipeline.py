@@ -12,7 +12,7 @@ Both the HTTP service and the embedded SDK use this module; HTTP-specific concer
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -38,9 +38,39 @@ from astracore.shared.observability.logger import get_logger
 from astracore.shared.policy.engine import PolicyEngine
 from astracore.shared.ports.llm import LLMAdapter, StreamEvent, StreamEventType
 
+if TYPE_CHECKING:
+    from astracore.infrastructure.memory.vector import MemoryVectorAdapter
+
 logger = get_logger(__name__)
 
 _ANTHROPIC_BLOCKS_KEY = "anthropic_content_blocks"
+_PROMPT_DEBUG_SEP = "═" * 64
+
+
+def _print_prompt_debug(
+    system_prompt: str | None,
+    messages: list["Message"],
+    session_id: "UUID",
+) -> None:
+    """Print the full LLM input to stdout when debug.log_prompts is enabled."""
+    lines: list[str] = [
+        "",
+        _PROMPT_DEBUG_SEP,
+        f"  [PROMPT DEBUG]  session={session_id}",
+        _PROMPT_DEBUG_SEP,
+    ]
+    if system_prompt:
+        lines += ["  ── SYSTEM PROMPT ──", system_prompt, ""]
+    lines.append(f"  ── MESSAGES ({len(messages)}) ──")
+    for msg in messages:
+        role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
+        content = msg.content or ""
+        prefix = f"  [{role}] "
+        # indent continuation lines to keep it readable
+        indented = content.replace("\n", "\n" + " " * len(prefix))
+        lines.append(f"{prefix}{indented}")
+    lines += [_PROMPT_DEBUG_SEP, ""]
+    print("\n".join(lines), flush=True)
 
 
 # ------------------------------------------------------------------
@@ -64,15 +94,92 @@ def _strip_dangling_tool_calls(messages: list[Message]) -> list[Message]:
 
 
 def _prepare_for_save(messages: list[Message]) -> list[Message]:
-    """Drop SYSTEM / tool-loop-internal messages before persisting visible chat history."""
-    msgs = [
-        m
-        for m in messages
-        if m.role != MessageRole.SYSTEM
-        and m.role != MessageRole.TOOL
-        and not (m.role == MessageRole.ASSISTANT and m.tool_calls)
-    ]
+    """Drop SYSTEM / tool-loop-internal / synthetic messages before persisting chat history.
+
+    Exception: assistant messages that contain a ``load_skill`` tool call are replaced with a
+    thin text record (``metadata["skill_loaded"] = skill_id``) so the skill-state tracker can
+    detect an active skill even after the full tool-call pair is stripped.
+    """
+    msgs: list[Message] = []
+    for m in messages:
+        if m.role == MessageRole.SYSTEM:
+            continue
+        if m.role == MessageRole.TOOL:
+            continue
+        if m.metadata.get("synthetic"):
+            continue
+        if m.role == MessageRole.ASSISTANT and m.tool_calls:
+            load_skill_calls = [tc for tc in m.tool_calls if tc.name == "load_skill"]
+            if load_skill_calls:
+                skill_id = str(load_skill_calls[-1].arguments.get("skill_id", "")).strip()
+                if skill_id:
+                    msgs.append(
+                        Message(
+                            role=MessageRole.ASSISTANT,
+                            content=m.content,
+                            metadata={"skill_loaded": skill_id},
+                        )
+                    )
+            continue
+        msgs.append(m)
     return _strip_dangling_tool_calls(msgs)
+
+
+def _detect_active_skill(messages: list[Message], lookback_turns: int = 3) -> str | None:
+    """Scan recent assistant messages for an active skill.
+
+    Two detection paths:
+    - ``tool_calls``: live in-session calls (before messages are persisted).
+    - ``metadata["skill_loaded"]``: thin markers written by ``_prepare_for_save`` for
+      load_skill calls, surviving after the full tool-call pair is stripped on save.
+
+    Returns the most recently used skill_id within the last *lookback_turns* assistant
+    messages, or None.  The window prevents stale reminders after the skill task ends.
+    """
+    assistant_count = 0
+    for msg in reversed(messages):
+        if msg.role != MessageRole.ASSISTANT:
+            continue
+        assistant_count += 1
+        if assistant_count > lookback_turns:
+            break
+        # Path 1: saved marker from _prepare_for_save
+        skill_id = str(msg.metadata.get("skill_loaded", "")).strip()
+        if skill_id:
+            return skill_id
+        # Path 2: live tool_calls still in session (current turn, not yet persisted)
+        for tc in msg.tool_calls:
+            if tc.name == "load_skill":
+                sid = str(tc.arguments.get("skill_id", "")).strip()
+                if sid:
+                    return sid
+    return None
+
+
+def _build_active_skill_reminder(skill_id: str) -> list[Message]:
+    """Build a synthetic user/assistant pair that reminds the model to reload the active skill.
+
+    Injected between session history and the current user message so the model
+    sees it immediately before generating its next reply.  Both messages carry
+    ``synthetic=True`` metadata so they are never persisted to chat history.
+    """
+    return [
+        Message(
+            role=MessageRole.USER,
+            content="[技能续接]",
+            metadata={"synthetic": True},
+        ),
+        Message(
+            role=MessageRole.ASSISTANT,
+            content=(
+                f"【当前激活技能：{skill_id}】\n"
+                f"本轮对话仍在执行「{skill_id}」技能任务。"
+                f'我将在回复前先调用 load_skill("{skill_id}") 重新加载技能指令，'
+                "确保严格按照技能规范执行，不跳过。"
+            ),
+            metadata={"synthetic": True},
+        ),
+    ]
 
 
 # ------------------------------------------------------------------
@@ -100,6 +207,7 @@ class ChatPipeline:
         policy: PolicyEngine,
         tool_adapter: ToolAdapter,
         memory_engine: MemoryEngine | None = None,
+        vector_adapter: "MemoryVectorAdapter | None" = None,
         hooks: HookRegistry | None = None,
     ) -> None:
         self._config = config
@@ -108,6 +216,7 @@ class ChatPipeline:
         self._policy = policy
         self._default_tool_adapter = tool_adapter
         self._injected_memory_engine = memory_engine
+        self._vector_adapter = vector_adapter
         self._hooks = hooks
         self._llm_adapters: dict[str, LLMAdapter] = {}
 
@@ -231,14 +340,11 @@ class ChatPipeline:
             memory_engine = self._injected_memory_engine or MemoryEngine(
                 SQLMemoryStore(self._config.memory.db_url), user_id=user_id
             )
-            memory_context = await memory_engine.build_memory_context(
-                session_id=session_id,
-                message=message,
-            )
-            if memory_context:
-                parts.append(memory_context)
+            profile_context = await memory_engine.build_profile_context()
+            if profile_context:
+                parts.append(profile_context)
         except Exception:
-            logger.exception("Memory context 构建失败，跳过本轮记忆注入")
+            logger.exception("Profile context 构建失败，跳过本轮记忆注入")
 
         if enable_rag:
             rag_ctx = await self._build_rag_context(message, user_id)
@@ -246,6 +352,41 @@ class ChatPipeline:
                 parts.append(rag_ctx)
 
         return "\n\n---\n\n".join(parts) or None
+
+    async def _build_turn_context(self, session_id: UUID, message: str, user_id: str) -> str:
+        """Build Tier-2 turn context (session+project scope, Chroma or SQL fallback)."""
+        try:
+            if self._injected_memory_engine is not None:
+                return await self._injected_memory_engine.build_turn_context(
+                    session_id=session_id, message=message
+                )
+            engine = MemoryEngine(
+                SQLMemoryStore(self._config.memory.db_url),
+                user_id=user_id,
+                vector_adapter=self._vector_adapter,
+            )
+            return await engine.build_turn_context(session_id=session_id, message=message)
+        except Exception:
+            logger.exception("Tier-2 记忆上下文构建失败，跳过")
+            return ""
+
+    @staticmethod
+    def _build_turn_recall_messages(ctx: ChatContext) -> list[Message]:
+        """Construct synthetic Tier-2 recall message pair (not persisted)."""
+        if not ctx.turn_context:
+            return []
+        return [
+            Message(
+                role=MessageRole.USER,
+                content="[记忆同步]",
+                metadata={"synthetic": True},
+            ),
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=ctx.turn_context,
+                metadata={"synthetic": True},
+            ),
+        ]
 
     async def _resolve_temperature(
         self, temperature: float | None, profile: LLMProfileConfig, user_id: str = "default"
@@ -278,13 +419,16 @@ class ChatPipeline:
         if (opts.use_tools or opts.enable_web) and not profile.capabilities.tools:
             raise ValueError(f"LLM profile '{profile.id}' does not support tool calling")
 
-        # 1. Compose system prompt (identity + manifest + memory + RAG in one pass)
+        # 1. Compose system prompt (identity + manifest + Tier-1 profile + RAG)
         system_prompt = await self._build_system_prompt(
             session_id=session_id,
             enable_rag=opts.enable_rag,
             message=message,
             user_id=user_id,
         )
+
+        # 1b. Tier-2: dynamic session/project context (injected as synthetic messages in stream)
+        turn_context = await self._build_turn_context(session_id, message, user_id)
 
         # 2. Resolve temperature and context window size
         resolved_temp = await self._resolve_temperature(opts.temperature, profile, user_id)
@@ -325,6 +469,7 @@ class ChatPipeline:
             llm_kwargs=llm_kwargs,
             tool_adapter=effective_adapter,
             allowed_tools=allowed_tools,
+            turn_context=turn_context,
         )
 
     # ------------------------------------------------------------------
@@ -344,20 +489,32 @@ class ChatPipeline:
 
         session = SessionState(session_id=ctx.session_id)
 
+        recall = self._build_turn_recall_messages(ctx)
+        # Skill state tracking: if a skill was loaded recently, remind the model to reload it.
+        active_skill = _detect_active_skill(stored)
+        skill_reminder = _build_active_skill_reminder(active_skill) if active_skill else []
+
         if ctx.mode == "tool_loop":
             # tool_loop needs the system message inside the session so the tool loop can see it.
             initial: list[Message] = []
             if ctx.system_prompt:
                 initial.append(Message(role=MessageRole.SYSTEM, content=ctx.system_prompt))
             initial.extend(stored)
+            initial.extend(recall)
+            initial.extend(skill_reminder)
             session.restore_messages(initial)
             session.add_message(Message(role=MessageRole.USER, content=ctx.message))
+            if self._config.debug.log_prompts:
+                # system is embedded in messages; pass None to avoid double-printing
+                _print_prompt_debug(None, session.get_messages(), ctx.session_id)
             async for event in self._stream_tool_loop(ctx, session):
                 yield event
         else:
             # normal mode: system is prepended only at the LLM call site.
-            session.restore_messages(stored)
+            session.restore_messages(stored + recall + skill_reminder)
             session.add_message(Message(role=MessageRole.USER, content=ctx.message))
+            if self._config.debug.log_prompts:
+                _print_prompt_debug(ctx.system_prompt, session.get_messages(), ctx.session_id)
             async for event in self._stream_normal(ctx, session):
                 yield event
 

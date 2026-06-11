@@ -15,6 +15,7 @@ from astracore.infrastructure.db.models import SkillRow
 from astracore.infrastructure.db.session import get_session, init_db
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
+from astracore.infrastructure.memory.vector import MemoryVectorAdapter
 from astracore.infrastructure.retrieval.chroma import ChromaRetrieverAdapter
 from astracore.infrastructure.workflow.native import NativeWorkflowOrchestrator
 from astracore.modules.agent.domain import AgentTask
@@ -210,7 +211,14 @@ class AstraCoreClient:
 
         # Lightweight: just stores the DB URL, no network connection until queries run
         cfg = self.config
-        self._memory_engine = MemoryEngine(SQLMemoryStore(cfg.memory.db_url))
+        self._vector_adapter = MemoryVectorAdapter(
+            persist_directory=cfg.retrieval.persist_directory,
+            embedding_model=cfg.retrieval.embedding_model,
+        )
+        self._memory_engine = MemoryEngine(
+            SQLMemoryStore(cfg.memory.db_url),
+            vector_adapter=self._vector_adapter,
+        )
         self.memory = MemoryClient(self._memory_engine)
         self.projects = ProjectClient(self._memory_engine)
 
@@ -301,6 +309,7 @@ class AstraCoreClient:
             policy=PolicyEngine(),
             tool_adapter=self._tool_adapter,
             memory_engine=self._memory_engine,
+            vector_adapter=self._vector_adapter,
             hooks=self._hooks,
         )
 

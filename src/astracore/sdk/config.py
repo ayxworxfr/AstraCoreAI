@@ -165,6 +165,14 @@ class AuthConfig(BaseModel):
     allow_registration: bool = True
 
 
+class DebugConfig(BaseModel):
+    """Developer debug configuration."""
+
+    log_prompts: bool = False
+    """Print the full LLM prompt (system prompt + message list) to stdout before each LLM call.
+    Useful for inspecting Tier-1/Tier-2 memory injection and system prompt composition."""
+
+
 class MCPConfig(BaseModel):
     """MCP server connection configuration.
 
@@ -232,6 +240,7 @@ class AstraCoreConfig(BaseModel):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    debug: DebugConfig = Field(default_factory=DebugConfig)
 
     def __init__(self, **data: object) -> None:
         if not data:

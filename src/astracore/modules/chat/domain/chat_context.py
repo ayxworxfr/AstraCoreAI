@@ -80,3 +80,8 @@ class ChatContext:
     allowed_tools: frozenset[str] = field(default_factory=frozenset)
     """白名单工具名集合。非空时 ToolLoopUseCase 只向 LLM 暴露集合内的工具；
     空集合表示暴露全部可用工具。"""
+
+    turn_context: str = field(default="")
+    """Tier-2 动态会话上下文，由 ``MemoryEngine.build_turn_context()`` 生成；
+    注入为 role=assistant 的合成消息对（桥接 user:[记忆同步] + assistant:[快照]），
+    不持久化到会话历史。空字符串表示无相关 session/project 记忆。"""

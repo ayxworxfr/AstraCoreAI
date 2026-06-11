@@ -14,7 +14,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于能力模块化
 - **健壮工具循环**：悬空 tool_use 清理、总结收尾兜底、空响应引导续接、单次工具超时隔离、中间轮旁白与最终答案自动分流
 - **后台 Chat Run**：流式回答由后端后台任务驱动，SSE 仅负责订阅输出；刷新页面不会中断生成，重连后可恢复当前 run
 - **Command + Pipeline 执行引擎**：`ChatPipeline` 作为 SDK 与 HTTP Service 的统一 chat 管道；`prepare()` 一次性完成所有 DB 查询与决策，返回不可变 `ChatContext`；`stream()` 纯执行，system prompt 始终注入，无分支歧义
-- **记忆系统**：Redis 短期缓存 + SQLite 持久化兜底（重启恢复）+ 结构化 Memory Store（默认 `astracore.db`），Redis 不可用时自动降级到 SQLite
+- **记忆系统（Context Engineering）**：两级注入架构——Tier-1 将 `user/global` scope 的用户画像与行为规范（preference / constraint / procedure）全量加载进 system prompt；Tier-2 在每轮对话前通过 Chroma 向量语义检索 `session/project` scope 的动态上下文，以合成消息对（`user:[记忆同步] → assistant:[快照]`）无缝插入对话历史。每轮结束后 LLM 批量提取 0-N 条结构化记忆（`_ExtractionBatch`），高价值 session 记忆经启发式过滤 + LLM 判断后晋升为 user/project scope。Chroma 不可用时自动降级到 SQL ILIKE 检索，系统正常运行不中断
 - **RAG 管道**：ChromaDB 向量搜索（幂等 upsert）、文档分块、引用支持
 - **Skill 系统（Agent Skills 标准）**：Skill 作为 Claude 可按需加载的专业能力包（SKILL.md 格式），兼容 Agent Skills 开放标准；三层 System Prompt（身份层 + Skill 摘要清单 + 动态上下文）；Claude 通过 `load_skill` / `get_skill_reference` / `run_skill_script` 三个工具自主决策何时加载哪个 Skill，工具循环始终激活；支持多目录扫描（`skills.extra_dirs`）
 - **并行多 Agent**：`spawn_agents` 工具将任务分解为 2–5 个独立子任务，Worker Agent 并发执行，前端实时展示各 Agent 进度；可通过 `agent.enable_spawn_agents` 配置开关；Worker 自动使用用户当前选择的模型 profile
@@ -34,7 +34,7 @@ AstraCore AI 是一个生产级、可扩展的 AI 框架，基于能力模块化
 ## 测试状态
 
 ```
-155 passed in the current local Hatch env
+162 passed in the current local Hatch env
 ruff: 0 errors             ✅
 ```
 
@@ -182,7 +182,7 @@ src/astracore/
 ├── infrastructure/
 │   ├── db/              # SQLAlchemy models / session
 │   ├── llm/             # Anthropic、OpenAI 适配器
-│   ├── memory/          # HybridMemoryAdapter、SQLMemoryStore
+│   ├── memory/          # HybridMemoryAdapter、SQLMemoryStore、MemoryVectorAdapter（Chroma 语义索引）
 │   ├── retrieval/       # ChromaDB 适配器
 │   ├── tools/           # native、MCP、composite、parallel agent 工具实现
 │   └── workflow/        # NativeWorkflowOrchestrator（DAG 拓扑排序 + 并行执行）
@@ -387,7 +387,7 @@ async with AstraCoreClient() as client:
 - [x] M3：RAG 与多 Agent 协作
 - [x] M4：SDK + Service 打包与示例
 - [x] M5：质量闭环 — 后端优化 ✅ 单元测试 131 个 ✅ Skill 系统 ✅ 记忆持久化 ✅ Memory 自动抽取 ✅ 系统配置 ✅ MCP 工具集成 ✅ 工具循环健壮性 ✅ 后台 Chat Run ✅ SDK/Service 代码去重（ChatPipeline 统一执行）✅ SDK 全功能对齐 ✅ Skill 路由（off/vector/llm）✅ 多目录 Skill 扫描 ✅ 主/副技能 UI 区分 ✅ 并行多 Agent（spawn_agents）✅ Command + Pipeline 模式重构 ✅ Conversation 门面（多轮会话自动管理 session_id）✅ SKILL_MATCH 事件（SDK 技能路由透传）✅ Hook/Callback 系统（before/after_llm/tool 四切入点）✅ 轻量级 Span 链路追踪（无 OTel 依赖）✅ DAG 工作流引擎（拓扑排序 + 层级并行 + 条件跳过）✅ SDK WorkflowClient ✅
-- [x] M5+：Hook ShortCircuit 短路拦截 ✅ CircuitBreaker 熔断器（三态状态机 + PolicyEngine 集成）✅ Structured Output（LLMAdapter response_format + Anthropic tool_use + OpenAI json_schema + MemoryEngine 切换）✅ Agent Eval 评估框架（EvalRunner + LLM-as-judge + 工具精确匹配 + JSON 报告 + CLI）✅ Skill 系统重设计（Agent Skills 标准：三层 System Prompt + Claude 自主路由 + load_skill/get_skill_reference/run_skill_script 工具 + 废弃 SkillRouter）✅
+- [x] M5+：Hook ShortCircuit 短路拦截 ✅ CircuitBreaker 熔断器（三态状态机 + PolicyEngine 集成）✅ Structured Output（LLMAdapter response_format + Anthropic tool_use + OpenAI json_schema + MemoryEngine 切换）✅ Agent Eval 评估框架（EvalRunner + LLM-as-judge + 工具精确匹配 + JSON 报告 + CLI）✅ Skill 系统重设计（Agent Skills 标准：三层 System Prompt + Claude 自主路由 + load_skill/get_skill_reference/run_skill_script 工具 + 废弃 SkillRouter）✅ Memory 系统重设计（Context Engineering：Tier-1 画像注入 + Tier-2 语义召回 + 批量抽取 + LLM 晋升 + MemoryVectorAdapter + user_id 多用户修复）✅
 - [ ] M6：可靠性与安全 — API Key 鉴权、限流
 - [ ] M7：可观测与性能 — SLO/指标/压测基线
 - [ ] M8：发布工程化 — 版本策略、回滚预案、运维文档
@@ -395,7 +395,7 @@ async with AstraCoreClient() as client:
 ## 文件统计
 
 - **Python 源模块**：覆盖 app / modules / infrastructure / shared / sdk 全栈
-- **测试覆盖**：155 个测试，覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略、Skill、Memory、MCP、流式会话安全等核心链路
+- **测试覆盖**：162 个测试，覆盖配置、LLM 适配器、应用用例、RAG、工具循环、运行时策略、Skill、Memory（含 Context Engineering 两级注入、批量提取、LLM 晋升）、MCP、流式会话安全等核心链路
 - **7 个完整示例**：可直接通过 SDK 运行，无需 HTTP 服务
 - **双形态交付**：SDK + Service 共享同一 ChatPipeline 执行引擎
 
@@ -412,3 +412,5 @@ AstraCoreAI 使用 [PolyForm Noncommercial License 1.0.0](./LICENSE)。
 
 - [AstraCore AI 设计文档](./docs/AstraCoreAI设计文档.md)
 - [开发进度规划](./docs/开发进度规划.md)
+- [Memory 系统重设计方案](./docs/Memory系统重设计方案.md)
+- [Skill 系统重设计方案](./docs/Skill系统重设计方案.md)
