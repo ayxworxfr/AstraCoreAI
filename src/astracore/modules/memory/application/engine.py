@@ -1036,9 +1036,11 @@ class MemoryEngine:
     ) -> list[StructuredMemory]:
         keywords = {part for part in re.split(r"\W+", message.lower()) if len(part) >= 2}
 
-        def score(memory: StructuredMemory) -> tuple[int, int, float, str]:
-            text = memory.content.lower()
-            relevance = sum(1 for keyword in keywords if keyword in text)
+        def _relevance(memory: StructuredMemory) -> int:
+            text = ((memory.subject or "") + " " + memory.content).lower()
+            return sum(1 for keyword in keywords if keyword in text)
+
+        def _score(memory: StructuredMemory, relevance: int) -> tuple[int, int, float, str]:
             locked_bonus = 2 if memory.locked else 0
             return (
                 _TYPE_ORDER[memory.type],
@@ -1047,7 +1049,14 @@ class MemoryEngine:
                 memory.updated_at.isoformat(),
             )
 
-        return sorted(memories, key=score)
+        scored = [(m, _relevance(m)) for m in memories]
+
+        # When there are keyword hits, suppress zero-hit low-importance memories.
+        # Locked memories and high-importance (>=4) always pass regardless of relevance.
+        if keywords and any(rel > 0 for _, rel in scored):
+            scored = [(m, rel) for m, rel in scored if rel > 0 or m.locked or m.importance >= 4]
+
+        return [m for m, _ in sorted(scored, key=lambda x: _score(x[0], x[1]))]
 
     def _dedupe(self, memories: list[StructuredMemory]) -> list[StructuredMemory]:
         seen: set[str] = set()
