@@ -91,3 +91,8 @@ class MemoryStore(ABC):
         status: MemoryStatus | None = None,
     ) -> int:
         pass
+
+    @abstractmethod
+    async def touch_memories(self, memory_ids: list[str]) -> None:
+        """Increment use_count and update last_used_at for the given memories in bulk."""
+        pass

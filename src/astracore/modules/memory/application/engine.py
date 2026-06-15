@@ -3,6 +3,7 @@
 import json
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any, Literal
@@ -75,41 +76,28 @@ class _PromotionDecision(BaseModel):
 # Type metadata tables
 # ------------------------------------------------------------------
 
-_TYPE_TITLES: dict[MemoryType, str] = {
-    MemoryType.PROCEDURE: "行为规范",
-    MemoryType.CONSTRAINT: "Constraints",
-    MemoryType.STATE: "Current Project State",
-    MemoryType.PREFERENCE: "User Preferences",
-    MemoryType.DECISION: "Recent Decisions",
-    MemoryType.PLAN: "Plans",
-    MemoryType.FACT: "Facts",
-    MemoryType.LESSON: "Lessons",
-    MemoryType.SUMMARY: "Summaries",
+
+@dataclass(frozen=True)
+class _TypeMeta:
+    order: int  # Tier-1 section sort order
+    label: str  # Tier-2 short label
+    title: str  # Tier-1 section heading
+
+
+_TYPE_META: dict[MemoryType, _TypeMeta] = {
+    MemoryType.PROCEDURE: _TypeMeta(0, "规范", "行为规范"),
+    MemoryType.CONSTRAINT: _TypeMeta(1, "约束", "已确认约束"),
+    MemoryType.DECISION: _TypeMeta(2, "决策", "已确认决策"),
+    MemoryType.STATE: _TypeMeta(3, "状态", "当前状态"),
+    MemoryType.PREFERENCE: _TypeMeta(4, "偏好", "用户偏好"),
+    MemoryType.PLAN: _TypeMeta(5, "计划", "计划"),
+    MemoryType.FACT: _TypeMeta(6, "事实", "已知事实"),
+    MemoryType.LESSON: _TypeMeta(7, "教训", "经验教训"),
+    MemoryType.SUMMARY: _TypeMeta(8, "摘要", "摘要"),
 }
 
-_TYPE_ORDER: dict[MemoryType, int] = {
-    MemoryType.PROCEDURE: 0,
-    MemoryType.CONSTRAINT: 1,
-    MemoryType.DECISION: 2,
-    MemoryType.STATE: 3,
-    MemoryType.PREFERENCE: 4,
-    MemoryType.PLAN: 5,
-    MemoryType.FACT: 6,
-    MemoryType.LESSON: 7,
-    MemoryType.SUMMARY: 8,
-}
-
-_TIER1_SECTION_TITLES: dict[MemoryType, str] = {
-    MemoryType.PROCEDURE: "行为规范",
-    MemoryType.CONSTRAINT: "已确认约束",
-    MemoryType.PREFERENCE: "用户偏好",
-    MemoryType.DECISION: "已确认决策",
-    MemoryType.FACT: "已知事实",
-    MemoryType.LESSON: "经验教训",
-    MemoryType.STATE: "当前状态",
-    MemoryType.PLAN: "计划",
-    MemoryType.SUMMARY: "摘要",
-}
+_CJK_RANGE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]+")
+_CJK_CHAR = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
 
 _DEFAULT_SCOPE_LIMITS: dict[MemoryScope, int] = {
     MemoryScope.SESSION: 6,
@@ -117,6 +105,15 @@ _DEFAULT_SCOPE_LIMITS: dict[MemoryScope, int] = {
     MemoryScope.USER: 4,
     MemoryScope.GLOBAL: 4,
 }
+
+
+def _format_memory_doc(memory: StructuredMemory) -> str:
+    """Format a single memory for Tier-2 context injection with type label and importance marker."""
+    label = _TYPE_META[memory.type].label
+    importance_marker = "⚑ " if memory.importance >= 4 else ""
+    subject_part = f"{memory.subject}: " if memory.subject else ""
+    return f"[{label}] {importance_marker}{subject_part}{memory.content}"
+
 
 _SESSION_COMPACT_THRESHOLD = 12
 _SIMILARITY_THRESHOLD = 0.72
@@ -328,14 +325,17 @@ class MemoryEngine:
             "以下来自长期记忆，请严格遵守 Constraints 和 Procedures；如用户明确纠正，以最新消息为准。",
         ]
 
-        for memory_type in sorted(grouped, key=lambda t: _TYPE_ORDER[t]):
-            title = _TIER1_SECTION_TITLES.get(memory_type, _TYPE_TITLES[memory_type])
+        for memory_type in sorted(grouped, key=lambda t: _TYPE_META[t].order):
+            title = _TYPE_META[memory_type].title
             lines.extend(["", f"### {title}"])
             for memory in grouped[memory_type]:
                 lines.append(f"- {memory.content}")
 
         context = "\n".join(lines).strip()
-        return context[:max_chars].rstrip()
+        if len(context) > max_chars:
+            context = context[:max_chars].rsplit("\n", 1)[0].rstrip()
+        await self._store.touch_memories([m.id for m in all_memories])
+        return context
 
     # ------------------------------------------------------------------
     # Tier-2: dynamic turn context → synthetic assistant message
@@ -384,10 +384,9 @@ class MemoryEngine:
                 status=MemoryStatus.ACTIVE,
                 limit=_DEFAULT_SCOPE_LIMITS[MemoryScope.SESSION],
             )
-            session_docs = [
-                f"{m.subject}: {m.content}" if m.subject else m.content
-                for m in self._rank_memories(session_memories, message)
-            ]
+            ranked_session = self._rank_memories(session_memories, message)
+            session_docs = [_format_memory_doc(m) for m in ranked_session]
+            await self._store.touch_memories([m.id for m in ranked_session])
         if binding is not None and not project_docs:
             project_memories = await self._store.list_memories(
                 scope=MemoryScope.PROJECT,
@@ -396,10 +395,9 @@ class MemoryEngine:
                 status=MemoryStatus.ACTIVE,
                 limit=_DEFAULT_SCOPE_LIMITS[MemoryScope.PROJECT],
             )
-            project_docs = [
-                f"{m.subject}: {m.content}" if m.subject else m.content
-                for m in self._rank_memories(project_memories, message)
-            ]
+            ranked_project = self._rank_memories(project_memories, message)
+            project_docs = [_format_memory_doc(m) for m in ranked_project]
+            await self._store.touch_memories([m.id for m in ranked_project])
 
         if not session_docs and not project_docs:
             return ""
@@ -415,7 +413,9 @@ class MemoryEngine:
                 lines.append(f"- {doc}")
 
         context = "\n".join(lines).strip()
-        return context[:max_chars]
+        if len(context) > max_chars:
+            context = context[:max_chars].rsplit("\n", 1)[0].rstrip()
+        return context
 
     # ------------------------------------------------------------------
     # Memory extraction and compaction
@@ -958,7 +958,15 @@ class MemoryEngine:
     def _subjects_match(self, left: str, right: str) -> bool:
         if not left or not right:
             return False
-        return left == right or left in right or right in left
+        if left == right:
+            return True
+        # Substring matching is unreliable for short ASCII strings (e.g. "ai" matches "astracoreai").
+        # CJK subjects use a lower threshold since even 2-char CJK terms are semantically distinct.
+        has_cjk = _CJK_CHAR.search(left) and _CJK_CHAR.search(right)
+        min_len = 2 if has_cjk else 4
+        if len(left) < min_len or len(right) < min_len:
+            return False
+        return left in right or right in left
 
     def _best_candidate(
         self, candidates: list[StructuredMemory], content: str
@@ -1025,16 +1033,23 @@ class MemoryEngine:
         for memory in memories:
             grouped[memory.type].append(memory.content.strip())
         lines: list[str] = []
-        for memory_type in sorted(grouped, key=lambda item: _TYPE_ORDER[item]):
+        for memory_type in sorted(grouped, key=lambda item: _TYPE_META[item].order):
             for content in grouped[memory_type][:3]:
                 if content:
                     lines.append(content)
         return "；".join(lines)[:1200]
 
+    def _extract_keywords(self, message: str) -> set[str]:
+        """Extract search keywords: ASCII words (len≥2) + CJK bigrams for Chinese matching."""
+        words = {part for part in re.split(r"\W+", message.lower()) if len(part) >= 2}
+        for chunk in _CJK_RANGE.findall(message):
+            words.update(chunk[i : i + 2] for i in range(len(chunk) - 1))
+        return words
+
     def _rank_memories(
         self, memories: list[StructuredMemory], message: str
     ) -> list[StructuredMemory]:
-        keywords = {part for part in re.split(r"\W+", message.lower()) if len(part) >= 2}
+        keywords = self._extract_keywords(message)
 
         def _relevance(memory: StructuredMemory) -> int:
             text = ((memory.subject or "") + " " + memory.content).lower()
@@ -1043,7 +1058,7 @@ class MemoryEngine:
         def _score(memory: StructuredMemory, relevance: int) -> tuple[int, int, float, str]:
             locked_bonus = 2 if memory.locked else 0
             return (
-                _TYPE_ORDER[memory.type],
+                _TYPE_META[memory.type].order,
                 -(memory.importance + locked_bonus + relevance),
                 -memory.confidence,
                 memory.updated_at.isoformat(),

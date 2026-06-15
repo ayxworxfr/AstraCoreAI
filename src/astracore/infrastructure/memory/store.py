@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, update
 
 from astracore.infrastructure.db.models import (
     ConversationProjectBindingRow,
@@ -287,3 +287,21 @@ class SQLMemoryStore(MemoryStore):
             result = await db.execute(stmt)
             await db.commit()
             return int(getattr(result, "rowcount", 0) or 0)
+
+    async def touch_memories(self, memory_ids: list[str]) -> None:
+        """Increment use_count and update last_used_at for the given memories in bulk."""
+        if not memory_ids:
+            return
+        now = datetime.now(UTC)
+        stmt = (
+            update(StructuredMemoryRow)
+            .where(StructuredMemoryRow.id.in_(memory_ids))
+            .values(
+                use_count=StructuredMemoryRow.use_count + 1,
+                last_used_at=now,
+                updated_at=now,
+            )
+        )
+        async with get_session(self._db_url) as db:
+            await db.execute(stmt)
+            await db.commit()
