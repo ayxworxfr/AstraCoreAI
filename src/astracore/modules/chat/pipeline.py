@@ -536,7 +536,7 @@ class ChatPipeline:
         # Default context window size (Claude Sonnet/Opus 200K tokens).
         stored = await compactor.maybe_compact(
             loaded,
-            context_window=200_000,
+            context_window=100_000,
             session_id=ctx.session_id,
             trim_limit=ctx.context_max_messages,
         )

@@ -327,6 +327,41 @@ async def test_llm_memory_extraction_creates_session_memory(memory_db) -> None:
     assert stored[0].subject == "工作目录"
 
 
+async def test_session_only_memory_extraction_forces_session_scope(memory_db) -> None:
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope
+
+    session_id = uuid4()
+    engine = MemoryEngine(SQLMemoryStore(memory_db))
+
+    memories = await engine.extract_and_store(
+        session_id=session_id,
+        user_message="章鱼有三颗心脏",
+        assistant_content="章鱼有3个心脏，两个鳃心负责泵血到鳃，一个体心负责将富氧血泵到全身。",
+        source_run_id=str(uuid4()),
+        llm_adapter=_ExtractionBatchLLM(
+            '{"memories": [{'
+            '"action": "create", "scope": "user", "type": "fact", '
+            '"subject": "章鱼心脏", "content": "章鱼有3个心脏。", '
+            '"summary": "章鱼有三颗心脏", "importance": 5, "confidence": 0.95'
+            "}]}"
+        ),
+        model="fake",
+        session_only=True,
+    )
+
+    session_memories = await engine.list_memories(scope=MemoryScope.SESSION, session_id=session_id)
+    user_memories = await engine.list_memories(scope=MemoryScope.USER)
+
+    assert len(memories) == 1
+    assert len(session_memories) == 1
+    assert session_memories[0].scope == MemoryScope.SESSION
+    assert session_memories[0].session_id == session_id
+    assert session_memories[0].content == "章鱼有3个心脏。"
+    assert user_memories == []
+
+
 async def test_memory_extraction_updates_existing_subject_instead_of_creating_duplicate(
     memory_db,
 ) -> None:

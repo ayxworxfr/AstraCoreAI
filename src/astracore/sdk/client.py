@@ -567,6 +567,7 @@ class AstraCoreClient:
                     source_run_id=str(uuid4()),
                     llm_adapter=self._pipeline.get_llm_adapter(ctx.profile),
                     model=ctx.profile.model,
+                    session_only=True,
                 )
             )
         except asyncio.CancelledError:

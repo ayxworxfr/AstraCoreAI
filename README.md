@@ -356,10 +356,9 @@ async with AstraCoreClient(hooks=registry) as client:
 |------|------|
 | 系统设计文档 | `docs/AstraCoreAI设计文档.md` |
 | 开发进度规划 | `docs/开发进度规划.md` |
-| 专业度评估与优化路线 | `docs/专业度评估与优化路线.md` |
 | 前端设计方案 | `docs/前端设计方案.md` |
 | 子系统设计方案 | `docs/子系统设计方案.md` |
-| 工具循环踩坑记录 | `docs/工具循环踩坑记录.md` |
+| 专业度评估与优化路线 | `docs/专业度评估与优化路线.md` |
 | 贡献指南 | `docs/CONTRIBUTING.md` |
 
 ---

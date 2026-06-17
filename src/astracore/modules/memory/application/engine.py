@@ -433,6 +433,7 @@ class MemoryEngine:
         source_run_id: str,
         llm_adapter: LLMAdapter | None = None,
         model: str | None = None,
+        session_only: bool = False,
     ) -> list[StructuredMemory]:
         if llm_adapter is None:
             return []
@@ -444,13 +445,15 @@ class MemoryEngine:
             source_run_id=source_run_id,
             llm_adapter=llm_adapter,
             model=model,
+            session_only=session_only,
         )
         await self.compact_session_memories(
             session_id=session_id, llm_adapter=llm_adapter, model=model
         )
-        await self._evaluate_and_promote(
-            session_id=session_id, llm_adapter=llm_adapter, model=model
-        )
+        if not session_only:
+            await self._evaluate_and_promote(
+                session_id=session_id, llm_adapter=llm_adapter, model=model
+            )
         return extracted or []
 
     async def compact_session_memories(
@@ -674,7 +677,13 @@ class MemoryEngine:
         source_run_id: str,
         llm_adapter: LLMAdapter,
         model: str | None,
+        session_only: bool = False,
     ) -> list[StructuredMemory] | None:
+        scope_line = (
+            "scope: session（本次会话）\n"
+            if session_only
+            else "scope: session（本次会话）/ user（跨会话永久）/ project（项目级）\n"
+        )
         response = await llm_adapter.generate(
             messages=[
                 Message(
@@ -691,7 +700,7 @@ class MemoryEngine:
                         "- 经验教训（哪个方案有效/失败，原因是什么）\n"
                         "- AI 的行为规范（用户要求 AI 怎么做或不能做什么）\n\n"
                         "不确定是否值得保留时：填 importance=2, confidence=0.5，不要丢弃。\n\n"
-                        "scope: session（本次会话）/ user（跨会话永久）/ project（项目级）\n"
+                        f"{scope_line}"
                         "type: fact / preference / decision / constraint / state / plan / lesson / procedure\n"
                         "action 固定填 create（系统自动按 subject 去重合并，无需手动指定 update）。\n"
                         "content 须完整可独立理解，不能依赖上下文。subject 简短（< 20字）便于检索。\n\n"
@@ -734,7 +743,7 @@ class MemoryEngine:
             if not content:
                 continue
 
-            scope = self._coerce_scope(item.get("scope"))
+            scope = MemoryScope.SESSION if session_only else self._coerce_scope(item.get("scope"))
             memory_type = self._coerce_type(item.get("type"))
             project_id = (
                 binding.project_id if binding is not None and scope == MemoryScope.PROJECT else None

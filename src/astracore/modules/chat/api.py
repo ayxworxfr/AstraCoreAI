@@ -688,6 +688,7 @@ async def _execute_run(*, run_id: str, ctx: ChatContext, user_id: str = "default
                 source_run_id=run_id,
                 llm_adapter=_get_chat_pipeline().get_llm_adapter(ctx.profile),
                 model=ctx.profile.model,
+                session_only=True,
             )
             logger.info("记忆自动提取完成: run_id=%s", run_id)
         except Exception:
@@ -974,6 +975,7 @@ async def chat(
                 source_run_id=row.id,
                 llm_adapter=_get_chat_pipeline().get_llm_adapter(ctx.profile),
                 model=ctx.profile.model,
+                session_only=True,
             )
         except Exception:
             logger.exception("Memory 自动提取失败，run_id=%s", row.id)
