@@ -126,6 +126,50 @@ mcp:
 - `shell`：使用内置受控 shell server，在允许目录内执行命令。
 - `custom`：自定义外部 MCP server，需要配置 `name`、`command`、`args`、`env`。
 
+## 认证配置（auth）
+
+`auth` 控制 JWT 认证行为：
+
+```yaml
+auth:
+  secret_key: change-me-in-production   # 必须替换为强随机字符串（生产环境）
+  token_expire_days: 30                 # JWT token 有效期（天）
+  allow_registration: true              # false 时关闭 /register 接口
+```
+
+- 首个注册用户自动成为 `admin`，后续用户默认为 `user` 角色。
+- 完成初始用户创建后建议将 `allow_registration` 改为 `false`，防止未授权注册。
+- `secret_key` 不要写进 YAML 明文，推荐通过环境变量覆盖：
+
+```env
+ASTRACORE__AUTH__SECRET_KEY=your-strong-random-secret
+```
+
+## HITL 配置（Human-in-the-Loop）
+
+`hitl` 控制人机协作的审批行为：
+
+```yaml
+hitl:
+  enabled: true                            # 总开关；false 时禁用所有 HITL 交互
+  inline_question_timeout: 300             # 等待用户回复的超时秒数，超时后自动继续
+  require_tool_approval: true              # true 时带 requires_confirmation 标记的工具暂停等待审批
+  require_memory_promotion_approval: true  # true 时记忆晋升（session→user/project）需用户确认
+```
+
+- `require_tool_approval`：目前 `delete_memory` 已标记为需审批。工具调用前前端会弹出 `QuestionCard` 等待用户选择"允许/拒绝"。
+- `require_memory_promotion_approval`：AI 判断某条 session 记忆值得长期保留时，会先创建 pending 状态等待用户在记忆管理页确认，而非直接晋升。
+- `inline_question_timeout`：仅对 `ask_user` 工具的主动询问生效；工具审批和记忆晋升使用前端异步确认，不受此超时约束。
+
+## 调试配置（debug）
+
+```yaml
+debug:
+  log_prompts: false   # true 时在每次 LLM 调用前把完整提示词打印到 stdout
+```
+
+`log_prompts` 开启后会在终端输出完整的 system prompt 和消息列表（含 Tier-1/Tier-2 记忆注入内容），方便排查提示词组装问题。**不要在生产环境开启**，会泄露用户数据。
+
 ## 密钥管理
 
 不要把真实密钥写进 YAML。推荐在根目录 `.env` 中保存：

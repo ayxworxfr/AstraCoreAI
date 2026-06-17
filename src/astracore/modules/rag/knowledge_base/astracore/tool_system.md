@@ -1,7 +1,7 @@
 ---
 title: AstraCoreAI 工具系统（Tools）
 category: astracore
-tags: [Tool, MCP, 工具调用, spawn_agents, 并行Agent, asyncio]
+tags: [Tool, MCP, 工具调用, spawn_agents, 并行Agent, asyncio, HITL, 工具审批]
 related: [astracore/intro, astracore/chat_pipeline, ai-basics/agent_intro]
 ---
 
@@ -16,12 +16,34 @@ AstraCoreAI 支持两类工具：原生 Python 工具和 MCP 协议工具，通�
 | `get_current_time()` | 获取当前时间（含时区） |
 | `calculate(expr)` | 安全数学求值（AST 白名单，无 eval） |
 | `web_search(query)` | 联网搜索（Tavily 优先，降级 DuckDuckGo） |
+| `search_knowledge_base(query)` | 语义检索内置知识库，返回最相关文档片段 |
 | `load_skill(skill_id)` | 加载 Skill 的完整 instructions、引用列表和脚本列表 |
 | `get_skill_reference(skill_id, file)` | 读取 Skill references/ 目录下的参考文档内容 |
 | `run_skill_script(skill_id, script, args)` | 在 Skill scripts/ 目录内安全执行脚本（防路径穿越，30s 超时） |
 | `spawn_agents(tasks)` | 并行启动 2-5 个子 Agent 执行子任务 |
+| `recall_memory(query)` | 语义检索记忆库，返回相关记忆条目 |
+| `save_memory(subject, content, type, scope)` | 手动创建一条记忆（LLM 直接写入，不经自动抽取） |
+| `delete_memory(memory_id)` | 删除指定记忆（**已标记 `requires_confirmation=True`**，需 HITL 审批） |
+| `compact_memory(session_id)` | 手动触发当前会话的历史压缩，生成摘要记忆 |
 
 `spawn_agents` 可通过 `agent.enable_spawn_agents: false` 关闭。
+
+## HITL 工具审批
+
+标记了 `requires_confirmation=True` 的工具在执行前会暂停，触发人机协作流程：
+
+1. 工具循环发送 `TOOL_APPROVAL_PENDING` SSE 事件，携带工具名称、参数预览
+2. 前端展示 **QuestionCard**，用户可查看详情后点击「批准」或「拒绝」
+3. 批准 → 继续执行工具；拒绝 → 注入拒绝错误结果，LLM 在下一轮感知并调整策略
+4. 超时（默认 60s）→ 自动批准并继续执行
+
+目前已标记 `requires_confirmation=True` 的工具：
+
+| 工具 | 理由 |
+|------|------|
+| `delete_memory` | 删除记忆不可逆，需用户确认 |
+
+如需对自定义工具启用审批，在注册时设置 `requires_confirmation=True` 即可。
 
 ## MCP 工具
 

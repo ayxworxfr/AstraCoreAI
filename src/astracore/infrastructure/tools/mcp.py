@@ -13,6 +13,8 @@ from astracore.infrastructure.tools._coerce import build_param_type_map, coerce_
 from astracore.modules.tools.ports.tool import (
     ToolAdapter,
     ToolDefinition,
+    ToolError,
+    ToolErrorCode,
     ToolExecutionResult,
     ToolParameter,
     ToolParameterType,
@@ -266,9 +268,12 @@ class MCPToolAdapter(ToolAdapter):
         if not server_name:
             return ToolExecutionResult(
                 tool_name=tool_name,
-                success=False,
-                output="",
-                error=f"Tool '{tool_name}' not found in any connected MCP server",
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.TOOL_NOT_FOUND,
+                    message=f"Tool '{tool_name}' not found in any connected MCP server",
+                    retryable=False,
+                ),
                 execution_time_ms=0.0,
             )
 
@@ -276,9 +281,12 @@ class MCPToolAdapter(ToolAdapter):
         if client is None:
             return ToolExecutionResult(
                 tool_name=tool_name,
-                success=False,
-                output="",
-                error=f"MCP server '{server_name}' is not connected",
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.UPSTREAM_UNAVAILABLE,
+                    message=f"MCP server '{server_name}' is not connected",
+                    retryable=True,
+                ),
                 execution_time_ms=0.0,
             )
 
@@ -308,11 +316,21 @@ class MCPToolAdapter(ToolAdapter):
                 is_error,
                 output[:500],
             )
+            if is_error:
+                return ToolExecutionResult(
+                    tool_name=tool_name,
+                    ok=False,
+                    error=ToolError(
+                        code=ToolErrorCode.UPSTREAM_UNAVAILABLE,
+                        message=output,
+                        retryable=True,
+                    ),
+                    execution_time_ms=execution_time,
+                )
             return ToolExecutionResult(
                 tool_name=tool_name,
-                success=not is_error,
-                output=output,
-                error=output if is_error else None,
+                ok=True,
+                data=output,
                 execution_time_ms=execution_time,
             )
         except Exception as e:
@@ -320,9 +338,12 @@ class MCPToolAdapter(ToolAdapter):
             logger.exception("MCP tool '%s' raised exception (args=%s)", tool_name, arguments)
             return ToolExecutionResult(
                 tool_name=tool_name,
-                success=False,
-                output="",
-                error=str(e),
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.UPSTREAM_UNAVAILABLE,
+                    message=str(e),
+                    retryable=True,
+                ),
                 execution_time_ms=execution_time,
             )
 

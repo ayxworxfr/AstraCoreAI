@@ -48,6 +48,24 @@ skills:
   #  - D:/my-skills
   #  - ~/shared-skills
 
+skills:
+  extra_dirs: []             # 额外的 skill 目录，支持绝对路径或 ~/xxx
+  #  - D:/my-skills
+  #  - ~/shared-skills
+
+# 认证配置
+auth:
+  secret_key: change-me-in-production   # 生产环境必须替换为强随机字符串
+  token_expire_days: 30                 # JWT token 有效期（天）
+  allow_registration: true              # false 时关闭注册接口（首个用户注册后建议关闭）
+
+# Human-in-the-Loop 配置
+hitl:
+  enabled: true                         # 总开关；false 时禁用所有 HITL 交互
+  inline_question_timeout: 300          # 等待用户回复的超时秒数，超时后自动继续
+  require_tool_approval: true           # true 时 requires_confirmation=True 的工具暂停等待用户审批
+  require_memory_promotion_approval: true  # true 时记忆晋升（session→user/project）需用户确认
+
 # 开发者调试配置
 debug:
   log_prompts: false         # true 时在每次 LLM 调用前把完整提示词（system prompt + 消息列表）打印到 stdout

@@ -9,7 +9,20 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+__all__ = [
+    "ToolParameterType",
+    "ToolParameter",
+    "ToolDefinition",
+    "ToolExecutionResult",
+    "ToolAdapter",
+    "MutableToolAdapter",
+    "ToolError",
+    "ToolErrorCode",
+]
+
 from pydantic import BaseModel, Field
+
+from astracore.modules.tools.ports.tool_errors import ToolError, ToolErrorCode
 
 if TYPE_CHECKING:
     from astracore.shared.ports.llm import StreamEvent
@@ -46,13 +59,17 @@ class ToolDefinition(BaseModel):
 
 
 class ToolExecutionResult(BaseModel):
-    """Result of tool execution."""
+    """Result of tool execution.
+
+    On success: ``ok=True``, ``data`` holds the output (str for most builtin tools).
+    On failure: ``ok=False``, ``error`` holds the structured ToolError.
+    """
 
     execution_id: UUID = Field(default_factory=uuid4)
     tool_name: str
-    success: bool
-    output: str
-    error: str | None = None
+    ok: bool
+    data: Any = None
+    error: ToolError | None = None
     execution_time_ms: float
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

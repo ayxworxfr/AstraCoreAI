@@ -273,6 +273,35 @@ class ConversationRow(Base):
     __table_args__ = (Index("ix_conversations_user_id_updated", "user_id", "updated_at"),)
 
 
+class MemoryPendingPromotionRow(Base):
+    """Pending memory promotion awaiting user approval before becoming durable user/project scope."""
+
+    __tablename__ = "memory_pending_promotions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_memory_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("structured_memories.id"), nullable=False
+    )
+    target_scope: Mapped[str] = mapped_column(String(32), nullable=False)  # "user" | "project"
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    candidate_content: Mapped[str] = mapped_column(Text, nullable=False)
+    candidate_subject: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "source_memory_id", name="uq_memory_pending_promotions_user_source"
+        ),
+    )
+
+
 class UserSettingsRow(Base):
     """Per-user key-value store for preferences."""
 

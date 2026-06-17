@@ -1,21 +1,14 @@
-import { useRef, useState } from 'react';
-import { Avatar, Button, Dropdown, Layout, Menu, Space, Typography } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import { Avatar, Badge, Button, Dropdown, Layout, Menu, Space, Typography } from 'antd';
 import { LogoutOutlined, MoonOutlined, RocketOutlined, SunOutlined } from '@ant-design/icons';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { useAuthStore } from '@/features/auth/store/authStore';
+import { apiClient } from '@/shared/services/apiClient';
 
 const { Header, Content } = Layout;
 
 const RAG_ENABLED = import.meta.env.VITE_FEATURE_RAG !== 'false';
-
-const NAV_ITEMS = [
-  { key: '/chat', label: <NavLink to="/chat">对话</NavLink> },
-  { key: '/skills', label: <NavLink to="/skills">Skill</NavLink> },
-  { key: '/memory', label: <NavLink to="/memory">Memory</NavLink> },
-  ...(RAG_ENABLED ? [{ key: '/rag', label: <NavLink to="/rag">RAG</NavLink> }] : []),
-  { key: '/system', label: <NavLink to="/system">系统</NavLink> },
-];
 
 export default function AppShell(): JSX.Element {
   const { theme, toggleTheme } = useSettingsStore();
@@ -25,6 +18,37 @@ export default function AppShell(): JSX.Element {
 
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const keepOpenRef = useRef(false);
+
+  const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0);
+
+  useEffect(() => {
+    const fetchCount = () => {
+      void apiClient
+        .get<{ total: number }>('/api/v1/memory/pending-approvals', { params: { limit: 1 } })
+        .then(({ data }) => setPendingApprovalsCount(data.total))
+        .catch(() => undefined);
+    };
+    fetchCount();
+    const timer = setInterval(fetchCount, 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const navItems = [
+    { key: '/chat', label: <NavLink to="/chat">对话</NavLink> },
+    { key: '/skills', label: <NavLink to="/skills">Skill</NavLink> },
+    {
+      key: '/memory',
+      label: (
+        <NavLink to="/memory">
+          <Badge count={pendingApprovalsCount} size="small" offset={[6, -2]}>
+            Memory
+          </Badge>
+        </NavLink>
+      ),
+    },
+    ...(RAG_ENABLED ? [{ key: '/rag', label: <NavLink to="/rag">RAG</NavLink> }] : []),
+    { key: '/system', label: <NavLink to="/system">系统</NavLink> },
+  ];
 
   const handleLogout = () => {
     logout();
@@ -55,7 +79,7 @@ export default function AppShell(): JSX.Element {
             theme={theme === 'dark' ? 'dark' : 'light'}
             mode="horizontal"
             selectedKeys={[location.pathname]}
-            items={NAV_ITEMS}
+            items={navItems}
             style={{
               background: 'transparent',
               border: 'none',

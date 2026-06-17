@@ -37,6 +37,10 @@ class StreamEventType(StrEnum):
     AGENT_TOOL_RESULT = "agent_tool_result"  # 子 Agent 工具结果
     AGENT_DONE = "agent_done"  # 子 Agent 完成
 
+    # HITL 事件：run 暂停等待用户输入
+    USER_INPUT_REQUIRED = "user_input_required"  # run 进入 awaiting_input，前端渲染问题卡
+    USER_INPUT_RESOLVED = "user_input_resolved"  # 用户已作答，run 恢复 running
+
 
 class StreamEvent(BaseModel):
     """Streaming event from LLM."""

@@ -27,5 +27,25 @@ retrieval:
   # embedding_model: all-MiniLM-L6-v2          # 默认，英文场景，~90MB
   # embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言场景，~420MB
 
+skills:
+  extra_dirs: []
+
+# 认证配置
+auth:
+  secret_key: change-me-in-production   # 生产环境必须替换为强随机字符串
+  token_expire_days: 30
+  allow_registration: true              # 完成首次注册后建议改为 false
+
+# Human-in-the-Loop 配置
+hitl:
+  enabled: true
+  inline_question_timeout: 300
+  require_tool_approval: true
+  require_memory_promotion_approval: true
+
+# 开发者调试配置
+debug:
+  log_prompts: false
+
 mcp:
   servers: []

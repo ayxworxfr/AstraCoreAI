@@ -19,6 +19,7 @@ import { useChatStore } from '@/features/chat/store/chatStore';
 import { useSkillStore } from '@/features/skills/store/skillStore';
 import MarkdownContent from './MarkdownContent';
 import ModelSelector from './ModelSelector';
+import QuestionCard from './QuestionCard';
 import type { ChatMessage, SubAgentActivity, ThinkingMode, ToolActivity } from '@/features/chat/types';
 import AppScrollArea from '@/shared/components/AppScrollArea';
 import { formatAppMessageTime } from '@/shared/utils/time';
@@ -339,8 +340,16 @@ function SubAgentCard({ agent }: { agent: SubAgentActivity }) {
   const { token } = theme.useToken();
   const running = agent.status === 'running';
   const isError = agent.status === 'error';
-  const bg = running ? token.colorWarningBg : (isError ? token.colorErrorBg : token.colorSuccessBg);
-  const border = running ? token.colorWarningBorder : (isError ? token.colorErrorBorder : token.colorSuccessBorder);
+  const isDark = token.colorBgBase < '#888888';
+  const bg = isDark
+    ? running ? token.colorWarningBg : (isError ? token.colorErrorBg : token.colorSuccessBg)
+    : running ? '#fff1d6' : (isError ? '#fff0ee' : '#eef7e8');
+  const bodyBg = isDark
+    ? token.colorBgContainer
+    : running ? '#fffaf0' : (isError ? '#fff8f7' : '#f7fbf3');
+  const border = isDark
+    ? running ? token.colorWarningBorder : (isError ? token.colorErrorBorder : token.colorSuccessBorder)
+    : running ? '#f0c36d' : (isError ? '#f0a39a' : '#b8d9a6');
   const accentColor = running ? token.colorWarning : (isError ? token.colorError : token.colorSuccess);
   const textColor = running ? token.colorWarningText : (isError ? token.colorErrorText : token.colorSuccessText);
   const taskPreview = agent.task.length > 60 ? `${agent.task.slice(0, 60)}...` : agent.task;
@@ -386,7 +395,7 @@ function SubAgentCard({ agent }: { agent: SubAgentActivity }) {
           styles: {
             header: { background: bg, padding: '5px 12px' },
             body: {
-              background: token.colorBgContainer,
+              background: bodyBg,
               borderTop: `1px solid ${border}`,
               padding: '10px 14px',
             },
@@ -618,6 +627,7 @@ export default function ChatMain(): JSX.Element {
 
   const {
     activeConversationId,
+    conversationsLoaded,
     messagesByConversation,
     hasMoreMessages,
     isLoadingMessages,
@@ -628,6 +638,7 @@ export default function ChatMain(): JSX.Element {
     enableWeb,
     sessionError,
     latestUsageByConversation,
+    pendingQuestionByConversation,
     initConversations,
     setEnableThinking,
     setEnableRag,
@@ -636,6 +647,7 @@ export default function ChatMain(): JSX.Element {
     setSessionError,
     sendMessage,
     cancelStream,
+    submitAnswer,
     loadMessages,
     loadMoreMessages,
   } = useChatStore();
@@ -648,11 +660,16 @@ export default function ChatMain(): JSX.Element {
   const messages = messagesByConversation[activeConversationId] ?? [];
   const isStreaming = messages.some((m) => m.status === 'streaming');
   const hasMore = hasMoreMessages[activeConversationId] ?? false;
+  const pendingQuestion = pendingQuestionByConversation[activeConversationId] ?? null;
+  const toolbarDisabled = isStreaming || !!pendingQuestion;
+  const senderInputDisabled = !!pendingQuestion;
 
   // 保存 prepend 前的 scrollHeight，以便 prepend 后还原位置
   const prevScrollHeightRef = useRef<number | null>(null);
   // 标记初次加载完成后需要滚到底部（让用户看到最新消息，之后才能上拉加载更早的）
   const shouldScrollToBottomRef = useRef(false);
+  // 记录当前会话是否已做过首屏滚底；刷新时 activeConversationId 可能来自持久化，不一定会变化
+  const initialBottomScrolledConvRef = useRef<string | null>(null);
   // 顶部哨兵：IntersectionObserver 的观察目标
   const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
 
@@ -685,9 +702,11 @@ export default function ChatMain(): JSX.Element {
     return () => io.disconnect();
   }, []);
 
-  // 切换/首次进入会话时加载消息，并在加载完成后滚动到底部
+  // 切换/首次进入会话时加载消息，并在加载完成后滚到底部。
+  // 初始加载由 initConversations 统一处理（含 resumeActiveRun），
+  // 此处只处理 conversationsLoaded 后因 activeConversationId 变化触发的会话切换。
   useEffect(() => {
-    if (!activeConversationId) return;
+    if (!activeConversationId || !conversationsLoaded) return;
     if (messagesByConversation[activeConversationId] === undefined) {
       shouldScrollToBottomRef.current = true;
       if (!isLoadingMessages) void loadMessages(activeConversationId);
@@ -707,9 +726,13 @@ export default function ChatMain(): JSX.Element {
         el.scrollTop += el.scrollHeight - prevScrollHeightRef.current;
       }
       prevScrollHeightRef.current = null;
-    } else if (shouldScrollToBottomRef.current && messages.length > 0) {
-      // 初次加载：滚到底部让用户看到最新消息
+    } else if (
+      messages.length > 0 &&
+      (shouldScrollToBottomRef.current || initialBottomScrolledConvRef.current !== activeConversationId)
+    ) {
+      // 初次加载 / 页面刷新恢复活跃会话：滚到底部让用户看到最新消息
       shouldScrollToBottomRef.current = false;
+      initialBottomScrolledConvRef.current = activeConversationId;
       scrollToBottom('instant');
     }
   }, [messages, scrollToBottom]);
@@ -722,6 +745,30 @@ export default function ChatMain(): JSX.Element {
   const handleSendMessage = (value: string) => {
     setSessionError(null);
     void sendMessage(value);
+  };
+
+  const handleSenderKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key !== 'Enter') return;
+    if ((event.nativeEvent as KeyboardEvent).isComposing) return;
+
+    if (event.ctrlKey) {
+      event.preventDefault();
+      const textarea = event.currentTarget as HTMLTextAreaElement;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const nextValue = `${inputValue.slice(0, start)}\n${inputValue.slice(end)}`;
+      setInputValue(nextValue);
+      window.requestAnimationFrame(() => {
+        textarea.setSelectionRange(start + 1, start + 1);
+      });
+      return;
+    }
+
+    event.preventDefault();
+    const message = inputValue.trim();
+    if (!message) return;
+    setInputValue('');
+    handleSendMessage(message);
   };
 
   const onMsgEnter = (id: string) => {
@@ -835,6 +882,16 @@ export default function ChatMain(): JSX.Element {
         )}
       </div>
 
+      {/* HITL 问题卡：AI 调用 ask_user 时阻塞等待用户回复 */}
+      {pendingQuestion && (
+        <div style={{ padding: '0 24px', maxWidth: 860, margin: '0 auto', width: '100%' }}>
+          <QuestionCard
+            question={pendingQuestion}
+            onSubmit={(selected, freeform) => submitAnswer(activeConversationId, selected, freeform)}
+          />
+        </div>
+      )}
+
       {/* 会话错误提示：仅当前会话有效，刷新自动消失 */}
       {sessionError && (
         <div style={{ padding: '0 24px' }}>
@@ -864,7 +921,7 @@ export default function ChatMain(): JSX.Element {
                 size="small"
                 type={enableThinking ? 'primary' : 'default'}
                 ghost={enableThinking}
-                disabled={isStreaming}
+                disabled={toolbarDisabled}
                 onClick={() => setEnableThinking(!enableThinking)}
                 style={{
                   borderRadius: 20,
@@ -886,7 +943,7 @@ export default function ChatMain(): JSX.Element {
                 size="small"
                 type={enableRag ? 'primary' : 'default'}
                 ghost={enableRag}
-                disabled={isStreaming}
+                disabled={toolbarDisabled}
                 onClick={() => setEnableRag(!enableRag)}
                 style={{
                   borderRadius: 20,
@@ -908,7 +965,7 @@ export default function ChatMain(): JSX.Element {
                 size="small"
                 type={enableTools ? 'primary' : 'default'}
                 ghost={enableTools}
-                disabled={isStreaming}
+                disabled={toolbarDisabled}
                 onClick={() => setEnableTools(!enableTools)}
                 style={{
                   borderRadius: 20,
@@ -930,7 +987,7 @@ export default function ChatMain(): JSX.Element {
                 size="small"
                 type={enableWeb ? 'primary' : 'default'}
                 ghost={enableWeb}
-                disabled={isStreaming}
+                disabled={toolbarDisabled}
                 onClick={() => setEnableWeb(!enableWeb)}
                 style={{
                   borderRadius: 20,
@@ -947,19 +1004,22 @@ export default function ChatMain(): JSX.Element {
               </Button>
             </Tooltip>
 
-            <ModelSelector disabled={isStreaming} />
+            <ModelSelector disabled={toolbarDisabled} />
           </Flex>
 
           <SenderWithScrollbar
             value={inputValue}
             onChange={setInputValue}
             loading={isStreaming}
+            disabled={senderInputDisabled}
+            submitType={false}
+            onKeyDown={handleSenderKeyDown}
             onSubmit={(value) => {
               setInputValue('');
               handleSendMessage(value);
             }}
             onCancel={() => cancelStream(activeConversationId)}
-            placeholder="输入问题，Enter 发送，Shift+Enter 换行"
+            placeholder={pendingQuestion ? '等待你回答上方问题...' : '输入问题，Enter 发送，Ctrl+Enter 换行'}
           />
 
           {/* Token 用量状态栏：位于输入框正下方，有数据时用自身 padding 撑起底部 */}

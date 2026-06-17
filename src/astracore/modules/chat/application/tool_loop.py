@@ -2,14 +2,21 @@
 
 import asyncio
 import contextlib
+import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import Any, cast
 
 from astracore.infrastructure.tools.read_tracked import ReadTrackedToolAdapter
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
 from astracore.modules.chat.domain.session import SessionState
-from astracore.modules.tools.ports.tool import ToolAdapter, ToolExecutionResult
+from astracore.modules.tools.ports.tool import (
+    ToolAdapter,
+    ToolError,
+    ToolErrorCode,
+    ToolExecutionResult,
+)
+from astracore.shared.domain.hitl import HITLOption, PendingQuestion
 from astracore.shared.observability.hooks import (
     HookRegistry,
     LLMCallInput,
@@ -21,9 +28,32 @@ from astracore.shared.observability.hooks import (
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.policy.engine import PolicyEngine
 from astracore.shared.ports.llm import LLMAdapter, StreamEvent, StreamEventType
+from astracore.shared.security.external_data import wrap_external
 
 _TOOL_DONE = object()  # sentinel for parallel streaming tool execution
 _logger = get_logger(__name__)
+
+
+async def _ask_tool_confirmation(
+    tool_call: ToolCall,
+    hitl_callback: Callable[..., Coroutine[Any, Any, dict[str, Any]]],
+) -> bool:
+    """Ask the user to approve or deny execution of a requires_confirmation tool.
+
+    Returns True if approved, False if denied.
+    """
+    args_preview = json.dumps(tool_call.arguments, ensure_ascii=False)[:200]
+    q = PendingQuestion(
+        question=(f"AI 即将执行工具 `{tool_call.name}`，参数预览：\n```json\n{args_preview}\n```"),
+        header="工具确认",
+        options=[
+            HITLOption(label="允许", description="继续执行此工具"),
+            HITLOption(label="拒绝", description="取消执行"),
+        ],
+        allow_freeform=False,
+    )
+    answer = await hitl_callback(q)
+    return "允许" in answer.get("selected", [])
 
 
 class ToolLoopUseCase:
@@ -94,13 +124,13 @@ class ToolLoopUseCase:
             return [merged] + msgs[1:]
         return [Message(role=MessageRole.SYSTEM, content=guidance)] + msgs
 
-    def _truncate_tool_result(self, content: str) -> str:
+    def _truncate_tool_result(self, content: str, limit: int | None = None) -> str:
         """Truncate oversized tool results, appending a hint for pagination."""
-        limit = self.max_tool_result_chars
-        if len(content) <= limit:
+        effective_limit = limit if limit is not None else self.max_tool_result_chars
+        if len(content) <= effective_limit:
             return content
         return (
-            content[:limit] + f"\n\n[内容已截断，原始长度 {len(content)} 字符。"
+            content[:effective_limit] + f"\n\n[内容已截断，原始长度 {len(content)} 字符。"
             "如需查看更多，请使用 offset/page 参数重新调用工具。]"
         )
 
@@ -211,6 +241,33 @@ class ToolLoopUseCase:
     # Tool execution
     # ------------------------------------------------------------------
 
+    def _tool_requires_confirmation(self, tool_name: str) -> bool:
+        """Return True if the tool definition has requires_confirmation=True."""
+        for defn in self.tools.get_definitions():
+            if defn.name == tool_name:
+                return defn.requires_confirmation
+        return False
+
+    def _get_tool_timeout(self, tool_name: str) -> float | None:
+        """Return effective timeout (seconds) for a tool: per-tool metadata overrides global."""
+        for defn in self.tools.get_definitions():
+            if defn.name == tool_name:
+                per_tool = defn.metadata.get("timeout_s")
+                if per_tool is not None:
+                    return float(per_tool) or None
+                break
+        return self.tool_timeout_s or None
+
+    def _get_tool_max_chars(self, tool_name: str) -> int:
+        """Return effective max output chars for a tool: per-tool metadata overrides global."""
+        for defn in self.tools.get_definitions():
+            if defn.name == tool_name:
+                per_tool = defn.metadata.get("max_output_chars")
+                if per_tool is not None:
+                    return int(per_tool)
+                break
+        return self.max_tool_result_chars
+
     async def _execute_one_tool(self, tool_call: ToolCall) -> ToolResult:
         """Execute a single tool call (non-streaming). Used for parallel gather."""
         hook_result = await self._fire_before_tool(tool_call)
@@ -226,6 +283,21 @@ class ToolLoopUseCase:
 
         hook_input = hook_result
 
+        # requires_confirmation: pause the run and ask the user to approve.
+        if self._tool_requires_confirmation(hook_input.tool_name):
+            hitl_callback = self._extra_context.get("hitl_callback")
+            if hitl_callback is not None:
+                approved = await _ask_tool_confirmation(tool_call, hitl_callback)
+                if not approved:
+                    result = ToolResult(
+                        tool_call_id=hook_input.tool_call_id,
+                        name=hook_input.tool_name,
+                        content="用户拒绝执行此工具。",
+                        is_error=False,
+                    )
+                    await self._fire_after_tool(result, duration_ms=0)
+                    return result
+
         if not self.policy.check_security_policy(hook_input.tool_name, hook_input.arguments):
             result = ToolResult(
                 tool_call_id=hook_input.tool_call_id,
@@ -236,6 +308,8 @@ class ToolLoopUseCase:
             await self._fire_after_tool(result, duration_ms=0)
             return result
 
+        tool_timeout = self._get_tool_timeout(hook_input.tool_name)
+        tool_max_chars = self._get_tool_max_chars(hook_input.tool_name)
         t0 = time.monotonic()
         try:
             exec_result = await asyncio.wait_for(
@@ -244,27 +318,35 @@ class ToolLoopUseCase:
                     arguments=hook_input.arguments,
                     context={**self._extra_context, "profile_id": self.profile_id},
                 ),
-                timeout=self.tool_timeout_s or None,
+                timeout=tool_timeout,
             )
         except TimeoutError:
             duration_ms = int((time.monotonic() - t0) * 1000)
+            timeout_s = tool_timeout or 0
             result = ToolResult(
                 tool_call_id=hook_input.tool_call_id,
                 name=hook_input.tool_name,
-                content=f"[超时] 工具 '{hook_input.tool_name}' 执行超过 {self.tool_timeout_s:.0f}s，已中止。请换用更精确的参数重试。",
+                content=f"[超时] 工具 '{hook_input.tool_name}' 执行超过 {timeout_s:.0f}s，已中止。请换用更精确的参数重试。",
                 is_error=True,
             )
             await self._fire_after_tool(result, duration_ms=duration_ms)
             return result
 
         duration_ms = int((time.monotonic() - t0) * 1000)
+        raw = (
+            (exec_result.data if isinstance(exec_result.data, str) else str(exec_result.data or ""))
+            if exec_result.ok
+            else (exec_result.error.message if exec_result.error else "Tool execution failed")
+        )
+        content = wrap_external(
+            self._truncate_tool_result(raw, limit=tool_max_chars),
+            source=f"tool:{exec_result.tool_name}",
+        )
         result = ToolResult(
             tool_call_id=hook_input.tool_call_id,
             name=exec_result.tool_name,
-            content=self._truncate_tool_result(
-                exec_result.output or exec_result.error or "Tool execution failed"
-            ),
-            is_error=not exec_result.success,
+            content=content,
+            is_error=not exec_result.ok,
             metadata=exec_result.metadata,
         )
         await self._fire_after_tool(result, duration_ms=duration_ms)
@@ -345,6 +427,41 @@ class ToolLoopUseCase:
 
         hook_input = hook_result
 
+        # requires_confirmation: pause the run and ask the user to approve.
+        if self._tool_requires_confirmation(hook_input.tool_name):
+            hitl_callback = self._extra_context.get("hitl_callback")
+            if hitl_callback is not None:
+                approved = await _ask_tool_confirmation(tool_call, hitl_callback)
+                if not approved:
+                    denied_msg = "用户拒绝执行此工具。"
+                    result = ToolResult(
+                        tool_call_id=hook_input.tool_call_id,
+                        name=hook_input.tool_name,
+                        content=denied_msg,
+                        is_error=False,
+                    )
+                    await self._fire_after_tool(result, duration_ms=0)
+                    await queue.put(
+                        (
+                            idx,
+                            StreamEvent(
+                                event_type=StreamEventType.TOOL_RESULT,
+                                content=hook_input.tool_name,
+                                metadata={
+                                    "tool": hook_input.tool_name,
+                                    "tool_call_id": hook_input.tool_call_id,
+                                    "input": hook_input.arguments,
+                                    "result": denied_msg,
+                                    "is_error": False,
+                                    "duration_ms": 0,
+                                },
+                            ),
+                            None,
+                        )
+                    )
+                    await queue.put((idx, _TOOL_DONE, result))
+                    return
+
         if not self.policy.check_security_policy(hook_input.tool_name, hook_input.arguments):
             blocked = "Tool execution blocked by security policy"
             result = ToolResult(
@@ -375,12 +492,14 @@ class ToolLoopUseCase:
             await queue.put((idx, _TOOL_DONE, result))
             return
 
+        tool_timeout = self._get_tool_timeout(hook_input.tool_name)
+        tool_max_chars = self._get_tool_max_chars(hook_input.tool_name)
         tool_start_time = time.monotonic()
         exec_result: ToolExecutionResult | None = None
         timeout_cm = (
             contextlib.nullcontext()
             if self.tools.is_timeout_managed(hook_input.tool_name)
-            else asyncio.timeout(self.tool_timeout_s or None)
+            else asyncio.timeout(tool_timeout)
         )
         try:
             async with timeout_cm:
@@ -395,8 +514,9 @@ class ToolLoopUseCase:
                         exec_result = item
         except TimeoutError:
             duration_ms = int((time.monotonic() - tool_start_time) * 1000)
+            timeout_s = tool_timeout or 0
             timeout_msg = (
-                f"[超时] 工具 '{hook_input.tool_name}' 执行超过 {self.tool_timeout_s:.0f}s，"
+                f"[超时] 工具 '{hook_input.tool_name}' 执行超过 {timeout_s:.0f}s，"
                 "已中止。请换用更精确的参数重试。"
             )
             result = ToolResult(
@@ -430,21 +550,30 @@ class ToolLoopUseCase:
         if exec_result is None:
             exec_result = ToolExecutionResult(
                 tool_name=hook_input.tool_name,
-                success=False,
-                output="",
-                error="Tool returned no result",
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.EXECUTION_ERROR,
+                    message="Tool returned no result",
+                    retryable=True,
+                ),
                 execution_time_ms=int((time.monotonic() - tool_start_time) * 1000),
             )
 
         duration_ms = int((time.monotonic() - tool_start_time) * 1000)
-        content = self._truncate_tool_result(
-            exec_result.output or exec_result.error or "Tool execution failed"
+        raw = (
+            (exec_result.data if isinstance(exec_result.data, str) else str(exec_result.data or ""))
+            if exec_result.ok
+            else (exec_result.error.message if exec_result.error else "Tool execution failed")
+        )
+        content = wrap_external(
+            self._truncate_tool_result(raw, limit=tool_max_chars),
+            source=f"tool:{exec_result.tool_name}",
         )
         result = ToolResult(
             tool_call_id=hook_input.tool_call_id,
             name=exec_result.tool_name,
             content=content,
-            is_error=not exec_result.success,
+            is_error=not exec_result.ok,
         )
         await self._fire_after_tool(result, duration_ms=duration_ms)
         await queue.put(
@@ -458,7 +587,7 @@ class ToolLoopUseCase:
                         "tool_call_id": hook_input.tool_call_id,
                         "input": hook_input.arguments,
                         "result": content,
-                        "is_error": not exec_result.success,
+                        "is_error": not exec_result.ok,
                         "duration_ms": duration_ms,
                     },
                 ),

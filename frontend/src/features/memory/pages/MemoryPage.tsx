@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { NavLink } from 'react-router-dom';
 import {
   Alert,
   Button,
@@ -235,6 +236,9 @@ export default function MemoryPage(): JSX.Element {
             <Button icon={<ReloadOutlined />} onClick={() => { void load(); }}>
               刷新
             </Button>
+            <NavLink to="/memory/approvals">
+              <Button>待审批</Button>
+            </NavLink>
             <Button onClick={() => setProjectModalOpen(true)}>新建项目</Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新建记忆

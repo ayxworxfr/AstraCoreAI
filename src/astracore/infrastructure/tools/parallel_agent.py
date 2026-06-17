@@ -16,6 +16,8 @@ from astracore.modules.chat.domain.session import SessionState
 from astracore.modules.tools.ports.tool import (
     ToolAdapter,
     ToolDefinition,
+    ToolError,
+    ToolErrorCode,
     ToolExecutionResult,
     ToolParameter,
     ToolParameterType,
@@ -120,9 +122,12 @@ class ParallelAgentTool(ToolAdapter):
                 result = item
         return result or ToolExecutionResult(
             tool_name=tool_name,
-            success=False,
-            output="",
-            error="spawn_agents: 未返回任何结果",
+            ok=False,
+            error=ToolError(
+                code=ToolErrorCode.EXECUTION_ERROR,
+                message="spawn_agents: 未返回任何结果",
+                retryable=False,
+            ),
             execution_time_ms=0.0,
         )
 
@@ -146,9 +151,12 @@ class ParallelAgentTool(ToolAdapter):
         if not isinstance(raw_tasks, list) or not raw_tasks:
             yield ToolExecutionResult(
                 tool_name=tool_name,
-                success=False,
-                output="",
-                error="spawn_agents: 'tasks' 参数必须为非空数组",
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.INVALID_ARGUMENT,
+                    message="spawn_agents: 'tasks' 参数必须为非空数组",
+                    retryable=False,
+                ),
                 execution_time_ms=0.0,
             )
             return
@@ -165,9 +173,12 @@ class ParallelAgentTool(ToolAdapter):
         if not tasks:
             yield ToolExecutionResult(
                 tool_name=tool_name,
-                success=False,
-                output="",
-                error="spawn_agents: 没有有效的子任务",
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.INVALID_ARGUMENT,
+                    message="spawn_agents: 没有有效的子任务",
+                    retryable=False,
+                ),
                 execution_time_ms=0.0,
             )
             return
@@ -287,8 +298,8 @@ class ParallelAgentTool(ToolAdapter):
 
         yield ToolExecutionResult(
             tool_name=tool_name,
-            success=True,
-            output="\n\n---\n\n".join(sections),
+            ok=True,
+            data="\n\n---\n\n".join(sections),
             execution_time_ms=total_ms,
         )
 

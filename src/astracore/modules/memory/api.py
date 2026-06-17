@@ -248,3 +248,102 @@ async def delete_memory(
     current_user: UserRow = Depends(get_current_user),
 ) -> None:
     await _get_user_engine(current_user.id).delete_memory(memory_id)
+
+
+# ------------------------------------------------------------------
+# Pending promotion approvals (HITL)
+# ------------------------------------------------------------------
+
+
+class PendingPromotionResponse(BaseModel):
+    id: str
+    user_id: str
+    source_memory_id: str
+    target_scope: str
+    reason: str
+    candidate_content: str
+    candidate_subject: str
+    status: str
+    created_at: str
+    reviewed_at: str | None
+
+
+class PendingPromotionListResponse(BaseModel):
+    total: int
+    items: list[PendingPromotionResponse]
+
+
+class ReviewDecision(BaseModel):
+    id: str
+    action: Literal["approve", "reject"]
+
+
+class BatchReviewRequest(BaseModel):
+    decisions: list[ReviewDecision]
+
+
+class BatchReviewResponse(BaseModel):
+    approved: int
+    rejected: int
+
+
+def _to_promotion_response(row: Any) -> PendingPromotionResponse:
+    return PendingPromotionResponse(
+        id=row.id,
+        user_id=row.user_id,
+        source_memory_id=row.source_memory_id,
+        target_scope=row.target_scope,
+        reason=row.reason,
+        candidate_content=row.candidate_content,
+        candidate_subject=row.candidate_subject,
+        status=row.status,
+        created_at=row.created_at.isoformat(),
+        reviewed_at=row.reviewed_at.isoformat() if row.reviewed_at else None,
+    )
+
+
+@router.get("/pending-approvals", response_model=PendingPromotionListResponse)
+async def list_pending_approvals(
+    limit: int = 20,
+    offset: int = 0,
+    current_user: UserRow = Depends(get_current_user),
+) -> PendingPromotionListResponse:
+    store = SQLMemoryStore(_get_db_url())
+    try:
+        total, items = (
+            await store.count_pending_promotions(current_user.id),
+            await store.list_pending_promotions(current_user.id, limit=limit, offset=offset),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return PendingPromotionListResponse(
+        total=total,
+        items=[_to_promotion_response(row) for row in items],
+    )
+
+
+@router.post("/pending-approvals/batch-review", response_model=BatchReviewResponse)
+async def batch_review_approvals(
+    body: BatchReviewRequest,
+    current_user: UserRow = Depends(get_current_user),
+) -> BatchReviewResponse:
+    store = SQLMemoryStore(_get_db_url())
+    approved = 0
+    rejected = 0
+    for decision in body.decisions:
+        if decision.action not in ("approve", "reject"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid action '{decision.action}': must be approve or reject",
+            )
+        try:
+            result = await store.apply_promotion(decision.id, decision.action)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"Promotion {decision.id!r} not found")
+        if result.status == "approved":
+            approved += 1
+        elif result.status == "rejected":
+            rejected += 1
+    return BatchReviewResponse(approved=approved, rejected=rejected)

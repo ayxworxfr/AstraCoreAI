@@ -78,7 +78,7 @@ async def test_tools_registered_after_mcp_startup_are_executable():
     assert "late_tool" in defs
 
     result = await composite.execute("late_tool", {})
-    assert result.success
+    assert result.ok
 
 
 # ---------------------------------------------------------------------------

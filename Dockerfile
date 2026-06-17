@@ -25,7 +25,7 @@ COPY --from=frontend-builder /usr/local/lib/node_modules /usr/local/lib/node_mod
 WORKDIR /app
 
 # Install Python dependencies first (layer cache friendly)
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md ./
 COPY src/ ./src/
 COPY config/ ./config/
 

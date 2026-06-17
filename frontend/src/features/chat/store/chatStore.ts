@@ -10,6 +10,7 @@ import {
   fetchActiveChatRun,
   fetchSessionMessages,
   sendChatMessage,
+  submitAnswer,
   subscribeChatRun,
 } from '@/features/chat/services/chatService';
 import {
@@ -18,7 +19,7 @@ import {
   fetchConversations,
   patchConversationApi,
 } from '@/features/chat/services/conversationService';
-import type { ChatRunState } from '@/shared/types/api';
+import type { ChatRunState, PendingQuestion } from '@/shared/types/api';
 import type { ChatMessage, ConversationMeta, ToolActivity } from '@/features/chat/types';
 
 const PAGE_SIZE = 30;
@@ -57,6 +58,7 @@ const ASSISTANT_FALLBACK_TEXT = {
 function normalizeToolActivity(items: ChatRunState['tool_activity']): ToolActivity[] {
   return items.map((item) => ({
     name: item.name,
+    toolCallId: item.tool_call_id,
     done: item.done,
     input: item.input,
     result: item.result,
@@ -112,6 +114,8 @@ type ChatStore = {
   subscribedRunIds: Record<string, boolean>;
   /** 每个 conversation 最近一次的 token 使用量，用于底部状态栏展示 */
   latestUsageByConversation: Record<string, { inputTokens: number; outputTokens: number; model: string }>;
+  /** 每个 conversation 当前阻塞等待用户输入的问题（HITL ask_user） */
+  pendingQuestionByConversation: Record<string, PendingQuestion | null>;
   sessionError: string | null;   // 当前会话错误，不持久化，刷新自动清除
 
   // Actions
@@ -133,6 +137,7 @@ type ChatStore = {
   sendMessage: (prompt: string) => Promise<void>;
   cancelStream: (conversationId: string) => void;
   resumeActiveRun: (conversationId: string) => Promise<void>;
+  submitAnswer: (conversationId: string, selected: string[], freeform?: string | null) => Promise<void>;
   /** 首次打开会话时加载最新 PAGE_SIZE 条消息 */
   loadMessages: (convId: string) => Promise<void>;
   /** 向上滚动时加载更早的消息，返回是否加载了新消息 */
@@ -160,6 +165,7 @@ export const useChatStore = create<ChatStore>()(
       abortControllerByConversation: {},
       subscribedRunIds: {},
       latestUsageByConversation: {},
+      pendingQuestionByConversation: {},
       sessionError: null,
 
       initConversations: async () => {
@@ -397,6 +403,17 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      submitAnswer: async (conversationId, selected, freeform) => {
+        const { runIdByConversation, pendingQuestionByConversation } = get();
+        const runId = runIdByConversation[conversationId];
+        const question = pendingQuestionByConversation[conversationId];
+        if (!runId || !question) return;
+        set((s) => ({
+          pendingQuestionByConversation: { ...s.pendingQuestionByConversation, [conversationId]: null },
+        }));
+        await submitAnswer(runId, { question_id: question.question_id, selected, freeform: freeform ?? null });
+      },
+
       loadMessages: async (convId) => {
         set({ isLoadingMessages: true });
         try {
@@ -460,7 +477,7 @@ export const useChatStore = create<ChatStore>()(
 
       resumeActiveRun: async (conversationId) => {
         const run = await fetchActiveChatRun(conversationId).catch(() => null);
-        if (!run || run.status !== 'running') return;
+        if (!run || (run.status !== 'running' && run.status !== 'awaiting_input')) return;
         if (get().subscribedRunIds[run.run_id]) return;
 
         const assistantId = `run-${run.run_id}`;
@@ -483,7 +500,7 @@ export const useChatStore = create<ChatStore>()(
               thinkingBlocks: state.thinking_blocks.length ? state.thinking_blocks : undefined,
               thinkingMode: state.tool_activity.length ? 'tool' : 'normal',
               toolActivity: normalizeToolActivity(state.tool_activity),
-              status: state.status === 'running' ? 'streaming' : 'done',
+              status: (state.status === 'running' || state.status === 'awaiting_input') ? 'streaming' : 'done',
               createdAt: state.created_at,
             };
             const withoutRun = prev.filter((m) =>
@@ -491,12 +508,17 @@ export const useChatStore = create<ChatStore>()(
               && !(m.role === 'assistant' && m.status === 'streaming'),
             );
             const next = [...withoutRun, ...(hasUser ? [] : [userMsg]), assistantMsg];
-            const runIds = state.status === 'running'
+            const isActive = state.status === 'running' || state.status === 'awaiting_input';
+            const runIds = isActive
               ? { ...s.runIdByConversation, [conversationId]: state.run_id }
               : (() => { const n = { ...s.runIdByConversation }; delete n[conversationId]; return n; })();
             return {
               messagesByConversation: { ...s.messagesByConversation, [conversationId]: next },
               runIdByConversation: runIds,
+              pendingQuestionByConversation: {
+                ...s.pendingQuestionByConversation,
+                [conversationId]: state.pending_question ?? null,
+              },
             };
           });
         };
@@ -687,7 +709,20 @@ export const useChatStore = create<ChatStore>()(
                 };
               });
             },
-            onDone: () => clearRunState(),
+            onUserInputRequired: (_runId, question) => {
+              set((s) => ({
+                pendingQuestionByConversation: { ...s.pendingQuestionByConversation, [conversationId]: question },
+              }));
+            },
+            onUserInputResolved: (_runId, _questionId) => {
+              set((s) => ({
+                pendingQuestionByConversation: { ...s.pendingQuestionByConversation, [conversationId]: null },
+              }));
+            },
+            onDone: () => {
+              clearRunState();
+              void get().loadMessages(conversationId);
+            },
             onError: (msg) => {
               clearRunState({ sessionError: msg });
               void get().loadMessages(conversationId);
@@ -715,11 +750,14 @@ export const useChatStore = create<ChatStore>()(
           delete controllers[conversationId];
           const runIds = { ...s.subscribedRunIds };
           if (runId) delete runIds[runId];
+          const pendingQ = { ...s.pendingQuestionByConversation };
+          delete pendingQ[conversationId];
           return {
             messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs },
             runIdByConversation: convRunIds,
             abortControllerByConversation: controllers,
             subscribedRunIds: runIds,
+            pendingQuestionByConversation: pendingQ,
           };
         });
         // 中断后同步后端真实 UUID，否则删除消息会 404
@@ -996,6 +1034,16 @@ export const useChatStore = create<ChatStore>()(
                   if (thinkingBlocks.length === 0) thinkingBlocks.push('');
                   thinkingBlocks[thinkingBlocks.length - 1] += delta;
                   updateAssistant({ thinkingBlocks: getUpdatedBlocks(), status: 'streaming' });
+                },
+                onUserInputRequired: (_runId, question) => {
+                  set((s) => ({
+                    pendingQuestionByConversation: { ...s.pendingQuestionByConversation, [activeConversationId]: question },
+                  }));
+                },
+                onUserInputResolved: (_runId, _questionId) => {
+                  set((s) => ({
+                    pendingQuestionByConversation: { ...s.pendingQuestionByConversation, [activeConversationId]: null },
+                  }));
                 },
                 onUsage: (inputTokens, outputTokens, model) => {
                   set((s) => {

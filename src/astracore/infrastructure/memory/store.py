@@ -1,12 +1,13 @@
 """SQLAlchemy implementation for structured memory storage."""
 
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 
 from astracore.infrastructure.db.models import (
     ConversationProjectBindingRow,
+    MemoryPendingPromotionRow,
     ProjectRow,
     StructuredMemoryRow,
 )
@@ -305,3 +306,136 @@ class SQLMemoryStore(MemoryStore):
         async with get_session(self._db_url) as db:
             await db.execute(stmt)
             await db.commit()
+
+    # ------------------------------------------------------------------
+    # Pending promotion (HITL)
+    # ------------------------------------------------------------------
+
+    async def create_pending_promotion(
+        self,
+        *,
+        user_id: str,
+        source_memory_id: str,
+        target_scope: str,
+        reason: str,
+        candidate_content: str,
+        candidate_subject: str,
+    ) -> MemoryPendingPromotionRow:
+        """Create a pending promotion record (idempotent on user_id + source_memory_id)."""
+        async with get_session(self._db_url) as db:
+            existing = await db.execute(
+                select(MemoryPendingPromotionRow).where(
+                    MemoryPendingPromotionRow.user_id == user_id,
+                    MemoryPendingPromotionRow.source_memory_id == source_memory_id,
+                )
+            )
+            row = existing.scalars().first()
+            if row is not None:
+                return row
+            row = MemoryPendingPromotionRow(
+                id=str(uuid4()),
+                user_id=user_id,
+                source_memory_id=source_memory_id,
+                target_scope=target_scope,
+                reason=reason,
+                candidate_content=candidate_content,
+                candidate_subject=candidate_subject,
+                status="pending",
+                created_at=datetime.now(UTC),
+                reviewed_at=None,
+            )
+            db.add(row)
+            await db.commit()
+            await db.refresh(row)
+            return row
+
+    async def list_pending_promotions(
+        self,
+        user_id: str,
+        status: str = "pending",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[MemoryPendingPromotionRow]:
+        """Return paginated pending promotion rows for a user."""
+        stmt = (
+            select(MemoryPendingPromotionRow)
+            .where(
+                MemoryPendingPromotionRow.user_id == user_id,
+                MemoryPendingPromotionRow.status == status,
+            )
+            .order_by(MemoryPendingPromotionRow.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        async with get_session(self._db_url) as db:
+            result = await db.execute(stmt)
+            return list(result.scalars().all())
+
+    async def count_pending_promotions(self, user_id: str, status: str = "pending") -> int:
+        """Return the total count of pending promotion rows for a user."""
+        stmt = select(func.count()).where(
+            MemoryPendingPromotionRow.user_id == user_id,
+            MemoryPendingPromotionRow.status == status,
+        )
+        async with get_session(self._db_url) as db:
+            result = await db.execute(stmt)
+            return int(result.scalar() or 0)
+
+    async def apply_promotion(
+        self,
+        promotion_id: str,
+        action: str,
+    ) -> MemoryPendingPromotionRow | None:
+        """Approve or reject a pending promotion.
+
+        approve: creates a durable user/project-scope memory and archives the source.
+        reject: marks the promotion rejected; source memory is left untouched.
+        """
+        now = datetime.now(UTC)
+        async with get_session(self._db_url) as db:
+            promo = await db.get(MemoryPendingPromotionRow, promotion_id)
+            if promo is None:
+                return None
+            if promo.status != "pending":
+                return promo
+
+            if action == "approve":
+                source = await db.get(StructuredMemoryRow, promo.source_memory_id)
+                new_row = StructuredMemoryRow(
+                    id=str(uuid4()),
+                    scope=promo.target_scope,
+                    type=source.type if source else "fact",
+                    subject=promo.candidate_subject,
+                    content=promo.candidate_content,
+                    summary=source.summary if source else "",
+                    session_id=None,
+                    conversation_id=None,
+                    project_id=source.project_id if source else None,
+                    user_id=promo.user_id,
+                    source_run_id=source.source_run_id if source else None,
+                    importance=source.importance if source else 3,
+                    confidence=source.confidence if source else 1.0,
+                    status="active",
+                    locked=False,
+                    use_count=0,
+                    meta={
+                        "promoted_from": promo.source_memory_id,
+                        "promoted_at": now.isoformat(),
+                        "promotion_id": promotion_id,
+                    },
+                    created_at=now,
+                    updated_at=now,
+                    last_used_at=None,
+                )
+                db.add(new_row)
+                if source is not None:
+                    source.status = "archived"
+                    source.updated_at = now
+                promo.status = "approved"
+            else:
+                promo.status = "rejected"
+
+            promo.reviewed_at = now
+            await db.commit()
+            await db.refresh(promo)
+            return promo

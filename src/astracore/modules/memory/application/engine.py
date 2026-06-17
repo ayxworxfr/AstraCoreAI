@@ -1,6 +1,7 @@
 """Structured Memory Engine."""
 
 import json
+import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -25,6 +26,8 @@ from astracore.shared.ports.llm import LLMAdapter
 
 if TYPE_CHECKING:
     from astracore.infrastructure.memory.vector import MemoryVectorAdapter
+
+logger = logging.getLogger(__name__)
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
@@ -600,6 +603,29 @@ class MemoryEngine:
         action = str(decision.get("action") or "keep").lower()
         new_importance = self._clamp_int(decision.get("new_importance"), 1, 5, memory.importance)
         now_iso = datetime.now(UTC).isoformat()
+
+        if action in ("promote_user", "promote_project"):
+            from astracore.sdk.config import AstraCoreConfig  # local import to avoid startup cost
+
+            cfg = AstraCoreConfig()
+            if cfg.hitl.enabled and cfg.hitl.require_memory_promotion_approval:
+                target_scope = "user" if action == "promote_user" else "project"
+                store = self._store
+                if hasattr(store, "create_pending_promotion"):
+                    try:
+                        await store.create_pending_promotion(
+                            user_id=memory.user_id,
+                            source_memory_id=str(memory.id),
+                            target_scope=target_scope,
+                            reason=str(decision.get("reason") or ""),
+                            candidate_content=memory.content,
+                            candidate_subject=memory.subject or "",
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to create pending promotion for memory %s", memory.id
+                        )
+                return  # 不立即晋升，等待用户审批
 
         if action == "promote_user":
             await self.create_memory(

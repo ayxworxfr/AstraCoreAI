@@ -9,6 +9,8 @@ from typing import Any
 from astracore.modules.tools.ports.tool import (
     MutableToolAdapter,
     ToolDefinition,
+    ToolError,
+    ToolErrorCode,
     ToolExecutionResult,
     ToolParameter,
 )
@@ -48,9 +50,12 @@ class NativeToolAdapter(MutableToolAdapter):
         if tool_name not in self._tools:
             return ToolExecutionResult(
                 tool_name=tool_name,
-                success=False,
-                output="",
-                error=f"Tool '{tool_name}' not found",
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.TOOL_NOT_FOUND,
+                    message=f"Tool '{tool_name}' not found",
+                    retryable=False,
+                ),
                 execution_time_ms=0.0,
             )
 
@@ -71,19 +76,59 @@ class NativeToolAdapter(MutableToolAdapter):
 
             return ToolExecutionResult(
                 tool_name=tool_name,
-                success=True,
-                output=str(result),
+                ok=True,
+                data=str(result),
                 execution_time_ms=execution_time,
                 metadata={"context": context} if context else {},
             )
 
+        except TimeoutError as e:
+            execution_time = (time.time() - start_time) * 1000
+            return ToolExecutionResult(
+                tool_name=tool_name,
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.TIMEOUT,
+                    message=str(e) or f"Tool '{tool_name}' timed out",
+                    retryable=True,
+                ),
+                execution_time_ms=execution_time,
+            )
+        except PermissionError as e:
+            execution_time = (time.time() - start_time) * 1000
+            return ToolExecutionResult(
+                tool_name=tool_name,
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.POLICY_BLOCKED,
+                    message=str(e),
+                    retryable=False,
+                ),
+                execution_time_ms=execution_time,
+            )
+        except (TypeError, ValueError) as e:
+            execution_time = (time.time() - start_time) * 1000
+            return ToolExecutionResult(
+                tool_name=tool_name,
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.INVALID_ARGUMENT,
+                    message=str(e),
+                    retryable=False,
+                    hint=f"检查传给工具 '{tool_name}' 的参数类型和格式",
+                ),
+                execution_time_ms=execution_time,
+            )
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000
             return ToolExecutionResult(
                 tool_name=tool_name,
-                success=False,
-                output="",
-                error=str(e),
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.EXECUTION_ERROR,
+                    message=str(e),
+                    retryable=True,
+                ),
                 execution_time_ms=execution_time,
             )
 

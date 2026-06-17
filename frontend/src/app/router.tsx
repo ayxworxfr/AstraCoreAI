@@ -2,6 +2,7 @@ import { createBrowserRouter, Navigate, Outlet } from 'react-router-dom';
 import AppShell from '../layouts/AppShell';
 import ChatPage from '@/features/chat/pages/ChatPage';
 import MemoryPage from '@/features/memory/pages/MemoryPage';
+import PendingApprovalsPage from '@/features/memory/pages/PendingApprovalsPage';
 import RagPage from '@/features/rag/pages/RagPage';
 import SkillsPage from '@/features/skills/pages/SkillsPage';
 import SystemPage from '@/features/system/pages/SystemPage';
@@ -28,6 +29,7 @@ export const router = createBrowserRouter([
           { index: true, element: <Navigate to="/chat" replace /> },
           { path: 'chat', element: <ChatPage /> },
           { path: 'memory', element: <MemoryPage /> },
+          { path: 'memory/approvals', element: <PendingApprovalsPage /> },
           ...(RAG_ENABLED ? [{ path: 'rag', element: <RagPage /> }] : []),
           { path: 'skills', element: <SkillsPage /> },
           { path: 'system', element: <SystemPage /> },

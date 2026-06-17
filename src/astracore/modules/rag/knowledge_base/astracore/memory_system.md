@@ -1,7 +1,7 @@
 ---
 title: AstraCoreAI 记忆系统（Context Engineering）
 category: astracore
-tags: [Memory, ContextEngineering, Tier1, Tier2, Chroma, 向量检索, 记忆抽取, 记忆晋升, MemoryEngine]
+tags: [Memory, ContextEngineering, Tier1, Tier2, Chroma, 向量检索, 记忆抽取, 记忆晋升, MemoryEngine, HITL, Prompt注入防御]
 related: [astracore/intro, astracore/chat_pipeline]
 ---
 
@@ -47,6 +47,7 @@ Tier-1 注入格式示例：
 - **字符预算**：1200 字符（top-6 session + top-4 project）
 - **时机**：每轮对话 `prepare()` 时调用 `build_turn_context()`
 - **注入位置**：存储历史末尾、真实用户消息之前，以合成消息对形式注入
+- **Prompt 注入防御**：`turn_context` 内容经过 `wrap_external(source="memory")` 包裹，防止记忆内容被恶意利用于注入攻击
 
 合成消息对格式（不持久化，metadata={"synthetic":True}）：
 
@@ -135,6 +136,15 @@ LLM 可输出：`promote_user`（升级为 user scope）、`promote_project`（�
 
 晋升 = 复制 + 归档原记忆，保留溯源链路。
 
+### HITL 记忆晋升审批
+
+当系统配置 `require_memory_promotion_approval=true` 时，LLM 决定晋升后不会立即执行，而是：
+
+1. 创建 `pending_promotion` 状态的记忆记录，等待用户同意
+2. 通过 SSE 发送审批请求，前端 QuestionCard 展示晋升详情（原始记忆、目标 scope、理由）
+3. 用户确认 → 执行晋升复制；用户拒绝 → 删除 pending 记录
+4. 超时（默认 60s）→ 自动取消晋升，记录保留为 session scope
+
 ---
 
 ## 手动管理记忆
@@ -158,14 +168,16 @@ DELETE /api/v1/memory/{id}       删除记忆
 用户消息 → ChatPipeline.prepare()
     ├── build_profile_context()  → system prompt（Tier-1）
     └── build_turn_context()     → turn_context（Tier-2，Chroma + SQL fallback）
+                                   ↳ wrap_external(source="memory") 包裹防注入
 
 ChatPipeline.stream()
+    ├── maybe_compact()          → 检测 token 用量，按需压缩历史
     ├── stored_history + [user:记忆同步, assistant:快照] + [user:真实消息] → LLM
     └── _prepare_for_save()      → 过滤 synthetic=True，仅持久化真实历史
 
 _after_run()（后台）
     ├── extract_and_store()      → 批量提取 0-N 条 → SQLite + Chroma
-    └── _evaluate_and_promote()  → 启发式 + LLM → 晋升/归档
+    └── _evaluate_and_promote()  → 启发式 + LLM → 晋升/归档（可选 HITL 审批）
 ```
 
 ---
@@ -179,7 +191,7 @@ _after_run()（后台）
 | `modules/memory/api.py` | FastAPI CRUD，同步写 Chroma |
 | `infrastructure/memory/store.py` | SQLMemoryStore（SQLAlchemy async） |
 | `infrastructure/memory/vector.py` | MemoryVectorAdapter（Chroma，graceful degradation） |
-| `modules/chat/pipeline.py` | 注入合成消息对，过滤 synthetic 消息 |
+| `modules/chat/pipeline.py` | 注入合成消息对，过滤 synthetic 消息，wrap_external 包裹 |
 
 ---
 
@@ -193,4 +205,5 @@ retrieval:
 
 memory:
   db_url: sqlite+aiosqlite:///./astracore.db
+  require_memory_promotion_approval: false  # 设为 true 启用晋升 HITL 审批
 ```

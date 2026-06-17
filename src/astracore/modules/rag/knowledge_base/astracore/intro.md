@@ -18,6 +18,10 @@ related: [astracore/chat_pipeline, astracore/skill_system, astracore/tool_system
 - **记忆系统（Memory）**：三层记忆架构，LLM 自动抽取并持久化关键信息
 - **并行多 Agent**：主 Agent 可分解任务并发调度多个子 Agent，实时流式进度
 - **流式输出（SSE）**：全链路实时流式输出，思考块（Extended Thinking）实时可见
+- **认证与授权**：JWT Bearer Token，注册/登录/鉴权；admin/user 双角色，首个注册用户自动成为管理员
+- **HITL（人机协作）**：工具执行审批、记忆晋升审批、ask_user 主动询问，超时后自动继续，前端通过 QuestionCard 展示等待确认
+- **Prompt 注入防御**：外部数据（RAG 召回内容、Tier-2 记忆、工具结果）统一用 `<external_data trust="untrusted">` 标签包裹，System Prompt 顶部含显式注入声明，防止不可信数据劫持指令
+- **上下文压缩**：Token 级自动压缩（`HistoryCompactor`），触发阈值为 context_window 的 50%，由 LLM 生成摘要并经 MemoryEngine 持久化；压缩失败时自动回退到尾部裁剪
 
 ## 架构分层
 

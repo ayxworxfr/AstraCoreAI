@@ -1,4 +1,4 @@
-import type { ChatRequest, ChatResponse, ChatRunResponse, ChatRunState } from '@/shared/types/api';
+import type { ChatRequest, ChatResponse, ChatRunResponse, ChatRunState, PendingQuestion } from '@/shared/types/api';
 import { apiClient, getAuthHeaders, normalizeError } from '@/shared/services/apiClient';
 
 export type SessionMessagesResponse = {
@@ -40,6 +40,8 @@ type StreamHandlers = {
   onAgentToolResult?: (agentId: string, toolName: string, toolCallId: string, result: string, isError: boolean, durationMs: number) => void;
   onAgentDone?: (agentId: string, durationMs: number, error?: string | null) => void;
   onUsage?: (inputTokens: number, outputTokens: number, model: string) => void;
+  onUserInputRequired?: (runId: string, question: PendingQuestion) => void;
+  onUserInputResolved?: (runId: string, questionId: string) => void;
   onDone: (conversation?: ConversationUpdate) => void;
   onError: (msg: string) => void;
 };
@@ -164,6 +166,14 @@ function parseBlock(block: string, handlers: StreamHandlers): void {
     const d = safeJson();
     handlers.onUsage?.(Number(d.input_tokens ?? 0), Number(d.output_tokens ?? 0), String(d.model ?? ''));
   }
+  else if (eventType === 'user_input_required') {
+    const d = safeJson();
+    handlers.onUserInputRequired?.(String(d.run_id ?? ''), d.pending_question as PendingQuestion);
+  }
+  else if (eventType === 'user_input_resolved') {
+    const d = safeJson();
+    handlers.onUserInputResolved?.(String(d.run_id ?? ''), String(d.question_id ?? ''));
+  }
   else if (eventType === 'done') handlers.onDone(safeJson().conversation as ConversationUpdate | undefined);
   else if (eventType === 'error') handlers.onError(String(safeJson().message ?? data) || '流式请求失败');
 }
@@ -218,6 +228,8 @@ export async function sendChatStream(
     onAgentToolResult: (agentId, toolName, toolCallId, result, isError, durationMs) => { if (!isAborted()) handlers.onAgentToolResult?.(agentId, toolName, toolCallId, result, isError, durationMs); },
     onAgentDone: (agentId, durationMs, error) => { if (!isAborted()) handlers.onAgentDone?.(agentId, durationMs, error); },
     onUsage: (inputTokens, outputTokens, model) => { if (!isAborted()) handlers.onUsage?.(inputTokens, outputTokens, model); },
+    onUserInputRequired: (runId, q) => { if (!isAborted()) handlers.onUserInputRequired?.(runId, q); },
+    onUserInputResolved: (runId, qId) => { if (!isAborted()) handlers.onUserInputResolved?.(runId, qId); },
     onDone: (conv) => {
       if (isAborted()) return;
       doneCalled = true;
@@ -251,6 +263,13 @@ export async function sendChatStream(
     if (err.name === 'AbortError' || /abort/i.test(err.message)) return;
     handlers.onError(normalizeError(e));
   }
+}
+
+export async function submitAnswer(
+  runId: string,
+  answer: { question_id: string; selected: string[]; freeform?: string | null },
+): Promise<void> {
+  await apiClient.post(`/api/v1/chat/runs/${runId}/answer`, answer);
 }
 
 export async function subscribeChatRun(
@@ -296,6 +315,8 @@ export async function subscribeChatRun(
     onAgentToolResult: (agentId, toolName, toolCallId, result, isError, durationMs) => { if (!isAborted()) handlers.onAgentToolResult?.(agentId, toolName, toolCallId, result, isError, durationMs); },
     onAgentDone: (agentId, durationMs, error) => { if (!isAborted()) handlers.onAgentDone?.(agentId, durationMs, error); },
     onUsage: (inputTokens, outputTokens, model) => { if (!isAborted()) handlers.onUsage?.(inputTokens, outputTokens, model); },
+    onUserInputRequired: (runId, q) => { if (!isAborted()) handlers.onUserInputRequired?.(runId, q); },
+    onUserInputResolved: (runId, qId) => { if (!isAborted()) handlers.onUserInputResolved?.(runId, qId); },
     onDone: (conv) => { if (!isAborted()) handlers.onDone(conv); },
     onError: (msg) => { if (!isAborted()) handlers.onError(msg); },
   };

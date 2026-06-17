@@ -34,7 +34,7 @@ def _tool_def(name: str = "search") -> ToolDefinition:
 
 
 def _exec_result(name: str = "search", output: str = "results") -> ToolExecutionResult:
-    return ToolExecutionResult(tool_name=name, success=True, output=output, execution_time_ms=10.0)
+    return ToolExecutionResult(tool_name=name, ok=True, data=output, execution_time_ms=10.0)
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ def mock_tools():
         from astracore.modules.tools.ports.tool import ToolExecutionResult
 
         yield ToolExecutionResult(
-            tool_name=tool_name, success=True, output="results", execution_time_ms=10.0
+            tool_name=tool_name, ok=True, data="results", execution_time_ms=10.0
         )
 
     t.execute_streaming = _fake_execute_streaming

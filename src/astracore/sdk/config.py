@@ -157,6 +157,20 @@ class SkillsConfig(BaseModel):
     """Additional directories to scan for skill .md files (appended after the built-in dir)."""
 
 
+class HITLConfig(BaseModel):
+    """Human-in-the-loop (HITL) configuration."""
+
+    enabled: bool = True
+    """Master switch; false disables all HITL interactions."""
+    inline_question_timeout: int = Field(default=300, ge=10)
+    """Seconds to wait for user response to ask_user before timing out and resuming."""
+    require_tool_approval: bool = True
+    """When true, tools with requires_confirmation=True pause for user approval before execution."""
+    require_memory_promotion_approval: bool = True
+    """When true, session→user/project memory promotions are written to a pending queue
+    instead of being applied immediately; user reviews them in the approvals page."""
+
+
 class AuthConfig(BaseModel):
     """Authentication configuration."""
 
@@ -239,6 +253,7 @@ class AstraCoreConfig(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    hitl: HITLConfig = Field(default_factory=HITLConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     debug: DebugConfig = Field(default_factory=DebugConfig)
 

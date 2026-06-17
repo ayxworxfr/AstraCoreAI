@@ -46,10 +46,32 @@ export function getAuthHeaders(): Record<string, string> {
   return {};
 }
 
+function stringifyApiDetail(detail: unknown): string {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') {
+          const record = item as Record<string, unknown>;
+          const location = Array.isArray(record.loc) ? record.loc.join('.') : undefined;
+          const message = typeof record.msg === 'string' ? record.msg : JSON.stringify(record);
+          return location ? `${location}: ${message}` : message;
+        }
+        return String(item);
+      })
+      .join('\n');
+  }
+  if (detail && typeof detail === 'object') return JSON.stringify(detail);
+  if (detail != null) return String(detail);
+  return '';
+}
+
 export function normalizeError(error: unknown): string {
   if (axios.isAxiosError(error)) {
     const e = error as AxiosError<ApiErrorResponse>;
-    return e.response?.data?.detail ?? e.message;
+    const detail = stringifyApiDetail(e.response?.data?.detail);
+    return detail || e.message;
   }
   if (error instanceof Error) return error.message;
   return '未知错误';

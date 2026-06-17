@@ -81,6 +81,7 @@ Claude 读取 Skill 摘要清单后自主决策何时调用哪个 Skill，无需
 | `storyteller` | 故事大师 | writing |
 | `translator` | 翻译官 | language |
 | `financial-advisor` | 理财顾问 | finance |
+| `mini-game` | 小游戏主持人 | game |
 | `openclaw-manager` | OpenClaw 管理员 | ops |
 
 ## 扩展技能

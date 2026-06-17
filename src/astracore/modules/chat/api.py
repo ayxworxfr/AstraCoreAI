@@ -29,6 +29,7 @@ from astracore.modules.rag import api as rag_api
 from astracore.modules.tools.builtin import build_tool_adapter
 from astracore.modules.tools.ports.tool import ToolAdapter
 from astracore.sdk.config import AstraCoreConfig
+from astracore.shared.domain.hitl import HITLAnswer, PendingQuestion
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.policy.engine import PolicyEngine
 from astracore.shared.ports.llm import StreamEventType
@@ -45,6 +46,8 @@ class _ActiveRun:
     def __init__(self, row: ChatRunRow):
         self.task: asyncio.Task[None] | None = None
         self.subscribers: set[asyncio.Queue[tuple[str, str]]] = set()
+        # HITL: one pending question at a time per run; future resolved by POST /answer
+        self._hitl_futures: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.state: dict[str, Any] = {
             "run_id": row.id,
             "session_id": row.session_id,
@@ -57,6 +60,7 @@ class _ActiveRun:
             "created_at": _utc_iso(row.created_at),
             "updated_at": _utc_iso(row.updated_at),
             "completed_at": _utc_iso(row.completed_at) if row.completed_at else None,
+            "pending_question": None,
         }
 
     def update(self, **patch: Any) -> None:
@@ -236,6 +240,7 @@ class ChatRunStateResponse(BaseModel):
     created_at: str
     updated_at: str
     completed_at: str | None = None
+    pending_question: dict[str, Any] | None = None
 
 
 # ------------------------------------------------------------------
@@ -432,7 +437,38 @@ async def _execute_run(*, run_id: str, ctx: ChatContext, user_id: str = "default
     total_output_tokens = 0
     memory_saved_by_tool = False  # AI 本轮是否主动调用了 save_memory
 
-    async for event in _get_chat_pipeline().stream(ctx):
+    cfg = _get_settings()
+
+    async def _hitl_callback(q: PendingQuestion) -> dict[str, Any]:
+        """Suspend the run, broadcast a question to the frontend, and await the answer."""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        active = _ACTIVE_RUNS.get(run_id)
+        if active is None:
+            raise RuntimeError("run not found in active runs")
+        active._hitl_futures[q.question_id] = fut
+        active.update(status="awaiting_input", pending_question=q.model_dump(mode="json"))
+        _broadcast_run_event(
+            run_id,
+            "user_input_required",
+            {
+                **active.payload(),
+                "pending_question": q.model_dump(mode="json"),
+            },
+        )
+        try:
+            answer = await asyncio.wait_for(fut, timeout=cfg.hitl.inline_question_timeout)
+        except TimeoutError:
+            return {"selected": [], "freeform": None, "error": "timeout"}
+        finally:
+            active._hitl_futures.pop(q.question_id, None)
+            active.update(status="running", pending_question=None)
+            _broadcast_run_event(run_id, "user_input_resolved", {"question_id": q.question_id})
+        return answer
+
+    async for event in _get_chat_pipeline().stream(
+        ctx, extra_context={"hitl_callback": _hitl_callback}
+    ):
         if event.event_type == StreamEventType.DONE:
             if event.metadata.get("source") == "tool_loop":
                 # Phase boundary: closing round is about to begin.
@@ -854,6 +890,26 @@ async def stream_chat_run(
             active.subscribers.discard(queue)
 
     return EventSourceResponse(event_generator())
+
+
+@router.post("/runs/{run_id}/answer")
+async def answer_hitl_question(
+    run_id: UUID,
+    answer: HITLAnswer,
+    current_user: UserRow = Depends(get_current_user),
+) -> dict[str, bool]:
+    """Submit the user's answer to a pending HITL question, unblocking the run."""
+    rid = str(run_id)
+    active = _ACTIVE_RUNS.get(rid)
+    if active is None:
+        raise HTTPException(status_code=404, detail="Run not found or not in active state")
+    fut = active._hitl_futures.get(answer.question_id)
+    if fut is None:
+        raise HTTPException(status_code=409, detail="No pending question with that question_id")
+    if fut.done():
+        raise HTTPException(status_code=409, detail="Question already answered or timed out")
+    fut.set_result({"selected": answer.selected, "freeform": answer.freeform})
+    return {"ok": True}
 
 
 @router.post("/runs/{run_id}/cancel", response_model=ChatRunStateResponse)

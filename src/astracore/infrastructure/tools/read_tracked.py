@@ -6,6 +6,8 @@ from typing import Any
 from astracore.modules.tools.ports.tool import (
     ToolAdapter,
     ToolDefinition,
+    ToolError,
+    ToolErrorCode,
     ToolExecutionResult,
 )
 from astracore.shared.ports.llm import StreamEvent
@@ -52,7 +54,7 @@ class ReadTrackedToolAdapter(ToolAdapter):
         context: dict[str, Any] | None,
         result: ToolExecutionResult,
     ) -> None:
-        if not result.success or not context:
+        if not result.ok or not context:
             return
         rs = context.get("_read_files")
         if isinstance(rs, set):
@@ -70,12 +72,15 @@ class ReadTrackedToolAdapter(ToolAdapter):
         if path not in self._read_set(context):
             return ToolExecutionResult(
                 tool_name=tool_name,
-                success=False,
-                output="",
-                error=(
-                    f"[read_before_edit] '{path}' 尚未读取。"
-                    f" 请先调用 read_file(path='{path}')，"
-                    "将返回内容完整复制为 old_string，再重试 edit_file。"
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.POLICY_BLOCKED,
+                    message=f"[read_before_edit] '{path}' 尚未读取。",
+                    retryable=True,
+                    hint=(
+                        f"请先调用 read_file(path='{path}')，"
+                        "将返回内容完整复制为 old_string，再重试 edit_file。"
+                    ),
                 ),
                 execution_time_ms=0.0,
             )

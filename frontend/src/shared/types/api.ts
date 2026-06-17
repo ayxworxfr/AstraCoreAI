@@ -95,15 +95,31 @@ export type ChatRunResponse = {
   status: string;
 };
 
+export type PendingQuestionOption = {
+  label: string;
+  description: string;
+};
+
+export type PendingQuestion = {
+  question_id: string;
+  question: string;
+  header: string;
+  options: PendingQuestionOption[];
+  multi_select: boolean;
+  allow_freeform: boolean;
+  created_at: string;
+};
+
 export type ChatRunState = {
   run_id: string;
   session_id: string;
-  status: 'running' | 'done' | 'error' | 'cancelled';
+  status: 'running' | 'awaiting_input' | 'done' | 'error' | 'cancelled';
   user_message: string;
   assistant_content: string;
   thinking_blocks: string[];
   tool_activity: Array<{
     name: string;
+    tool_call_id?: string;
     done: boolean;
     input?: Record<string, unknown>;
     result?: string;
@@ -111,6 +127,7 @@ export type ChatRunState = {
     durationMs?: number;
   }>;
   error: string;
+  pending_question: PendingQuestion | null;
   created_at: string;
   updated_at: string;
   completed_at?: string | null;
@@ -159,5 +176,5 @@ export type ReadyResponse = {
 };
 
 export type ApiErrorResponse = {
-  detail: string;
+  detail: unknown;
 };

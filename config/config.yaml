@@ -73,5 +73,11 @@ mcp:
       allow_dirs:
         - ~/develope
 
+hitl:
+  enabled: true
+  inline_question_timeout: 300
+  require_tool_approval: true
+  require_memory_promotion_approval: true
+
 debug:
   log_prompts: false

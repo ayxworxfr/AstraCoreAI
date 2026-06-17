@@ -8,6 +8,8 @@ from astracore.modules.tools.ports.tool import (
     MutableToolAdapter,
     ToolAdapter,
     ToolDefinition,
+    ToolError,
+    ToolErrorCode,
     ToolExecutionResult,
     ToolParameter,
 )
@@ -70,9 +72,12 @@ class CompositeToolAdapter(MutableToolAdapter):
         if adapter is None:
             return ToolExecutionResult(
                 tool_name=tool_name,
-                success=False,
-                output="",
-                error=f"Tool '{tool_name}' not found in any registered adapter",
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.TOOL_NOT_FOUND,
+                    message=f"Tool '{tool_name}' not found in any registered adapter",
+                    retryable=False,
+                ),
                 execution_time_ms=0.0,
             )
         return await adapter.execute(tool_name, arguments, context)
@@ -95,9 +100,12 @@ class CompositeToolAdapter(MutableToolAdapter):
         if adapter is None:
             yield ToolExecutionResult(
                 tool_name=tool_name,
-                success=False,
-                output="",
-                error=f"Tool '{tool_name}' not found in any registered adapter",
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.TOOL_NOT_FOUND,
+                    message=f"Tool '{tool_name}' not found in any registered adapter",
+                    retryable=False,
+                ),
                 execution_time_ms=0.0,
             )
             return

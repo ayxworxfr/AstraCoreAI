@@ -496,7 +496,10 @@ async def test_chat_pipeline_injects_profile_context() -> None:
             return ""
 
     pipeline = ChatPipeline(
-        config=SimpleNamespace(memory=SimpleNamespace(db_url="sqlite+aiosqlite:///:memory:")),
+        config=SimpleNamespace(
+            memory=SimpleNamespace(db_url="sqlite+aiosqlite:///:memory:"),
+            hitl=SimpleNamespace(enabled=False),
+        ),
         memory=AsyncMock(),
         rag_pipeline=AsyncMock(spec=RAGPipeline),
         policy=PolicyEngine(),

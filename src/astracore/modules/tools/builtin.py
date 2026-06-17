@@ -4,14 +4,16 @@ import ast
 import asyncio
 import math
 import os
+from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from astracore.infrastructure.tools.composite import CompositeToolAdapter
 from astracore.infrastructure.tools.native import NativeToolAdapter
 from astracore.infrastructure.tools.parallel_agent import ParallelAgentTool
 from astracore.modules.tools.ports.tool import ToolAdapter, ToolParameter, ToolParameterType
 from astracore.sdk.config import AstraCoreConfig
+from astracore.shared.domain.hitl import HITLOption, PendingQuestion
 from astracore.shared.policy.engine import PolicyEngine
 
 # 安全数学求值白名单
@@ -185,6 +187,29 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         importance = max(1, min(5, importance))
 
         ctx = _context or {}
+
+        # HITL: ask user before persisting user/global scope memories when enabled.
+        if scope in ("user", "global"):
+            callback = ctx.get("hitl_callback")
+            if callback is not None:
+                cfg = AstraCoreConfig()
+                if cfg.hitl.enabled and cfg.hitl.require_tool_approval:
+                    q = PendingQuestion(
+                        question=(
+                            f"AI 想保存以下记忆（{scope} 级，跨会话持久）：\n\n{content[:300]}"
+                        ),
+                        header="记忆审批",
+                        options=[
+                            HITLOption(label="允许", description="保存此记忆"),
+                            HITLOption(label="拒绝", description="取消保存"),
+                        ],
+                        allow_freeform=False,
+                    )
+                    _cb = cast(Callable[..., Coroutine[Any, Any, dict[str, Any]]], callback)
+                    answer = await _cb(q)
+                    if "允许" not in answer.get("selected", []):
+                        return "用户拒绝保存此记忆。"
+
         session_id_str = ctx.get("session_id")
         session_id = UUID(str(session_id_str)) if session_id_str else None
         user_id = str(ctx.get("user_id") or "default")
@@ -260,6 +285,43 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
             return f"未找到 ID 为 {memory_id!r} 的记忆。"
         await engine.delete_memory(memory_id)
         return f"记忆已删除（ID: {memory_id}）。"
+
+    async def _ask_user(
+        question: str,
+        options: list[str] | None = None,
+        header: str = "",
+        allow_freeform: bool = True,
+        _context: dict[str, object] | None = None,
+    ) -> str:
+        ctx = _context or {}
+        callback = ctx.get("hitl_callback")
+        if callback is None:
+            return "当前环境不支持用户交互，请继续执行。"
+
+        option_items = [HITLOption(label=o) for o in (options or [])]
+        if not option_items and not allow_freeform:
+            option_items = [HITLOption(label="好的")]
+
+        q = PendingQuestion(
+            question=question,
+            header=header,
+            options=option_items,
+            allow_freeform=allow_freeform,
+        )
+        _cb = cast(Callable[..., Coroutine[Any, Any, dict[str, Any]]], callback)
+        answer = await _cb(q)
+
+        if answer.get("error"):
+            return f"等待用户回复超时（{answer['error']}），请继续执行。"
+
+        parts: list[str] = []
+        selected = answer.get("selected", [])
+        if selected:
+            parts.append("用户选择：" + "、".join(selected))
+        freeform = answer.get("freeform")
+        if freeform:
+            parts.append(f"用户补充：{freeform}")
+        return "\n".join(parts) if parts else "用户未作选择，请继续执行。"
 
     native = NativeToolAdapter()
 
@@ -444,6 +506,44 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 type=ToolParameterType.STRING,
                 description="记忆 ID（从 recall_memory 返回结果中获取）",
                 required=True,
+            ),
+        ],
+        requires_confirmation=True,
+    )
+
+    native.register_tool(
+        name="ask_user",
+        func=_ask_user,
+        description=(
+            "向用户提出一个问题并等待回复，用于在执行任务前确认关键决策、"
+            "收集缺失信息或让用户在多个选项中做出选择。"
+            "仅在真正需要用户输入才能继续的情况下使用；"
+            "不要用于可以合理推断答案的场景。"
+        ),
+        parameters=[
+            ToolParameter(
+                name="question",
+                type=ToolParameterType.STRING,
+                description="向用户提出的问题内容",
+                required=True,
+            ),
+            ToolParameter(
+                name="options",
+                type=ToolParameterType.ARRAY,
+                description="可选项列表（字符串数组），留空则只显示自由文本输入框",
+                required=False,
+            ),
+            ToolParameter(
+                name="header",
+                type=ToolParameterType.STRING,
+                description="问题卡片标题（选填）",
+                required=False,
+            ),
+            ToolParameter(
+                name="allow_freeform",
+                type=ToolParameterType.BOOLEAN,
+                description="是否允许用户输入自由文本（默认 true）",
+                required=False,
             ),
         ],
     )
