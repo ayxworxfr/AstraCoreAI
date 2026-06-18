@@ -4,101 +4,115 @@
 ![Tests](https://img.shields.io/badge/Tests-190%20passed-brightgreen)
 ![License](https://img.shields.io/badge/License-PolyForm%20NC-orange)
 
-> 企业级 Python AI Agent 框架，基于 Clean Architecture + Ports & Adapters。
+> Enterprise-grade Python AI agent framework built with Clean Architecture and Ports & Adapters.
 
-AstraCoreAI 为 LLM 应用提供完整的生产级基础设施：按需加载的 Skill 系统、两级记忆注入、HITL 审批流、并行多 Agent 与 DAG 工作流，以及覆盖可观测性、安全与评估的完整工具链。同一套业务逻辑可通过 Python SDK 嵌入，或以 FastAPI 服务独立部署。
+AstraCoreAI provides production-ready infrastructure for LLM applications: on-demand Skills, tiered memory, Human-in-the-Loop approvals, native and MCP tools, scheduled tasks, parallel agents, DAG workflows, observability, security hardening, and evaluation utilities. The same business logic runs through the Python SDK or as a standalone FastAPI service.
 
----
-
-## 核心能力
-
-### Skill 系统
-
-Claude 通过 `load_skill` 工具按需加载专业能力包（SKILL.md 格式），兼容 Agent Skills 开放标准。三层 System Prompt（身份层 + Skill 摘要清单 + 动态上下文）保证路由准确且可审计。
-
-### 两级记忆（Tier-1 / Tier-2）
-
-| 层级 | 作用域 | 注入方式 |
-|------|--------|---------|
-| Tier-1 | user / global | 全量写入 System Prompt（画像 / 规范 / 偏好） |
-| Tier-2 | session / project | 向量语义检索，以合成消息对注入对话历史 |
-
-每轮结束后 LLM 批量提取结构化记忆，高价值条目经启发式过滤 + LLM 判断后自动晋升作用域。Chroma 不可用时降级到 SQL 检索，系统不中断。
-
-### HITL（Human-in-the-Loop）
-
-工具执行审批、记忆晋升审批、`ask_user` 主动询问，三类交互均可通过配置独立开关。
-
-### 工具系统
-
-- Native Python 工具：并行 / 串行执行，JSON 自修复，单次超时隔离
-- MCP 工具：内置 filesystem（10 个工具）和 shell server，支持任意自定义 MCP 进程
-- 工具循环健壮性：悬空 `tool_use` 清理、空响应引导、总结收尾兜底
-
-### 多 Agent 与 DAG 工作流
-
-- `spawn_agents`：2–5 个 Worker 并发，前端实时折叠展示
-- `NativeWorkflowOrchestrator`：Kahn 拓扑排序 + 层级 `asyncio.gather`，支持 `depends_on` 依赖声明与 `condition` 条件跳过
-
-### 可观测性
-
-| 组件 | 功能 |
-|------|------|
-| HookRegistry | `before/after_llm/tool` 四切入点，支持 ShortCircuit 短路 |
-| Tracer | Span 链路追踪，结构化 JSON 写入 DEBUG 日志，无 OTel 依赖 |
-| CircuitBreaker | 三态状态机，fast-fail + 探测恢复 |
-| PolicyEngine | tenacity retry + asyncio timeout，Token 预算 O(n) 截断 |
-
-### 安全
-
-- Prompt 注入防御：外部数据以 `<external_data trust="untrusted">` 包裹，System Prompt 含显式注入声明
-- JWT 认证：register / login，admin / user 双角色，首个用户自动为管理员
-- SecurityValidator：XSS 检测、输入长度限制、敏感字段脱敏
-
-### 计划任务（Scheduled Tasks）
-
-基于 APScheduler 的定时任务系统，支持三种触发方式：
-
-| 触发类型 | 说明 | 示例 |
-|----------|------|------|
-| `cron` | 标准 crontab 表达式 | `0 9 * * 1-5`（工作日 9 点） |
-| `interval` | 固定间隔重复 | 每 30 分钟 / 每小时 |
-| `date` | 单次指定时间 | 一次性定时发送 |
-
-每个任务存储一段 Prompt，触发时由 `ChatPipeline` 完整执行（含工具、记忆、Skill），结果写回任务的 `conversation_id` 可在前端查看。支持暂停 / 恢复 / 立即执行 / 批量删除 / 按名称和状态筛选。
-
-### 其他能力
-
-- **HistoryCompactor**：context_window 50% 触发，LLM 摘要 + MemoryEngine 持久化
-- **RAG**：ChromaDB 向量检索，幂等 upsert，引用支持
-- **Eval 框架**：EvalRunner，LLM-as-judge，工具精确匹配，CLI（`python -m astracore.eval`）
-- **Structured Output**：`LLMAdapter.generate(response_format=MyModel)` 强制结构化输出
-- **多 LLM Profile**：Anthropic Claude、OpenAI 兼容（DeepSeek / GLM），通过 profile ID 切换
+[中文 README](./README.zh-CN.md)
 
 ---
 
-## 架构
+## Core Capabilities
+
+### Skill System
+
+AstraCoreAI lets the model load specialized capability packs through the `load_skill` tool. Built-in skills use the `SKILL.md` format and are compatible with the Agent Skills style of progressive disclosure: a concise manifest is injected into the system prompt, while full references are loaded only when needed.
+
+### Tiered Memory
+
+| Tier | Scope | Injection Method |
+|------|-------|------------------|
+| Tier 1 | `user` / `global` | Fully injected into the system prompt as profile, preference, and policy context |
+| Tier 2 | `session` / `project` | Retrieved semantically and injected as synthetic turn context |
+
+At the end of each turn, AstraCoreAI extracts structured memories in batches. Session memories can be compacted, searched, and promoted according to policy. If ChromaDB is unavailable, the memory engine falls back to SQL retrieval so the chat flow keeps running.
+
+### Human-in-the-Loop
+
+HITL support is built into the tool loop:
+
+- Tool approvals for tools marked with `requires_confirmation=True`
+- Memory promotion approvals
+- Inline user questions through the native `ask_user` tool
+- Configurable timeout and feature switches
+
+### Tool System
+
+- Native Python tools with schema validation, JSON repair, and timeout isolation
+- Built-in MCP filesystem and shell integrations
+- Custom MCP server support
+- Robust tool-loop handling for dangling tool calls, empty responses, and final summaries
+- Parallel sub-agent execution through `spawn_agents` when enabled
+
+### Scheduled Tasks
+
+AstraCoreAI includes an APScheduler-backed task system. Each task stores a prompt and runs through the same `ChatPipeline`, including tools, memory, RAG, and Skills.
+
+| Trigger | Description | Example |
+|---------|-------------|---------|
+| `cron` | Standard crontab expression | `0 9 * * 1-5` |
+| `interval` | Repeating fixed interval | Every 30 minutes |
+| `date` | One-time scheduled run | Run once at a specific time |
+
+Tasks can be paused, resumed, executed immediately, filtered, and inspected from the frontend.
+
+### Multi-Agent and DAG Workflows
+
+- `spawn_agents`: run 2 to 5 worker agents in parallel with streaming progress
+- `NativeWorkflowOrchestrator`: executes dependency graphs with Kahn topological sorting and layer-level `asyncio.gather`
+- Task dependencies through `depends_on`
+- Conditional task skipping through `condition`
+
+### Observability
+
+| Component | Purpose |
+|-----------|---------|
+| `HookRegistry` | `before_llm`, `after_llm`, `before_tool`, and `after_tool` extension points |
+| `Tracer` | Lightweight span tracing with structured JSON logs |
+| `CircuitBreaker` | Three-state fast-fail and recovery probing |
+| `PolicyEngine` | Tenacity retries, asyncio timeouts, and token-budget truncation |
+
+### Security
+
+- Prompt-injection defense through `<external_data trust="untrusted">` wrappers
+- Explicit system prompt instructions for untrusted external content
+- JWT authentication with `admin` and `user` roles
+- First registered user becomes admin
+- XSS and input-length checks through `SecurityValidator`
+- Sensitive-field redaction in relevant paths
+
+### Additional Features
+
+- **HistoryCompactor**: summarizes old conversation history and persists the summary as session memory
+- **RAG**: ChromaDB-backed retrieval with idempotent upsert and citations
+- **Evaluation Framework**: LLM-as-judge, tool-call matching, and CLI execution through `python -m astracore.eval`
+- **Structured Output**: `LLMAdapter.generate(response_format=MyModel)` for Pydantic-enforced outputs
+- **LLM Profiles**: switch between Anthropic, OpenAI-compatible providers, Responses API providers, DeepSeek, GLM, and custom endpoints by profile ID
+
+---
+
+## Architecture
 
 ```mermaid
 flowchart TD
-    subgraph 入口层
+    subgraph Entry
         SDK["Python SDK\nAstraCoreClient"]
         HTTP["FastAPI Service\nSSE + REST"]
     end
 
     SDK & HTTP --> CP
 
-    CP["ChatPipeline\nprepare() → ChatContext\nstream() → SSE / iterator"]
+    CP["ChatPipeline\nprepare() -> ChatContext\nstream() -> SSE / iterator"]
 
-    subgraph 应用层
-        ME["MemoryEngine\nTier-1 画像注入 / Tier-2 语义召回"]
+    subgraph Application
+        ME["MemoryEngine\nTier-1 profile / Tier-2 recall"]
         TL["ToolLoopUseCase\nNative · MCP · spawn_agents"]
-        RP["RAGPipeline\nChroma · 分块 · 引用"]
+        RP["RAGPipeline\nChroma · chunking · citations"]
     end
 
     CP --> ME & TL & RP
 
-    subgraph 端口层["shared/ports（抽象接口）"]
+    subgraph Ports["shared/ports"]
         LLMPort["LLMAdapter"]
         ToolPort["ToolAdapter"]
         MemPort["MemoryAdapter"]
@@ -108,120 +122,153 @@ flowchart TD
     TL --> ToolPort & LLMPort
     RP --> LLMPort
 
-    subgraph 基础设施层
-        INF_LLM["Anthropic · OpenAI\nDeepSeek / GLM"]
-        INF_MEM["SQLite · ChromaDB\nRedis（可选）"]
+    subgraph Infrastructure
+        INF_LLM["Anthropic · OpenAI-compatible\nDeepSeek / GLM / Responses API"]
+        INF_MEM["SQLite · ChromaDB\nRedis optional"]
     end
 
     LLMPort & ToolPort --> INF_LLM
     MemPort --> INF_MEM
 ```
 
-`ChatPipeline.prepare()` 一次性完成所有 DB 查询，返回不可变 `ChatContext`；`stream()` 纯执行，无分支歧义。SDK 与 HTTP Service 共享同一管道，行为完全一致。
+`ChatPipeline.prepare()` performs batched database reads and returns an immutable `ChatContext`. `stream()` then executes the turn through either the normal LLM path or the tool-loop path. SDK and HTTP modes share the same pipeline, so behavior stays consistent across embedding and service deployments.
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 前置条件
+### Requirements
 
 - Python 3.11+
-- [Hatch](https://hatch.pypa.io/)（`pip install hatch`）
-- Anthropic API Key（或其他兼容 provider）
+- [Hatch](https://hatch.pypa.io/) (`pip install hatch`)
+- An API key for Anthropic or another configured provider
+- Node.js only if you plan to run the frontend or custom JavaScript MCP servers
 
-### 安装与配置
+### Install and Configure
 
 ```bash
-# 1. 克隆项目
-git clone https://github.com/your-org/AstraCoreAI.git
+git clone https://github.com/ayxworxfr/AstraCoreAI.git
 cd AstraCoreAI
 
-# 2. 初始化环境（hatch + 所有依赖）
 make setup
-
-# 3. 复制配置文件
 cp config/config.example.yaml config/config.yaml
+cp .env.example .env
+```
 
-# 4. 写入密钥（仅放 secrets，结构配置在 config.yaml）
-echo "ANTHROPIC_API_KEY=sk-ant-xxx" > .env
+Put secrets in `.env` only:
 
-# 5. 验证环境
+```bash
+ANTHROPIC_API_KEY=sk-ant-xxx
+DEEPSEEK_API_KEY=sk-xxx
+TAVILY_API_KEY=tvly-xxx
+```
+
+Then verify the environment:
+
+```bash
 make test
 ```
 
-### SDK 示例
+### Python SDK Example
 
 ```python
 import asyncio
+
 from astracore.sdk import AstraCoreClient
 
-async def main():
-    async with AstraCoreClient() as client:
-        conv = client.conversation(use_tools=True, model_profile="claude-sonnet")
 
-        # 单次对话
-        result = await conv.send("你好，介绍一下自己")
+async def main() -> None:
+    async with AstraCoreClient() as client:
+        conversation = client.conversation(use_tools=True, model_profile="claude-sonnet")
+
+        result = await conversation.send("Introduce yourself briefly.")
         print(result.content)
 
-        # 流式对话（同一会话自动续接）
-        async for chunk in conv.stream("讲一个短故事"):
+        async for chunk in conversation.stream("Tell me a short story."):
             print(chunk, end="", flush=True)
+
 
 asyncio.run(main())
 ```
 
-恢复已有会话：`client.conversation(session_id=existing_uuid)`
+Resume an existing conversation with:
 
-### 启动服务
-
-```bash
-make api        # 后端 http://127.0.0.1:8000  (Swagger: /docs)
-make fe-dev     # 前端 http://127.0.0.1:5173
+```python
+client.conversation(session_id=existing_uuid)
 ```
 
-HTTP 聊天采用后台 Run 模型：`POST /api/v1/chat/runs` 创建任务，`GET /api/v1/chat/runs/{run_id}/stream` 订阅 SSE。页面刷新不中断生成，重连后自动恢复。
+### Start the Service
+
+```bash
+make api        # backend: http://127.0.0.1:8000  Swagger: /docs
+make fe-install # first-time frontend dependency install
+make fe-dev     # frontend: http://127.0.0.1:5173
+```
+
+HTTP chat uses a background run model:
+
+- `POST /api/v1/chat/runs` creates a generation run
+- `GET /api/v1/chat/runs/{run_id}/stream` subscribes to SSE
+
+Browser refreshes do not cancel generation. The frontend can reconnect to the same `run_id`.
 
 ---
 
-## 内置 Skill
+## Built-in Skills
 
-Skill 文件位于 `src/astracore/modules/skills/builtin/`，Claude 通过 `load_skill` 自主路由。
+Built-in skills live in:
 
-| Skill ID | 说明 |
-|----------|------|
-| 按目录扫描自动注册 | 支持 `skills.extra_dirs` 扩展外部目录 |
+```text
+src/astracore/modules/skills/builtin/
+```
 
-新增 Skill 只需在目录下放置符合 SKILL.md 格式的文件，重启后自动可用。
+The model routes to them through `load_skill`, then loads long references through `get_skill_reference` when needed. Additional skill directories can be configured with `skills.extra_dirs`.
 
----
-
-## 内置工具
-
-| 工具 | 类型 | 说明 |
-|------|------|------|
-| `filesystem` MCP | MCP | read / write / edit / search 等 10 个文件操作工具 |
-| `shell` MCP | MCP | 受控命令执行，需配置 `allow_dirs` |
-| `load_skill` | Native | 按需加载 Skill 能力包 |
-| `get_skill_reference` | Native | 按需拉取 Skill 参考文档 |
-| `run_skill_script` | Native | 执行 Skill 附带的脚本 |
-| `spawn_agents` | Native | 启动并行子 Agent（2–5 个） |
-| `ask_user` | Native | HITL 主动询问用户 |
-
-### 前端功能页面
-
-| 页面 | 功能 |
-|------|------|
-| 聊天（Chat） | SSE 流式对话、会话管理、工具调用展示、HITL 审批 |
-| 记忆（Memory） | 记忆增删查改、多选批量删除、作用域筛选 |
-| 计划任务（Scheduling） | 创建 cron/interval/date 任务、暂停/恢复/立即执行、批量删除、名称/状态搜索 |
-| 技能（Skills） | Skill CRUD、SKILL.md 编辑 |
-| 知识库（RAG） | 文档上传、向量检索调试 |
+To add a built-in skill, create a directory containing a valid `SKILL.md`, optional `references/`, and optional scripts. Restart the service to rescan skills.
 
 ---
 
-## 配置参考
+## Built-in Tools
 
-`config/config.yaml` 管理所有结构化配置，`.env` 仅放密钥。
+| Tool | Type | Description |
+|------|------|-------------|
+| `load_skill` | Native | Load a skill package on demand |
+| `get_skill_reference` | Native | Load a referenced skill document |
+| `run_skill_script` | Native | Execute a script bundled with a skill |
+| `save_memory` | Native | Save structured memory |
+| `recall_memory` | Native | Search structured memory |
+| `compact_memory` | Native | Compact session memories |
+| `ask_user` | Native | Ask the user a HITL question |
+| `spawn_agents` | Native | Launch parallel worker agents when enabled |
+| `filesystem` | MCP | Controlled file operations |
+| `shell` | MCP | Controlled shell command execution |
+
+---
+
+## Frontend Modules
+
+| Page | Features |
+|------|----------|
+| Chat | SSE streaming, conversation management, tool activity, HITL approvals |
+| Memory | CRUD, batch delete, scope filters, promotion approval queue |
+| Scheduling | cron / interval / date tasks, pause, resume, run now, search, batch delete |
+| Skills | Skill CRUD and `SKILL.md` editing |
+| Knowledge Base | Document upload and retrieval debugging |
+| Settings | User profile, assistant identity, global instructions, provider settings |
+
+---
+
+## Configuration
+
+`config/config.yaml` contains structured configuration. `.env` contains secrets only. In normal use, you should copy `config/config.example.yaml` and edit provider, storage, and feature switches instead of writing the whole schema by hand. The canonical schema is `AstraCoreConfig` in `src/astracore/sdk/config.py`.
+
+Configuration is organized around a few stable sections:
+
+- `llm`: selectable model profiles and the default profile.
+- `storage`: SQLite, Redis, and vector-store configuration; RAG vector settings live under `storage.vector`.
+- `policy`: retry, timeout, and history-compaction policy.
+- `hitl` / `agent` / `scheduling`: user approvals, tool-loop behavior, multi-agent execution, and scheduled tasks.
+- `mcp`: built-in and custom MCP servers.
 
 ```yaml
 llm:
@@ -233,116 +280,141 @@ llm:
       base_url: https://api.anthropic.com
       api_key_env: ANTHROPIC_API_KEY
       model: claude-sonnet-4-6
-    # 添加 OpenAI 兼容 provider：
-    # - id: deepseek
-    #   protocol: openai
-    #   base_url: https://api.deepseek.com
-    #   api_key_env: DEEPSEEK_API_KEY
-    #   model: deepseek-chat
+      max_tokens: 8192
+
+policy:
+  timeout:
+    llm_timeout_s: 180
+    tool_timeout_s: 120
+  compaction:
+    context_window_tokens: 200000
+    trigger_ratio: 0.5
 
 agent:
-  max_tool_result_chars: 20000   # 单次工具返回最大字符数
-  max_tool_iterations: 10        # 工具调用最大轮次（0 = 不限）
-  tool_timeout_s: 120            # 单次工具超时（秒）
-  enable_spawn_agents: true      # 是否暴露 spawn_agents 工具
+  max_tool_result_chars: 20000
+  max_tool_iterations: 10
+  enable_spawn_agents: true
 
-retrieval:
-  collection_name: astracore
-  persist_directory: ./chroma_db
-  # embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文场景
+hitl:
+  enabled: true
+  inline_question_timeout: 300
+  require_tool_approval: true
+  require_memory_promotion_approval: true
+
+auth:
+  secret_key: change-me-in-production
+  token_expire_days: 30
+  allow_registration: true
+
+storage:
+  db_url: sqlite+aiosqlite:///./astracore.db
+  redis_url: redis://localhost:6379/0
+  vector:
+    enabled: true
+    collection_name: astracore
+    persist_directory: ./chroma_db
+    # embedding_model: paraphrase-multilingual-MiniLM-L12-v2
+
+skills:
+  extra_dirs: []
+
+scheduling:
+  enabled: true
+  default_timezone: Asia/Shanghai
 
 mcp:
   servers:
     - type: filesystem
       paths:
         - /path/to/project
+
     - type: shell
       allow_dirs:
         - /path/to/project
-    # 自定义 MCP 进程：
-    # - type: custom
-    #   name: my-server
-    #   command: node
-    #   args: [./my-mcp-server.js]
-
-skills:
-  extra_dirs: []   # 额外 Skill 目录（绝对路径或 ~/xxx）
+      timeout: 30
 ```
+
+See `config/config.example.yaml` for the full template. Use it when configuring DeepSeek, GPT Responses API, prompt cache, thinking/reasoning controls, profile-level timeout/retry overrides, or custom MCP processes.
+
+| MCP Type | Required Fields | Description |
+|----------|-----------------|-------------|
+| `filesystem` | `paths` | Built-in Python filesystem MCP server |
+| `shell` | `allow_dirs` | Controlled shell execution |
+| `custom` | `name`, `command`, `args` | External MCP process |
+
+---
+
+## Development Commands
+
+| Command | Description |
+|---------|-------------|
+| `make setup` | Initialize Hatch and install dependencies |
+| `make api` | Start the backend service on port 8000 |
+| `make fe-install` | Install frontend dependencies |
+| `make fe-dev` | Start the Vite frontend on port 5173 |
+| `make test` | Run pytest |
+| `make test-cov` | Run pytest with coverage |
+| `make lint` | Run Ruff |
+| `make type-check` | Run mypy |
+| `make check` | Run lint and type-check |
+| `make fmt` | Format Python code with Ruff |
+| `make clean` | Remove caches |
+| `make clean-rag` | Clear ChromaDB data |
+
+Run a single test:
 
 ```bash
-# .env（仅密钥）
-ANTHROPIC_API_KEY=sk-ant-xxx
-TAVILY_API_KEY=tvly-xxx
+hatch run pytest tests/path/to/test_file.py::TestClass::test_method -v
 ```
 
-### MCP 服务器类型
-
-| type | 必填字段 | 说明 |
-|------|---------|------|
-| `filesystem` | `paths: list[str]` | 内置 Python 实现，无需 Node.js |
-| `shell` | `allow_dirs: list[str]` | 受控命令执行 |
-| `custom` | `name`, `command`, `args` | 任意外部 MCP 进程 |
-
 ---
 
-## 开发命令
+## Examples
 
-| 命令 | 说明 |
-|------|------|
-| `make setup` | 一键初始化 hatch 环境 + 依赖 |
-| `make api` | 启动后端服务（:8000） |
-| `make fe-dev` | 启动前端开发服务器（:5173） |
-| `make test` | 运行 pytest |
-| `make test-cov` | 运行测试并生成覆盖率报告 |
-| `make lint` | ruff check |
-| `make type-check` | mypy |
-| `make check` | lint + type-check（提交前必跑） |
-| `make fmt` | ruff format |
-| `make clean` | 清理缓存 |
-| `make clean-rag` | 清空 ChromaDB 数据 |
+Examples run through the SDK and do not require the HTTP service:
 
-单测：`hatch run pytest tests/path/to/test_file.py::TestClass::test_method -v`
+| File | Description |
+|------|-------------|
+| `examples/basic_chat.py` | Basic and streaming chat |
+| `examples/tool_calling.py` | Tool event stream and custom tool registration |
+| `examples/rag_example.py` | Document indexing, retrieval, and RAG chat |
+| `examples/memory_example.py` | Memory CRUD, project binding, and extraction |
+| `examples/multi_agent.py` | Concurrent multi-conversation execution |
+| `examples/skill_with_tools.py` | Skill routing and tool usage |
+| `examples/run_service.py` | Start the FastAPI service |
 
----
-
-## 示例
-
-示例均通过 SDK 直接运行，无需先启动 HTTP 服务：
-
-| 文件 | 内容 |
-|------|------|
-| `examples/basic_chat.py` | 同步 / 流式对话、会话续接 |
-| `examples/tool_calling.py` | 工具事件流、自定义工具注册 |
-| `examples/rag_example.py` | 文档索引、向量检索、RAG 增强对话 |
-| `examples/memory_example.py` | 手动 CRUD、Project 绑定、自动记忆提取 |
-| `examples/multi_agent.py` | asyncio.gather 并发多会话 |
-| `examples/skill_with_tools.py` | Skill 绑定与工具联动 |
-| `examples/run_service.py` | 启动 FastAPI HTTP 服务 |
-
-### DAG 工作流
+### DAG Workflow Example
 
 ```python
+from astracore.modules.agent.domain import AgentRole, AgentTask
 from astracore.sdk import AstraCoreClient
-from astracore.modules.agent.domain import AgentTask, AgentRole
 
 async with AstraCoreClient() as client:
-    t1 = AgentTask(role=AgentRole.EXECUTOR, description="搜索 Python asyncio 最佳实践")
-    t2 = AgentTask(
+    research = AgentTask(
         role=AgentRole.EXECUTOR,
-        description="基于搜索结果，写一份 500 字技术总结",
-        depends_on=[t1.task_id],
+        description="Research Python asyncio best practices.",
     )
-    t3 = AgentTask(
+    writeup = AgentTask(
+        role=AgentRole.EXECUTOR,
+        description="Write a concise technical summary from the research.",
+        depends_on=[research.task_id],
+    )
+    review = AgentTask(
         role=AgentRole.REVIEWER,
-        description="审校总结，给出改进意见",
-        depends_on=[t2.task_id],
+        description="Review the summary and suggest improvements.",
+        depends_on=[writeup.task_id],
         condition="len(task_results) >= 2",
     )
-    state = await client.workflow.run("asyncio-research", [t1, t2, t3], use_tools=True)
+
+    state = await client.workflow.run(
+        "asyncio-research",
+        [research, writeup, review],
+        use_tools=True,
+    )
     print(state.task_results)
 ```
 
-### Hook + Tracing
+### Hook and Tracing Example
 
 ```python
 from astracore.sdk import AstraCoreClient
@@ -350,43 +422,47 @@ from astracore.shared.observability.hooks import HookRegistry
 from astracore.shared.observability.tracing import Tracer
 
 registry = HookRegistry()
-registry.before_llm.append(lambda p: print(f"[llm] messages={len(p.messages)}"))
+registry.before_llm.append(lambda payload: print(f"[llm] messages={len(payload.messages)}"))
 
 tracer = Tracer(session_id="my-session")
 tracer.register_hooks(registry)
 
 async with AstraCoreClient(hooks=registry) as client:
-    result = await client.chat("你好")
+    result = await client.chat("Hello")
     print(result.content)
 ```
 
 ---
 
-## 路线图
+## Documentation
 
-- [x] M1–M5+：核心闭环（LLM / 工具 / 记忆 / RAG / Skill / 多 Agent / DAG / Hook / Eval / JWT 认证）
-- [x] M6 认证：JWT auth 完成
-- [ ] M6 剩余：限流、多 worker Redis 状态共享
-- [ ] M7：OpenTelemetry 标准 tracing、SLO / 指标
-- [ ] M8：发布工程化（版本策略、回滚预案、运维文档）
-
----
-
-## 文档
-
-| 文档 | 路径 |
-|------|------|
-| 系统设计文档 | `docs/AstraCoreAI设计文档.md` |
-| 开发进度规划 | `docs/开发进度规划.md` |
-| 前端设计方案 | `docs/前端设计方案.md` |
-| 子系统设计方案 | `docs/子系统设计方案.md` |
-| 专业度评估与优化路线 | `docs/专业度评估与优化路线.md` |
-| 系统提示词设计 | `docs/系统提示词设计.md` |
-| 贡献指南 | `docs/CONTRIBUTING.md` |
+| Document | Path |
+|----------|------|
+| Chinese README | [`README.zh-CN.md`](./README.zh-CN.md) |
+| System design | `docs/AstraCoreAI设计文档.md` |
+| Development roadmap | `docs/开发进度规划.md` |
+| Frontend design | `docs/前端设计方案.md` |
+| Subsystem design | `docs/子系统设计方案.md` |
+| Engineering assessment | `docs/专业度评估与优化路线.md` |
+| System prompt design | `docs/系统提示词设计.md` |
+| Contributing guide | `docs/CONTRIBUTING.md` |
 
 ---
 
-## 许可证
+## Roadmap
 
-AstraCoreAI 使用 [PolyForm Noncommercial License 1.0.0](./LICENSE)。
-个人学习、研究和非商业用途按许可证条款使用；商业授权请查看 [COMMERCIAL.md](./COMMERCIAL.md)。
+- [x] Core LLM, tool, memory, RAG, Skill, multi-agent, DAG, hook, eval, and JWT authentication loop
+- [x] Scheduled tasks
+- [x] HITL tool approval and memory promotion flow
+- [ ] Rate limiting
+- [ ] Redis-backed multi-worker run state
+- [ ] OpenTelemetry-compatible tracing, SLOs, and metrics
+- [ ] Release engineering, rollback playbooks, and operational documentation
+
+---
+
+## License
+
+AstraCoreAI is licensed under the [PolyForm Noncommercial License 1.0.0](./LICENSE).
+
+Personal learning, research, and other non-commercial usage are allowed under the license terms. For commercial use, see [COMMERCIAL.md](./COMMERCIAL.md).
