@@ -174,11 +174,10 @@ Tracer 记录每次 LLM 调用和工具执行的 Span（含 duration_ms、token 
 
 | 策略 | 方法 | 触发时机 |
 |-----|------|---------|
-| 预算控制 | `apply_budget_policy(session)` | 每轮迭代开始前 |
-| 上下文截断 | `_apply_truncation(session)` | 预算超限时 |
 | 安全检查 | `check_security_policy(tool_name, arguments)` | before_tool Hook 内 |
 | 重试 | `apply_retry_policy(func, *args)` | 包装任意可重试调用 |
-| 超时 | `apply_timeout_policy(func, type, *args)` | 包装任意耗时操作 |
+| 上下文压缩 | `HistoryCompactor.maybe_compact(...)` | `ChatPipeline.stream()` 入口处 |
+| 工具超时 | `policy.timeout.tool_timeout_s` | `ToolLoopUseCase` 单工具执行 wait_for |
 
 安全策略拦截时，工具不执行，直接触发 `after_tool` Hook 并返回错误结果。
 

@@ -12,29 +12,7 @@ llm:
 agent:
   max_tool_result_chars: 20000
   max_tool_iterations: 10
-  tool_timeout_s: 120
   enable_spawn_agents: true
-
-memory:
-  redis_url: redis://redis:6379/0
-  db_url: sqlite+aiosqlite:////app/data/astracore.db
-
-retrieval:
-  # 设为 false 可完全关闭 RAG 功能（不注册 /api/v1/rag 路由，不加载向量模型）
-  # enabled: false
-  collection_name: astracore
-  persist_directory: /app/data/chroma_db
-  # embedding_model: all-MiniLM-L6-v2          # 默认，英文场景，~90MB
-  # embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言场景，~420MB
-
-skills:
-  extra_dirs: []
-
-# 认证配置
-auth:
-  secret_key: change-me-in-production   # 生产环境必须替换为强随机字符串
-  token_expire_days: 30
-  allow_registration: true              # 完成首次注册后建议改为 false
 
 # Human-in-the-Loop 配置
 hitl:
@@ -42,6 +20,26 @@ hitl:
   inline_question_timeout: 300
   require_tool_approval: true
   require_memory_promotion_approval: true
+
+# 认证配置
+auth:
+  secret_key: change-me-in-production   # 生产环境必须替换为强随机字符串
+  token_expire_days: 30
+  allow_registration: true              # 完成首次注册后建议改为 false
+
+storage:
+  db_url: sqlite+aiosqlite:////app/data/astracore.db
+  redis_url: redis://redis:6379/0
+  vector:
+    # 设为 false 可完全关闭 RAG 功能（不注册 /api/v1/rag 路由，不加载向量模型）
+    # enabled: false
+    collection_name: astracore
+    persist_directory: /app/data/chroma_db
+    # embedding_model: all-MiniLM-L6-v2          # 默认，英文场景，~90MB
+    # embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言场景，~420MB
+
+skills:
+  extra_dirs: []
 
 # 开发者调试配置
 debug:

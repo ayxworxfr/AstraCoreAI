@@ -3,11 +3,10 @@
 from astracore.shared.policy.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from astracore.shared.policy.engine import PolicyConfig, PolicyEngine
 from astracore.shared.policy.rules import (
-    BudgetRule,
+    CompactionRule,
     RetryRule,
     SecurityRule,
     TimeoutRule,
-    TruncationRule,
 )
 
 __all__ = [
@@ -15,9 +14,8 @@ __all__ = [
     "CircuitBreakerOpenError",
     "PolicyEngine",
     "PolicyConfig",
-    "BudgetRule",
+    "CompactionRule",
     "RetryRule",
     "TimeoutRule",
-    "TruncationRule",
     "SecurityRule",
 ]

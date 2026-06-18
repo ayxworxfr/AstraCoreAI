@@ -18,7 +18,7 @@ def _get_auth_config() -> AuthConfig:
 
 @lru_cache(maxsize=1)
 def _get_db_url() -> str:
-    return AstraCoreConfig().memory.db_url
+    return AstraCoreConfig().storage.db_url
 
 
 async def get_current_user(

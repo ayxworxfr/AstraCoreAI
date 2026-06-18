@@ -343,5 +343,5 @@ class ParallelAgentTool(ToolAdapter):
             policy_engine=self._policy,
             max_iterations=_WORKER_MAX_ITERATIONS,
             max_tool_result_chars=self._config.agent.max_tool_result_chars,
-            tool_timeout_s=self._config.agent.tool_timeout_s,
+            tool_timeout_s=self._config.policy.timeout.tool_timeout_s,
         )

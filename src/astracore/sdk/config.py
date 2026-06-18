@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from astracore.sdk.model_capabilities import LLMCapabilities, infer_model_capabilities
+from astracore.shared.policy.rules import CompactionRule, RetryRule, TimeoutRule
 
 
 class LLMProfileConfig(BaseModel):
@@ -28,6 +29,33 @@ class LLMProfileConfig(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=8192, ge=1)
     capabilities: LLMCapabilities = Field(default_factory=LLMCapabilities)
+
+    # ── Slice A: 采样参数 ──────────────────────────────────────────────
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    """核采样概率截断。null = 不发送，使用 provider 默认值。与 temperature 二选一调整。"""
+    stop_sequences: list[str] = Field(default_factory=list)
+    """强终止序列，最多 4 条。OpenAI 和 Anthropic 均支持。"""
+    enable_prompt_cache: bool = False
+    """仅 Anthropic 协议生效。为 system prompt 注入 cache_control，显著降低输入 token 成本。"""
+
+    # ── Slice B: 推理控制 ──────────────────────────────────────────────
+    thinking_mode: str | None = None
+    """profile 默认思考模式。'off'=禁用，'on'=启用（Anthropic），'adaptive'=自适应（Opus 4.7+）。
+    None 表示按 capabilities 推断默认值。"""
+    thinking_budget: int = Field(default=8000, ge=1000)
+    """Claude Extended Thinking 的 token 预算，仅 thinking_mode='on' 时生效。"""
+    reasoning_effort: str | None = None
+    """GPT-5 推理深度默认值。'minimal'|'low'|'medium'|'high'。None = 不发送（provider 默认 medium）。"""
+    verbosity: str | None = None
+    """GPT-5 回答长度控制。'low'|'medium'|'high'。None = 不发送（provider 默认 medium）。"""
+
+    # ── Slice C: 运维覆盖 ──────────────────────────────────────────────
+    timeout_s: float | None = Field(default=None, ge=0)
+    """LLM 调用超时（秒），覆盖全局 policy.timeout.llm_timeout_s。"""
+    max_retries: int | None = None
+    """最大重试次数，覆盖全局 policy.retry.max_retries。"""
+    service_tier: str | None = None
+    """Anthropic: 'priority'|'standard'|'batch'。OpenAI: 'auto'|'default'|'flex'。"""
 
     @model_validator(mode="before")
     @classmethod
@@ -88,15 +116,8 @@ class LLMConfig(BaseModel):
         raise ValueError(f"Unknown LLM profile: {resolved_id}")
 
 
-class MemoryConfig(BaseModel):
-    """Memory configuration."""
-
-    redis_url: str = "redis://localhost:6379/0"
-    db_url: str = "sqlite+aiosqlite:///./astracore.db"
-
-
-class RetrievalConfig(BaseModel):
-    """Retrieval configuration."""
+class VectorConfig(BaseModel):
+    """Vector store (RAG / skill routing) configuration."""
 
     enabled: bool = True
     collection_name: str = "astracore"
@@ -104,6 +125,14 @@ class RetrievalConfig(BaseModel):
     embedding_model: str = "all-MiniLM-L6-v2"
     """sentence-transformers 模型名，同时用于 RAG 向量化和技能路由。
     中文场景推荐 paraphrase-multilingual-MiniLM-L12-v2。"""
+
+
+class StorageConfig(BaseModel):
+    """Storage layer configuration (database, cache, vector store)."""
+
+    db_url: str = "sqlite+aiosqlite:///./astracore.db"
+    redis_url: str = "redis://localhost:6379/0"
+    vector: VectorConfig = Field(default_factory=VectorConfig)
 
 
 class FilesystemServerConfig(BaseModel):
@@ -144,7 +173,6 @@ class AgentConfig(BaseModel):
 
     max_tool_result_chars: int = Field(default=20_000, ge=100)
     max_tool_iterations: int = Field(default=10, ge=0)  # 0 = 不限轮次
-    tool_timeout_s: float = Field(default=120.0, ge=0)  # 0 = 永不超时
     enable_spawn_agents: bool = True
     """Whether to expose the spawn_agents tool to the LLM.
     Set to false to disable parallel multi-agent execution entirely."""
@@ -177,6 +205,29 @@ class AuthConfig(BaseModel):
     secret_key: str = "change-me-in-production"
     token_expire_days: int = 30
     allow_registration: bool = True
+
+
+class SchedulingConfig(BaseModel):
+    """Scheduled-task system configuration."""
+
+    enabled: bool = True
+    """Master switch; false disables the scheduler and all related routes."""
+    max_tasks_per_user: int = Field(default=50, ge=1)
+    """Maximum scheduled tasks a single user may own (409 Conflict when exceeded)."""
+    default_timezone: str = "Asia/Shanghai"
+    """IANA timezone used when the user does not specify one."""
+    misfire_grace_seconds: int = Field(default=300, ge=0)
+    """APScheduler misfire_grace_time: missed trigger is still fired within this window."""
+    max_concurrent_runs: int = Field(default=5, ge=1)
+    """Global asyncio.Semaphore capacity for concurrent task runs."""
+
+
+class PolicyConfig(BaseModel):
+    """Global policy defaults. retry / timeout 字段可在 LLMProfileConfig 内按 profile 覆盖。"""
+
+    retry: RetryRule = Field(default_factory=RetryRule)
+    timeout: TimeoutRule = Field(default_factory=TimeoutRule)
+    compaction: CompactionRule = Field(default_factory=CompactionRule)
 
 
 class DebugConfig(BaseModel):
@@ -248,14 +299,17 @@ class AstraCoreConfig(BaseModel):
     """
 
     llm: LLMConfig
-    memory: MemoryConfig = Field(default_factory=MemoryConfig)
-    retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     hitl: HITLConfig = Field(default_factory=HITLConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    scheduling: SchedulingConfig = Field(default_factory=SchedulingConfig)
     debug: DebugConfig = Field(default_factory=DebugConfig)
+    policy: PolicyConfig = Field(default_factory=PolicyConfig)
+    """Global policy defaults (retry / timeout / compaction). retry / timeout 可在
+    LLMProfileConfig 中通过 timeout_s / max_retries 按 profile 覆盖。"""
 
     def __init__(self, **data: object) -> None:
         if not data:

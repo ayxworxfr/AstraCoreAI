@@ -47,7 +47,7 @@ class RetrievalResponse(BaseModel):
 @lru_cache(maxsize=1)
 def _get_rag_pipeline() -> RAGPipeline:
     """Get RAG pipeline instance (cached — avoids creating a new ChromaDB connection per request)."""
-    cfg = AstraCoreConfig().retrieval
+    cfg = AstraCoreConfig().storage.vector
     retriever = ChromaRetrieverAdapter(
         collection_name=cfg.collection_name,
         persist_directory=cfg.persist_directory,

@@ -38,6 +38,7 @@ from astracore.modules.tools.ports.tool import MutableToolAdapter, ToolParameter
 from astracore.sdk.config import AstraCoreConfig
 from astracore.shared.observability.hooks import HookRegistry
 from astracore.shared.observability.logger import get_logger
+from astracore.shared.policy.engine import PolicyConfig as _EnginePolicyConfig
 from astracore.shared.policy.engine import PolicyEngine
 from astracore.shared.ports.llm import StreamEvent, StreamEventType
 
@@ -212,11 +213,11 @@ class AstraCoreClient:
         # Lightweight: just stores the DB URL, no network connection until queries run
         cfg = self.config
         self._vector_adapter = MemoryVectorAdapter(
-            persist_directory=cfg.retrieval.persist_directory,
-            embedding_model=cfg.retrieval.embedding_model,
+            persist_directory=cfg.storage.vector.persist_directory,
+            embedding_model=cfg.storage.vector.embedding_model,
         )
         self._memory_engine = MemoryEngine(
-            SQLMemoryStore(cfg.memory.db_url),
+            SQLMemoryStore(cfg.storage.db_url),
             vector_adapter=self._vector_adapter,
         )
         self.memory = MemoryClient(self._memory_engine)
@@ -245,13 +246,13 @@ class AstraCoreClient:
 
         # Heavy resource initialization — kept here so __init__ never raises
         self._memory = HybridMemoryAdapter(
-            redis_url=cfg.memory.redis_url,
-            db_url=cfg.memory.db_url,
+            redis_url=cfg.storage.redis_url,
+            db_url=cfg.storage.db_url,
         )
         self._rag_pipeline = RAGPipeline(
             retriever=ChromaRetrieverAdapter(
-                collection_name=cfg.retrieval.collection_name,
-                persist_directory=cfg.retrieval.persist_directory,
+                collection_name=cfg.storage.vector.collection_name,
+                persist_directory=cfg.storage.vector.persist_directory,
             )
         )
 
@@ -259,16 +260,16 @@ class AstraCoreClient:
         from astracore.infrastructure.tools.native import NativeToolAdapter  # noqa: PLC0415
         from astracore.modules.tools.builtin import build_tool_adapter  # noqa: PLC0415
 
-        builtin_adapter = build_tool_adapter(db_url=cfg.memory.db_url)
+        builtin_adapter = build_tool_adapter(db_url=cfg.storage.db_url)
         self._user_adapter = NativeToolAdapter()
         self._tool_adapter = CompositeToolAdapter([builtin_adapter, self._user_adapter])
 
         self._pipeline = self._build_pipeline()
 
         # Async initialization
-        await init_db(cfg.memory.db_url)
+        await init_db(cfg.storage.db_url)
         try:
-            await seed_builtin_skills(cfg.memory.db_url, extra_skill_dirs=cfg.skills.extra_dirs)
+            await seed_builtin_skills(cfg.storage.db_url, extra_skill_dirs=cfg.skills.extra_dirs)
         except Exception:
             logger.warning("内置 Skill 种子写入失败，继续启动")
 
@@ -306,7 +307,13 @@ class AstraCoreClient:
             config=cfg,
             memory=self._memory,
             rag_pipeline=self._rag_pipeline,
-            policy=PolicyEngine(),
+            policy=PolicyEngine(
+                config=_EnginePolicyConfig(
+                    retry=cfg.policy.retry,
+                    timeout=cfg.policy.timeout,
+                    compaction=cfg.policy.compaction,
+                )
+            ),
             tool_adapter=self._tool_adapter,
             memory_engine=self._memory_engine,
             vector_adapter=self._vector_adapter,
@@ -335,8 +342,10 @@ class AstraCoreClient:
         model_profile: str | None = None,
         temperature: float | None = None,
         use_tools: bool = False,
-        enable_thinking: bool = False,
+        thinking_mode: str | None = None,
         thinking_budget: int = 8000,
+        reasoning_effort: str | None = None,
+        verbosity: str | None = None,
         enable_rag: bool = False,
         enable_web: bool = False,
     ) -> Conversation:
@@ -364,8 +373,10 @@ class AstraCoreClient:
                 model_profile=model_profile,
                 temperature=temperature,
                 use_tools=use_tools,
-                enable_thinking=enable_thinking,
+                thinking_mode=thinking_mode,
                 thinking_budget=thinking_budget,
+                reasoning_effort=reasoning_effort,
+                verbosity=verbosity,
                 enable_rag=enable_rag,
                 enable_web=enable_web,
             ),
@@ -384,8 +395,10 @@ class AstraCoreClient:
         model_profile: str | None = None,
         temperature: float | None = None,
         use_tools: bool = False,
-        enable_thinking: bool = False,
+        thinking_mode: str | None = None,
         thinking_budget: int = 8000,
+        reasoning_effort: str | None = None,
+        verbosity: str | None = None,
         enable_rag: bool = False,
         enable_web: bool = False,
     ) -> AsyncIterator[StreamEvent]:
@@ -404,8 +417,10 @@ class AstraCoreClient:
                 model_profile=model_profile,
                 temperature=temperature,
                 use_tools=use_tools,
-                enable_thinking=enable_thinking,
+                thinking_mode=thinking_mode,
                 thinking_budget=thinking_budget,
+                reasoning_effort=reasoning_effort,
+                verbosity=verbosity,
                 enable_rag=enable_rag,
                 enable_web=enable_web,
             ),
@@ -426,8 +441,10 @@ class AstraCoreClient:
         model_profile: str | None = None,
         temperature: float | None = None,
         use_tools: bool = False,
-        enable_thinking: bool = False,
+        thinking_mode: str | None = None,
         thinking_budget: int = 8000,
+        reasoning_effort: str | None = None,
+        verbosity: str | None = None,
         enable_rag: bool = False,
         enable_web: bool = False,
     ) -> ChatResult:
@@ -446,8 +463,10 @@ class AstraCoreClient:
                 model_profile=model_profile,
                 temperature=temperature,
                 use_tools=use_tools,
-                enable_thinking=enable_thinking,
+                thinking_mode=thinking_mode,
                 thinking_budget=thinking_budget,
+                reasoning_effort=reasoning_effort,
+                verbosity=verbosity,
                 enable_rag=enable_rag,
                 enable_web=enable_web,
             ),
@@ -491,7 +510,7 @@ class AstraCoreClient:
     async def list_skills(self) -> list[dict[str, Any]]:
         """Return all skills sorted by sort_order."""
         self._require_initialized()
-        async with get_session(self.config.memory.db_url) as db:
+        async with get_session(self.config.storage.db_url) as db:
             result = await db.execute(select(SkillRow).order_by(SkillRow.sort_order))
             rows = result.scalars().all()
         return [

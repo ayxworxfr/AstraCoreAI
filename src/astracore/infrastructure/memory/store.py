@@ -261,6 +261,15 @@ class SQLMemoryStore(MemoryStore):
                 await db.delete(row)
                 await db.commit()
 
+    async def delete_memories_by_ids(self, ids: list[str]) -> int:
+        if not ids:
+            return 0
+        stmt = delete(StructuredMemoryRow).where(StructuredMemoryRow.id.in_(ids))
+        async with get_session(self._db_url) as db:
+            result = await db.execute(stmt)
+            await db.commit()
+            return int(getattr(result, "rowcount", 0) or 0)
+
     async def delete_memories(
         self,
         *,

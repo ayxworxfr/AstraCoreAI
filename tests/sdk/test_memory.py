@@ -8,7 +8,7 @@ import pytest
 from astracore.infrastructure.db.session import get_engine
 from astracore.modules.memory.domain import MemoryScope, MemoryStatus, MemoryType
 from astracore.sdk.client import AstraCoreClient
-from astracore.sdk.config import AstraCoreConfig, LLMConfig, LLMProfileConfig, MemoryConfig
+from astracore.sdk.config import AstraCoreConfig, LLMConfig, LLMProfileConfig, StorageConfig
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ async def sdk_client(tmp_path):
                 )
             ],
         ),
-        memory=MemoryConfig(redis_url="redis://localhost:6379/0", db_url=db_url),
+        storage=StorageConfig(redis_url="redis://localhost:6379/0", db_url=db_url),
     )
     async with AstraCoreClient(config=config) as client:
         yield client

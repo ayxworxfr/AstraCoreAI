@@ -51,3 +51,8 @@ export async function updateMemory(id: string, body: MemoryUpdateRequest): Promi
 export async function deleteMemory(id: string): Promise<void> {
   await apiClient.delete(`/api/v1/memory/${id}`);
 }
+
+export async function deleteMemoryBatch(ids: string[]): Promise<number> {
+  const { data } = await apiClient.post<{ deleted: number }>('/api/v1/memory/batch-delete', { ids });
+  return data.deleted;
+}

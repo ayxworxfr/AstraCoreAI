@@ -19,7 +19,7 @@ router = APIRouter()
 
 @lru_cache(maxsize=1)
 def _get_db_url() -> str:
-    return AstraCoreConfig().memory.db_url
+    return AstraCoreConfig().storage.db_url
 
 
 def _get_user_engine(user_id: str) -> MemoryEngine:

@@ -33,7 +33,7 @@ async def chat_history_db(tmp_path, monkeypatch):
     monkeypatch.setattr(
         chat,
         "_get_settings",
-        lambda: SimpleNamespace(memory=SimpleNamespace(db_url=db_url)),
+        lambda: SimpleNamespace(storage=SimpleNamespace(db_url=db_url)),
     )
 
     yield db_url

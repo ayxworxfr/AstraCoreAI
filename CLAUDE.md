@@ -57,6 +57,7 @@ src/astracore/
 │   ├── skills/       # Skill CRUD, SKILL.md loader, skill tools
 │   ├── tools/        # Native tool registration (builtin.py)
 │   ├── agent/        # Multi-agent DAG workflow
+│   ├── scheduling/   # APScheduler-backed cron/interval/date task scheduling
 │   ├── projects/     # Project CRUD and conversation bindings
 │   ├── settings/     # Per-user settings (ai_name, owner_name, global_instruction)
 │   ├── system/       # Health / system info endpoints
@@ -107,6 +108,8 @@ The injection_guard in the system prompt instructs the LLM to treat tagged conte
 - `ask_user` built-in tool pauses the tool loop and sends a `PendingQuestion` to the frontend via `hitl_callback`
 - Memory promotion with `require_memory_promotion_approval = true` creates a pending record instead of promoting
 - Timeout: `hitl.inline_question_timeout` seconds (default 300), then auto-resumes
+
+**Scheduled Tasks** (`modules/scheduling/`): APScheduler drives `cron`, `interval`, and one-shot `date` triggers. Each task stores a prompt; when fired, it runs through `ChatPipeline` and the resulting `conversation_id` is written back to the task row. The service layer (`task_service.py`) syncs every create/update/delete/pause/resume with the in-process APScheduler instance. Batch delete uses `DELETE WHERE id IN (...)` + `.returning()` to collect deleted IDs before removing the corresponding APScheduler jobs.
 
 **Active Skill Enforcement**: `_detect_active_skill()` scans recent messages for `load_skill` calls (via `metadata["skill_loaded"]` after save, or live `tool_calls` in-session). If found, appends a mandatory reload instruction to the system prompt.
 

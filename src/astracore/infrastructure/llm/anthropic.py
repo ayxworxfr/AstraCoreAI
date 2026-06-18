@@ -180,16 +180,30 @@ class AnthropicAdapter(LLMAdapter):
         system = self._get_system_message(messages)
         converted_messages = self._convert_messages(messages)
 
+        enable_prompt_cache: bool = kwargs.get("enable_prompt_cache", False)
+        top_p: float | None = kwargs.get("top_p", None)
+        stop_sequences: list[str] = kwargs.get("stop_sequences", [])
+
         request_params: dict[str, Any] = {
             "model": model,
             "messages": converted_messages,
             "max_tokens": max_tokens,
         }
-        if self.supports_temperature:
+        # temperature 和 top_p 互斥，设了 top_p 就不发 temperature
+        if self.supports_temperature and top_p is None:
             request_params["temperature"] = temperature
 
-        if system:
+        if enable_prompt_cache and system:
+            request_params["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
+        elif system:
             request_params["system"] = system
+
+        if top_p is not None:
+            request_params["top_p"] = top_p
+        if stop_sequences:
+            request_params["stop_sequences"] = stop_sequences
 
         if response_format is not None:
             schema = response_format.model_json_schema()
@@ -256,13 +270,19 @@ class AnthropicAdapter(LLMAdapter):
         """Generate a streaming response.
 
         额外支持的 kwargs：
-        - enable_thinking (bool): 开启 Claude Extended Thinking
-        - thinking_budget (int): thinking token 预算，默认 8000
+        - thinking_mode (str | None): 'on' = 标准 thinking，'adaptive' = 自适应（Opus 4.7+），'off' = 禁用
+        - thinking_budget (int): thinking token 预算，仅 thinking_mode='on' 时生效
+        - enable_prompt_cache (bool): 开启 Anthropic prompt caching
+        - top_p (float | None): 核采样概率
+        - stop_sequences (list[str]): 强终止序列
         """
         import json as _json
 
-        enable_thinking: bool = kwargs.get("enable_thinking", False)
+        thinking_mode: str | None = kwargs.get("thinking_mode", None)
         thinking_budget: int = kwargs.get("thinking_budget", 8000)
+        enable_prompt_cache: bool = kwargs.get("enable_prompt_cache", False)
+        top_p: float | None = kwargs.get("top_p", None)
+        stop_sequences: list[str] = kwargs.get("stop_sequences", [])
 
         client = self._get_client()
         model = model or self.default_model
@@ -276,17 +296,35 @@ class AnthropicAdapter(LLMAdapter):
             "messages": converted_messages,
             "max_tokens": max_tokens,
         }
-        if self.supports_temperature:
-            # Extended Thinking 要求 temperature=1，普通模式保留用户设置
-            request_params["temperature"] = 1.0 if enable_thinking else temperature
+        # Anthropic: thinking 模式下 top_p 必须 ≥ 0.95 或不发送
+        if thinking_mode in ("on", "adaptive") and top_p is not None and top_p < 0.95:
+            top_p = None
 
-        if system:
+        if self.supports_temperature:
+            if thinking_mode == "on":
+                # Extended Thinking 要求 temperature=1，且不能与 top_p 同时发送
+                request_params["temperature"] = 1.0
+                top_p = None
+            elif top_p is None:
+                # top_p 已设置时跳过 temperature，两者互斥
+                request_params["temperature"] = temperature
+
+        if enable_prompt_cache and system:
+            request_params["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
+        elif system:
             request_params["system"] = system
+
+        if top_p is not None:
+            request_params["top_p"] = top_p
+        if stop_sequences:
+            request_params["stop_sequences"] = stop_sequences
 
         if "tools" in kwargs:
             request_params["tools"] = kwargs["tools"]
 
-        if enable_thinking:
+        if thinking_mode == "on":
             # Anthropic: max_tokens is the *total* budget (thinking + text output).
             # If thinking_budget is close to max_tokens, almost no tokens remain for
             # the visible response. Ensure at least 8192 tokens for text output.
@@ -297,6 +335,10 @@ class AnthropicAdapter(LLMAdapter):
                 "type": "enabled",
                 "budget_tokens": thinking_budget,
             }
+        elif thinking_mode == "adaptive":
+            # Opus 4.7+: adaptive thinking manages the budget automatically; budget_tokens
+            # is not accepted and triggers an API error if sent.
+            request_params["thinking"] = {"type": "enabled"}
 
         # index → {kind, ...}
         block_buffers: dict[int, dict[str, Any]] = {}

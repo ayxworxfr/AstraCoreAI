@@ -74,8 +74,10 @@ export type ChatRequest = {
   session_id?: string;
   model_profile?: string;
   temperature?: number;
-  enable_thinking?: boolean;
+  thinking_mode?: string;
   thinking_budget?: number;
+  reasoning_effort?: string;
+  verbosity?: string;
   enable_rag?: boolean;
   use_tools?: boolean;
   enable_web?: boolean;

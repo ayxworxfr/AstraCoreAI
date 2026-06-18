@@ -80,6 +80,11 @@ class MemoryStore(ABC):
         pass
 
     @abstractmethod
+    async def delete_memories_by_ids(self, ids: list[str]) -> int:
+        """Delete memories whose id is in *ids* in a single statement."""
+        pass
+
+    @abstractmethod
     async def delete_memories(
         self,
         *,

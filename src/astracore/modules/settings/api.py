@@ -1,5 +1,6 @@
 """User settings API endpoints."""
 
+import json
 from datetime import UTC, datetime
 from functools import lru_cache
 
@@ -17,6 +18,8 @@ router = APIRouter()
 _SETTINGS_KEYS = {
     "global_instruction",
     "temperature",
+    "top_p",
+    "stop_sequences",
     "rag_top_k",
     "context_max_messages",
     "ai_name",
@@ -28,34 +31,40 @@ _SETTINGS_KEYS = {
 _SETTINGS_DEFAULTS: dict[str, str] = {
     "global_instruction": "",
     "temperature": "0.7",
+    "top_p": "",
+    "stop_sequences": "",
     "rag_top_k": "4",
     "context_max_messages": "20",
     "ai_name": "小卡",
     "owner_name": "",
     "timezone": "Asia/Shanghai",
-    "thinking_collapse_mode": "auto",
+    "thinking_collapse_mode": "always_collapsed",
 }
 
 
 @lru_cache(maxsize=1)
 def _db_url() -> str:
-    return AstraCoreConfig().memory.db_url
+    return AstraCoreConfig().storage.db_url
 
 
 class UserSettingsResponse(BaseModel):
     global_instruction: str = ""
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    top_p: float | None = None
+    stop_sequences: list[str] = Field(default_factory=list)
     rag_top_k: int = Field(default=4, ge=1, le=20)
     context_max_messages: int = Field(default=20, ge=4, le=200)
     ai_name: str = "小卡"
     owner_name: str = ""
     timezone: str = "Asia/Shanghai"
-    thinking_collapse_mode: str = "auto"
+    thinking_collapse_mode: str = "always_collapsed"
 
 
 class UserSettingsUpdate(BaseModel):
     global_instruction: str | None = None
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    stop_sequences: list[str] | None = Field(default=None, max_length=4)
     rag_top_k: int | None = Field(default=None, ge=1, le=20)
     context_max_messages: int | None = Field(default=None, ge=4, le=200)
     ai_name: str | None = None
@@ -74,9 +83,20 @@ def _build_response(data: dict[str, str]) -> UserSettingsResponse:
     def _get(key: str) -> str:
         return data.get(key, _SETTINGS_DEFAULTS[key])
 
+    raw_top_p = _get("top_p")
+    raw_stop = _get("stop_sequences")
+    try:
+        stop_seqs: list[str] = json.loads(raw_stop) if raw_stop else []
+        if not isinstance(stop_seqs, list):
+            stop_seqs = []
+    except (ValueError, TypeError):
+        stop_seqs = []
+
     return UserSettingsResponse(
         global_instruction=_get("global_instruction"),
         temperature=float(_get("temperature")),
+        top_p=float(raw_top_p) if raw_top_p else None,
+        stop_sequences=stop_seqs,
         rag_top_k=int(_get("rag_top_k")),
         context_max_messages=int(_get("context_max_messages")),
         ai_name=_get("ai_name"),
@@ -99,9 +119,17 @@ async def update_settings(
     body: UserSettingsUpdate,
     current_user: UserRow = Depends(get_current_user),
 ) -> UserSettingsResponse:
-    patch: dict[str, str] = {
-        k: str(v) for k, v in body.model_dump().items() if v is not None and k in _SETTINGS_KEYS
-    }
+    patch: dict[str, str] = {}
+    for k in body.model_fields_set:
+        if k not in _SETTINGS_KEYS:
+            continue
+        v = getattr(body, k)
+        if v is None:
+            patch[k] = ""  # 显式清空 → 存空字符串，读回时还原为 null / 默认值
+        elif isinstance(v, list):
+            patch[k] = json.dumps(v, ensure_ascii=False)
+        else:
+            patch[k] = str(v)
     async with get_session(_db_url()) as db:
         for key, value in patch.items():
             row = await db.get(UserSettingsRow, {"user_id": current_user.id, "key": key})

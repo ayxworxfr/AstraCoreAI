@@ -159,6 +159,8 @@ class OpenAIAdapter(LLMAdapter):
         model: str,
         max_tokens: int,
         temperature: float,
+        reasoning_effort: str | None = None,
+        verbosity: str | None = None,
     ) -> LLMResponse:
         client = self._get_client()
         instructions, input_messages = self._responses_input(messages)
@@ -170,6 +172,10 @@ class OpenAIAdapter(LLMAdapter):
         }
         if instructions:
             request_params["instructions"] = instructions
+        if reasoning_effort:
+            request_params["reasoning"] = {"effort": reasoning_effort}
+        if verbosity:
+            request_params["text"] = {"format": {"verbosity": verbosity, "type": "text"}}
 
         response = await client.responses.create(**request_params)
         return LLMResponse(
@@ -185,6 +191,8 @@ class OpenAIAdapter(LLMAdapter):
         model: str,
         max_tokens: int,
         temperature: float,
+        reasoning_effort: str | None = None,
+        verbosity: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         client = self._get_client()
         instructions, input_messages = self._responses_input(messages)
@@ -196,6 +204,10 @@ class OpenAIAdapter(LLMAdapter):
         }
         if instructions:
             request_params["instructions"] = instructions
+        if reasoning_effort:
+            request_params["reasoning"] = {"effort": reasoning_effort}
+        if verbosity:
+            request_params["text"] = {"format": {"verbosity": verbosity, "type": "text"}}
 
         async with client.responses.stream(**request_params) as stream:
             async for event in stream:
@@ -239,9 +251,14 @@ class OpenAIAdapter(LLMAdapter):
                 model=model,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                reasoning_effort=kwargs.get("reasoning_effort"),
+                verbosity=kwargs.get("verbosity"),
             )
 
         converted_messages = self._convert_messages(messages)
+
+        top_p: float | None = kwargs.get("top_p", None)
+        stop_sequences: list[str] = kwargs.get("stop_sequences", [])
 
         request_params: dict[str, Any] = {
             "model": model,
@@ -249,6 +266,14 @@ class OpenAIAdapter(LLMAdapter):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        if top_p is not None:
+            request_params["top_p"] = top_p
+        if stop_sequences:
+            request_params["stop"] = stop_sequences
+
+        service_tier: str | None = kwargs.get("service_tier")
+        if service_tier:
+            request_params["service_tier"] = service_tier
 
         if response_format is not None:
             schema = response_format.model_json_schema()
@@ -330,11 +355,16 @@ class OpenAIAdapter(LLMAdapter):
                 model=model,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                reasoning_effort=kwargs.get("reasoning_effort"),
+                verbosity=kwargs.get("verbosity"),
             ):
                 yield event
             return
 
         converted_messages = self._convert_messages(messages)
+
+        top_p: float | None = kwargs.get("top_p", None)
+        stop_sequences: list[str] = kwargs.get("stop_sequences", [])
 
         request_params: dict[str, Any] = {
             "model": model,
@@ -342,7 +372,16 @@ class OpenAIAdapter(LLMAdapter):
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
+        if top_p is not None:
+            request_params["top_p"] = top_p
+        if stop_sequences:
+            request_params["stop"] = stop_sequences
+
+        service_tier_s: str | None = kwargs.get("service_tier")
+        if service_tier_s:
+            request_params["service_tier"] = service_tier_s
 
         tools = self._tools_for_openai(kwargs)
         if tools:
@@ -352,9 +391,15 @@ class OpenAIAdapter(LLMAdapter):
 
         tool_call_buffer: dict[str, dict[str, Any]] = {}
         tool_call_index_map: dict[int, str] = {}
+        _input_tokens = 0
+        _output_tokens = 0
 
         async for chunk in stream:
             if not chunk.choices:
+                # stream_options.include_usage delivers usage on a choices=[] chunk at end
+                if chunk.usage:
+                    _input_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                    _output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
                 continue
 
             delta = chunk.choices[0].delta
@@ -434,7 +479,10 @@ class OpenAIAdapter(LLMAdapter):
             else:
                 yield StreamEvent(event_type=StreamEventType.TOOL_CALL, tool_call=tool_call)
 
-        yield StreamEvent(event_type=StreamEventType.DONE)
+        yield StreamEvent(
+            event_type=StreamEventType.DONE,
+            metadata={"usage": {"input_tokens": _input_tokens, "output_tokens": _output_tokens}},
+        )
 
     async def count_tokens(self, messages: list[Message]) -> int:
         """Count tokens in messages."""

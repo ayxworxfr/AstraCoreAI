@@ -32,6 +32,8 @@ export type UpdateSkillRequest = {
 export type UserSettings = {
   global_instruction: string;
   temperature: number;
+  top_p: number | null;
+  stop_sequences: string[];
   rag_top_k: number;
   context_max_messages: number;
   ai_name: string;

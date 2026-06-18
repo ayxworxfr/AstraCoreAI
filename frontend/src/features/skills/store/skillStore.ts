@@ -30,6 +30,8 @@ export const useSkillStore = create<SkillStore>()((set) => ({
   settings: {
     global_instruction: '',
     temperature: 0.7,
+    top_p: null,
+    stop_sequences: [],
     rag_top_k: 4,
     context_max_messages: 20,
     ai_name: '小卡',

@@ -34,10 +34,10 @@ AstraCoreAI 的对话流程分为两个严格分离的阶段：
 
 当对话历史过长时，`HistoryCompactor` 自动触发压缩，避免超出模型上下文窗口限制：
 
-- **context_window**：200,000 tokens（Claude 最大上下文）
-- **触发条件**：估算当前历史 token 数超过 `context_window × _TRIGGER_RATIO`（`_TRIGGER_RATIO = 0.5`，即 100,000 tokens）
-- **压缩方式**：调用 LLM 对历史对话生成结构化摘要，并通过 MemoryEngine 持久化为 `summary` 类型记忆
-- **失败回退**：LLM 压缩失败时自动回退到尾部裁剪（保留最近 N 轮），确保系统不中断
+- **context_window**：由 `policy.compaction.context_window_tokens` 配置（默认 100,000，预留输出空间）
+- **触发条件**：估算 token 数超过 `context_window_tokens × trigger_ratio`（默认 0.5，即 50,000 tokens）
+- **压缩方式**：调用 LLM 对最旧的 `compact_batch_ratio` 比例消息生成结构化摘要，通过 MemoryEngine 持久化为 `summary` 类型记忆
+- **失败回退**：LLM 压缩失败时自动回退到尾部裁剪（保留最近 `default_max_messages` 或用户 `context_max_messages`），确保系统不中断
 
 `stream()` 在每次生成前调用 `maybe_compact()`，只有估算 token 数超过阈值时才实际执行压缩操作。
 

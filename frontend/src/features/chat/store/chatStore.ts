@@ -101,7 +101,7 @@ type ChatStore = {
   /** loadMoreMessages 专用 loading flag，与 loadMessages 互不阻塞 */
   isLoadingMoreMessages: boolean;
   useStream: boolean;
-  enableThinking: boolean;
+  thinkingMode: 'off' | 'on' | 'adaptive';
   enableRag: boolean;
   enableTools: boolean;
   enableWeb: boolean;
@@ -127,7 +127,7 @@ type ChatStore = {
   clearConversation: (id: string) => void;
   togglePin: (id: string) => void;
   setUseStream: (value: boolean) => void;
-  setEnableThinking: (value: boolean) => void;
+  setThinkingMode: (mode: 'off' | 'on' | 'adaptive') => void;
   setEnableRag: (value: boolean) => void;
   setEnableTools: (value: boolean) => void;
   setEnableWeb: (value: boolean) => void;
@@ -156,7 +156,7 @@ export const useChatStore = create<ChatStore>()(
       isLoadingMessages: false,
       isLoadingMoreMessages: false,
       useStream: true,
-      enableThinking: false,
+      thinkingMode: 'off',
       enableRag: false,
       enableTools: false,
       enableWeb: false,
@@ -325,7 +325,7 @@ export const useChatStore = create<ChatStore>()(
       },
 
       setUseStream: (value) => set({ useStream: value }),
-      setEnableThinking: (value) => set({ enableThinking: value }),
+      setThinkingMode: (mode) => set({ thinkingMode: mode }),
       setEnableRag: (value) => set({ enableRag: value }),
       setEnableTools: (value) => set({ enableTools: value }),
       setEnableWeb: (value) => set({ enableWeb: value }),
@@ -766,7 +766,7 @@ export const useChatStore = create<ChatStore>()(
 
       sendMessage: async (prompt) => {
         const {
-          activeConversationId, useStream, enableThinking, enableRag, enableTools, enableWeb,
+          activeConversationId, useStream, thinkingMode, enableRag, enableTools, enableWeb,
           activeModelId, conversations,
         } = get();
         const trimmed = prompt.trim();
@@ -787,13 +787,13 @@ export const useChatStore = create<ChatStore>()(
           createdAt: nowIso(),
         };
         const assistantId = uuid();
-        const thinkingMode = enableThinking ? 'deep' : 'normal';
+        const msgThinkingMode = thinkingMode !== 'off' ? 'deep' : 'normal';
         const assistantMsg: ChatMessage = {
           id: assistantId,
           role: 'assistant',
           content: '',
           thinkingBlocks: undefined,
-          thinkingMode,
+          thinkingMode: msgThinkingMode,
           status: 'streaming',
           createdAt: nowIso(),
         };
@@ -855,11 +855,12 @@ export const useChatStore = create<ChatStore>()(
             const thinkingBlocks: string[] = [];
             const getUpdatedBlocks = () => (thinkingBlocks.length ? [...thinkingBlocks] : undefined);
 
+            const { thinkingMode } = get();
             const run = await createChatRun({
               message: trimmed,
               session_id: activeConversationId,
               model_profile: activeModelId ?? undefined,
-              enable_thinking: enableThinking,
+              thinking_mode: thinkingMode !== 'off' ? thinkingMode : undefined,
               enable_rag: enableRag,
               use_tools: enableTools || enableWeb,
               enable_web: enableWeb,
@@ -1148,7 +1149,7 @@ export const useChatStore = create<ChatStore>()(
         // 对话列表由后端 DB 维护，localStorage 只保留活跃会话 ID 和全局 UI 偏好
         activeConversationId: s.activeConversationId,
         useStream: s.useStream,
-        enableThinking: s.enableThinking,
+        thinkingMode: s.thinkingMode,
         enableRag: s.enableRag,
         enableTools: s.enableTools,
         enableWeb: s.enableWeb,

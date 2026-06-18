@@ -233,12 +233,10 @@ function LLMInfoTab(): JSX.Element {
 // ─── 运行参数 Tab ──────────────────────────────────────────────────────────────
 
 const DIVIDER_STYLE: React.CSSProperties = {
-  borderBottom: '1px solid rgba(5, 5, 5, 0.06)',
-  paddingBottom: 20,
-  marginBottom: 20,
+  height: '100%',
 };
 
-function ParamRow({
+function ParamCard({
   title,
   description,
   children,
@@ -250,20 +248,97 @@ function ParamRow({
   style?: React.CSSProperties;
 }) {
   return (
-    <Flex align="center" justify="space-between" gap={32} style={style}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <Typography.Text strong style={{ fontSize: 14 }}>
-          {title}
-        </Typography.Text>
-        <Typography.Text
-          type="secondary"
-          style={{ display: 'block', fontSize: 12, marginTop: 3, lineHeight: 1.6 }}
+    <Card
+      size="small"
+      style={{
+        borderRadius: 14,
+        background: '#fff',
+        boxShadow: '0 1px 2px rgba(15, 23, 42, 0.04)',
+        ...style,
+      }}
+      styles={{ body: { padding: 16 } }}
+    >
+      <Flex vertical gap={14} style={{ height: '100%' }}>
+        <div style={{ minHeight: 74 }}>
+          <Typography.Text strong style={{ fontSize: 14 }}>
+            {title}
+          </Typography.Text>
+          <Typography.Text
+            type="secondary"
+            style={{ display: 'block', fontSize: 12, marginTop: 4, lineHeight: 1.65 }}
+          >
+            {description}
+          </Typography.Text>
+        </div>
+        <div style={{ marginTop: 'auto' }}>{children}</div>
+      </Flex>
+    </Card>
+  );
+}
+
+function RuntimeParamsHeader({
+  saving,
+  saved,
+  onSave,
+}: {
+  saving: boolean;
+  saved: boolean;
+  onSave: () => void;
+}) {
+  return (
+    <Card
+      size="small"
+      style={{ borderRadius: 16, background: 'linear-gradient(135deg, #f8fbff 0%, #fff 58%)' }}
+      styles={{ body: { padding: 18 } }}
+    >
+      <Flex align="center" justify="space-between" gap={16}>
+        <div>
+          <Typography.Text strong style={{ fontSize: 16 }}>
+            运行参数
+          </Typography.Text>
+          <Typography.Text
+            type="secondary"
+            style={{ display: 'block', fontSize: 13, marginTop: 5, lineHeight: 1.6 }}
+          >
+            调整 AI 的生成、检索和显示行为。修改后点击保存生效。
+          </Typography.Text>
+        </div>
+        <Button
+          type="primary"
+          loading={saving}
+          onClick={onSave}
+          style={saved ? { background: '#52c41a', borderColor: '#52c41a' } : {}}
         >
-          {description}
-        </Typography.Text>
-      </div>
-      <div style={{ flexShrink: 0 }}>{children}</div>
-    </Flex>
+          {saved ? '已保存' : '保存'}
+        </Button>
+      </Flex>
+    </Card>
+  );
+}
+
+function ReferenceSection({
+  title,
+  items,
+}: {
+  title: string;
+  items: Array<{ label: string; range: string }>;
+}) {
+  return (
+    <div>
+      <Typography.Text type="secondary" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        {title}
+      </Typography.Text>
+      <Flex vertical gap={7} style={{ marginTop: 8 }}>
+        {items.map((item) => (
+          <Flex key={item.label} justify="space-between" align="center" gap={12}>
+            <Typography.Text style={{ fontSize: 12 }}>{item.label}</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+              {item.range}
+            </Typography.Text>
+          </Flex>
+        ))}
+      </Flex>
+    </div>
   );
 }
 
@@ -271,7 +346,7 @@ function RuntimeParamsTab(): JSX.Element {
   const { settings, fetchSettings, saveSettings } = useSkillStore();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [form] = Form.useForm<Pick<UserSettings, 'temperature' | 'rag_top_k' | 'context_max_messages' | 'timezone' | 'thinking_collapse_mode'>>();
+  const [form] = Form.useForm<Pick<UserSettings, 'temperature' | 'top_p' | 'stop_sequences' | 'rag_top_k' | 'context_max_messages' | 'timezone' | 'thinking_collapse_mode'>>();
 
   useEffect(() => {
     void fetchSettings();
@@ -280,6 +355,8 @@ function RuntimeParamsTab(): JSX.Element {
   useEffect(() => {
     form.setFieldsValue({
       temperature: settings.temperature,
+      top_p: settings.top_p,
+      stop_sequences: settings.stop_sequences,
       rag_top_k: settings.rag_top_k,
       context_max_messages: settings.context_max_messages,
       timezone: settings.timezone,
@@ -300,36 +377,24 @@ function RuntimeParamsTab(): JSX.Element {
   };
 
   return (
-    <Flex gap={24} align="flex-start">
+    <Flex gap={20} align="flex-start" style={{ maxWidth: 1600, flexWrap: 'wrap' }}>
       {/* 左：表单 */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {/* 页头 */}
-        <Flex align="flex-start" justify="space-between" gap={16} style={{ marginBottom: 28 }}>
-          <div>
-            <Typography.Text strong style={{ fontSize: 15 }}>
-              运行参数
-            </Typography.Text>
-            <Typography.Text
-              type="secondary"
-              style={{ display: 'block', fontSize: 13, marginTop: 4 }}
-            >
-              调整 AI 的推理行为，修改后点击保存生效
-            </Typography.Text>
-          </div>
-          <Button
-            type="primary"
-            loading={saving}
-            onClick={() => { void handleSave(); }}
-            style={saved ? { background: '#52c41a', borderColor: '#52c41a' } : {}}
-          >
-            {saved ? '✓ 已保存' : '保存'}
-          </Button>
-        </Flex>
+      <div style={{ flex: '1 1 900px', minWidth: 0 }}>
+        <RuntimeParamsHeader
+          saving={saving}
+          saved={saved}
+          onSave={() => { void handleSave(); }}
+        />
 
-        <Form form={form}>
+        <Form form={form} style={{ marginTop: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
           {/* Temperature */}
-          <div style={DIVIDER_STYLE}>
-            <Flex align="center" justify="space-between" gap={16} style={{ marginBottom: 12 }}>
+          <Card
+            size="small"
+            style={{ gridColumn: '1 / -1', borderRadius: 14, boxShadow: '0 1px 2px rgba(15, 23, 42, 0.04)' }}
+            styles={{ body: { padding: 16 } }}
+          >
+            <Flex align="flex-start" justify="space-between" gap={18} style={{ marginBottom: 12 }}>
               <div>
                 <Typography.Text strong style={{ fontSize: 14 }}>
                   Temperature
@@ -347,7 +412,7 @@ function RuntimeParamsTab(): JSX.Element {
                     min={0}
                     max={2}
                     step={0.05}
-                    style={{ width: 90 }}
+                    style={{ width: 96 }}
                     value={(getFieldValue('temperature') as number) ?? 0.7}
                     onChange={(v) => setFieldValue('temperature', v ?? 0.7)}
                   />
@@ -357,54 +422,84 @@ function RuntimeParamsTab(): JSX.Element {
             <Form.Item name="temperature" noStyle rules={[{ required: true }]}>
               <Slider min={0} max={2} step={0.05} />
             </Form.Item>
-          </div>
+          </Card>
+
+          {/* top_p */}
+          <ParamCard
+            title="Top-p 核采样"
+            description="与 Temperature 二选一使用。值越小输出越集中（0.9 = 只从概率最高的 90% token 中采样）。留空则使用 provider 默认值。"
+            style={DIVIDER_STYLE}
+          >
+            <Form.Item name="top_p" noStyle>
+              <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} placeholder="默认" />
+            </Form.Item>
+          </ParamCard>
+
+          {/* stop_sequences */}
+          <ParamCard
+            title="终止序列"
+            description="遇到这些字符串时强制停止输出，最多 4 条。通常用于结构化生成场景（如 <END>）。"
+            style={DIVIDER_STYLE}
+          >
+            <Form.Item name="stop_sequences" noStyle>
+              <Select
+                mode="tags"
+                style={{ width: '100%' }}
+                placeholder="输入后按 Enter 添加"
+                maxCount={4}
+                tokenSeparators={[',']}
+                open={false}
+              />
+            </Form.Item>
+          </ParamCard>
 
           {/* RAG top_k */}
-          <ParamRow
+          <ParamCard
             title="RAG 检索数量"
             description="开启知识库检索时，每次从向量库中召回的文档片段数量（top_k）。数量越多上下文越丰富，延迟也越高。"
             style={DIVIDER_STYLE}
           >
             <Form.Item name="rag_top_k" noStyle rules={[{ required: true }]}>
-              <InputNumber min={1} max={20} style={{ width: 120 }} addonAfter="条" />
+              <InputNumber min={1} max={20} style={{ width: '100%' }} addonAfter="条" />
             </Form.Item>
-          </ParamRow>
+          </ParamCard>
 
           {/* Context length */}
-          <ParamRow
+          <ParamCard
             title="对话上下文长度"
             description="每次请求发送给 LLM 的历史消息条数上限。值越大对话记忆越长，消耗的 Token 也越多。"
             style={DIVIDER_STYLE}
           >
             <Form.Item name="context_max_messages" noStyle rules={[{ required: true }]}>
-              <InputNumber min={4} max={200} style={{ width: 120 }} addonAfter="条" />
+              <InputNumber min={4} max={200} style={{ width: '100%' }} addonAfter="条" />
             </Form.Item>
-          </ParamRow>
+          </ParamCard>
 
-          <ParamRow
+          <ParamCard
             title="显示时区"
             description="控制前端所有时间展示和会话日期分组。默认使用北京时间。"
             style={DIVIDER_STYLE}
           >
             <Form.Item name="timezone" noStyle rules={[{ required: true }]}>
-              <Select options={TIMEZONE_OPTIONS} style={{ width: 260 }} />
+              <Select options={TIMEZONE_OPTIONS} style={{ width: '100%' }} />
             </Form.Item>
-          </ParamRow>
+          </ParamCard>
 
-          <ParamRow
+          <ParamCard
             title="思考过程折叠"
             description="控制 AI 思考过程（Extended Thinking）的折叠行为。"
           >
             <Form.Item name="thinking_collapse_mode" noStyle rules={[{ required: true }]}>
               <Select
-                style={{ width: 260 }}
+                style={{ width: '100%' }}
                 options={[
-                  { value: 'auto', label: '流式时展开' },
+                  { value: 'auto', label: '流式展开' },
                   { value: 'always_collapsed', label: '始终折叠' },
                 ]}
               />
             </Form.Item>
-          </ParamRow>
+          </ParamCard>
+          </div>
         </Form>
       </div>
 
@@ -412,70 +507,63 @@ function RuntimeParamsTab(): JSX.Element {
       <Card
         size="small"
         title="参考值"
-        style={{ width: 260, flexShrink: 0 }}
-        styles={{ header: { fontSize: 13 } }}
+        style={{ width: 420, flex: '0 0 420px', borderRadius: 16, position: 'sticky', top: 0 }}
+        styles={{ header: { fontSize: 13, fontWeight: 600 }, body: { padding: 16 } }}
       >
-        <Flex vertical gap={16}>
-          <div>
-            <Typography.Text type="secondary" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Temperature
-            </Typography.Text>
-            <Flex vertical gap={4} style={{ marginTop: 6 }}>
-              {[
-                { label: '精确问答 / 代码', range: '0.1 ~ 0.4' },
-                { label: '通用对话', range: '0.5 ~ 0.8' },
-                { label: '创意写作', range: '0.9 ~ 1.2' },
-              ].map((item) => (
-                <Flex key={item.label} justify="space-between" align="center">
-                  <Typography.Text style={{ fontSize: 12 }}>{item.label}</Typography.Text>
-                  <Typography.Text type="secondary" style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
-                    {item.range}
-                  </Typography.Text>
-                </Flex>
-              ))}
-            </Flex>
-          </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '18px 20px' }}>
+          <ReferenceSection
+            title="Temperature"
+            items={[
+              { label: '精确问答 / 代码', range: '0.1 ~ 0.4' },
+              { label: '通用对话', range: '0.5 ~ 0.8' },
+              { label: '创意写作', range: '0.9 ~ 1.2' },
+            ]}
+          />
 
-          <div style={{ borderTop: '1px solid rgba(5,5,5,0.06)', paddingTop: 12 }}>
-            <Typography.Text type="secondary" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              RAG 检索数量
-            </Typography.Text>
-            <Flex vertical gap={4} style={{ marginTop: 6 }}>
-              {[
-                { label: '快速检索', range: '2 ~ 4 条' },
-                { label: '均衡', range: '4 ~ 6 条' },
-                { label: '深度召回', range: '8 ~ 12 条' },
-              ].map((item) => (
-                <Flex key={item.label} justify="space-between" align="center">
-                  <Typography.Text style={{ fontSize: 12 }}>{item.label}</Typography.Text>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {item.range}
-                  </Typography.Text>
-                </Flex>
-              ))}
-            </Flex>
-          </div>
+          <ReferenceSection
+            title="Top-p 核采样"
+            items={[
+              { label: '稳定输出', range: '0.7 ~ 0.85' },
+              { label: '通用默认', range: '0.9 ~ 0.95' },
+              { label: '开放创作', range: '0.95 ~ 1.0' },
+            ]}
+          />
 
-          <div style={{ borderTop: '1px solid rgba(5,5,5,0.06)', paddingTop: 12 }}>
-            <Typography.Text type="secondary" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              上下文长度
-            </Typography.Text>
-            <Flex vertical gap={4} style={{ marginTop: 6 }}>
-              {[
-                { label: '短对话', range: '10 ~ 20 条' },
-                { label: '项目协作', range: '30 ~ 50 条' },
-                { label: '长文档处理', range: '60+ 条' },
-              ].map((item) => (
-                <Flex key={item.label} justify="space-between" align="center">
-                  <Typography.Text style={{ fontSize: 12 }}>{item.label}</Typography.Text>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {item.range}
-                  </Typography.Text>
-                </Flex>
-              ))}
-            </Flex>
-          </div>
-        </Flex>
+          <ReferenceSection
+            title="终止序列"
+            items={[
+              { label: '结构结束', range: '<END>' },
+              { label: 'Markdown 分隔', range: '---' },
+              { label: 'JSONL 分段', range: '\\n\\n' },
+            ]}
+          />
+
+          <ReferenceSection
+            title="RAG 检索数量"
+            items={[
+              { label: '快速检索', range: '2 ~ 4 条' },
+              { label: '均衡', range: '4 ~ 6 条' },
+              { label: '深度召回', range: '8 ~ 12 条' },
+            ]}
+          />
+
+          <ReferenceSection
+            title="上下文长度"
+            items={[
+              { label: '短对话', range: '10 ~ 20 条' },
+              { label: '项目协作', range: '30 ~ 50 条' },
+              { label: '长文档处理', range: '60+ 条' },
+            ]}
+          />
+
+          <ReferenceSection
+            title="思考过程"
+            items={[
+              { label: '日常使用', range: '流式展开' },
+              { label: '减少干扰', range: '始终折叠' },
+            ]}
+          />
+        </div>
       </Card>
     </Flex>
   );

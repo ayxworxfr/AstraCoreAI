@@ -76,7 +76,7 @@ MCP 服务器在 `config.yaml` 的 `mcp.servers` 中配置。
 ## 工具执行策略
 
 - **并行执行**：同一轮 LLM 调用的多个工具并发执行（asyncio.Queue）
-- **单工具超时**：`agent.tool_timeout_s`（默认 120s）
+- **单工具超时**：`policy.timeout.tool_timeout_s`（默认 120s，0 = 不限制）
 - **结果截断**：`agent.max_tool_result_chars` 防止超长输出撑爆上下文
 - **JSON 修复**：工具参数解析失败时自动尝试修复，彻底失败则降级为错误结果让 LLM 自愈
 

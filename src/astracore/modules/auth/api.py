@@ -25,7 +25,7 @@ def _cfg() -> AstraCoreConfig:
 
 @lru_cache(maxsize=1)
 def _db_url() -> str:
-    return _cfg().memory.db_url
+    return _cfg().storage.db_url
 
 
 class TokenResponse(BaseModel):

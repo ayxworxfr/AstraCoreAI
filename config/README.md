@@ -38,6 +38,31 @@ ASTRACORE_CONFIG=config/config.local.yaml
 - `model`：传给上游服务的真实模型名。
 - `max_tokens`：单次响应最大 token 数。
 
+### 采样参数（可选）
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `top_p` | float \| null | null | 核采样概率截断（0.0–1.0）。与 `temperature` 二选一调整；null = 不发送，使用 provider 默认值。 |
+| `stop_sequences` | list[str] | [] | 强终止序列，最多 4 条。遇到列表中任意字符串时强制停止输出。OpenAI 和 Anthropic 均支持。 |
+| `enable_prompt_cache` | bool | false | 仅 `protocol: anthropic` 生效。为 system prompt 注入 `cache_control: ephemeral`，缓存命中后输入 token 成本降低约 90%。时间戳精确到分钟以保证缓存稳定性。 |
+
+### 推理控制（可选）
+
+| 字段 | 协议 | 默认值 | 说明 |
+|------|------|--------|------|
+| `thinking_mode` | anthropic | null | 思考模式：`'off'` 禁用 / `'on'` 启用扩展思考 / `'adaptive'` 自适应（Opus 4.7+ 支持，无需 budget_tokens）。null = 由 capabilities 推断。 |
+| `thinking_budget` | anthropic | 8000 | `thinking_mode: on` 时的 token 预算（≥1000）。adaptive 模式忽略此字段。 |
+| `reasoning_effort` | responses | null | GPT-5 Responses API 推理深度：`'minimal'` \| `'low'` \| `'medium'` \| `'high'`。null = 不发送，provider 默认 `medium`。 |
+| `verbosity` | responses | null | GPT-5 回答长度控制：`'low'` \| `'medium'` \| `'high'`。null = 不发送，provider 默认 `medium`。 |
+
+### 运维覆盖（可选）
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `timeout_s` | float \| null | null | 覆盖全局 `policy.timeout.llm_timeout_s`（秒）。仅对该 profile 生效，不影响其他 profile。 |
+| `max_retries` | int \| null | null | 覆盖全局 `policy.retry.max_retries`。仅对该 profile 生效。 |
+| `service_tier` | str \| null | null | Anthropic：`'priority'` \| `'standard'` \| `'batch'`。OpenAI / Responses：`'auto'` \| `'default'` \| `'flex'`。null = 不发送，使用 provider 默认值。 |
+
 ## 模型能力
 
 模型能力由 `src/astracore/sdk/model_capabilities.py` 的内置表自动推导，通常不需要在 YAML 中手写：
@@ -63,18 +88,21 @@ capabilities:
 
 只需要写需要覆盖的字段，未写字段会继续使用内置推导值。
 
-## Retrieval / RAG 配置
+## Storage 配置（数据库 / 缓存 / 向量库）
 
-`retrieval` 控制向量检索行为：
+`storage` 统一管理三类持久化层：
 
 ```yaml
-retrieval:
-  collection_name: astracore       # ChromaDB collection 名称
-  persist_directory: ./chroma_db   # 持久化目录；不填则使用内存模式（重启丢失）
-  embedding_model: all-MiniLM-L6-v2  # sentence-transformers 模型名
+storage:
+  db_url: sqlite+aiosqlite:///./astracore.db   # 全局 SQLite/PostgreSQL 连接串
+  redis_url: redis://localhost:6379/0           # Redis 连接串（记忆缓存、调度队列）
+  vector:
+    collection_name: astracore       # ChromaDB collection 名称
+    persist_directory: ./chroma_db   # 持久化目录；不填则使用内存模式（重启丢失）
+    embedding_model: all-MiniLM-L6-v2  # sentence-transformers 模型名
 ```
 
-`embedding_model` 同时用于 RAG 文档向量化和技能路由（vector 模式）。两者共享同一个模型，保证语义空间一致。
+`vector.embedding_model` 同时用于 RAG 文档向量化和技能路由（vector 模式）。两者共享同一个模型，保证语义空间一致。
 
 可选模型：
 
@@ -83,7 +111,7 @@ retrieval:
 | `all-MiniLM-L6-v2`（默认） | ~90MB | 英文 |
 | `paraphrase-multilingual-MiniLM-L12-v2` | ~420MB | 中文 / 多语言 |
 
-> ⚠️ 切换模型后，已有的向量数据与新模型不兼容，需要清空 ChromaDB 并重新索引：
+> ⚠️ 切换 `vector.embedding_model` 后，已有的向量数据与新模型不兼容，需要清空 ChromaDB 并重新索引：
 > ```bash
 > make clean-rag
 > ```
@@ -125,6 +153,52 @@ mcp:
 - `filesystem`：内置 Python filesystem server（`mcp_servers/filesystem_server.py`），无需 Node.js；提供 `read_file`、`read_multiple_files`、`write_file`、`edit_file`、`list_directory`、`create_directory`、`move_file`、`delete_file`、`search_files`、`get_file_info` 共 10 个工具；`paths` 列表限定可访问目录。
 - `shell`：使用内置受控 shell server，在允许目录内执行命令。
 - `custom`：自定义外部 MCP server，需要配置 `name`、`command`、`args`、`env`。
+
+## Policy 配置（全局重试 / 超时 / 上下文压缩）
+
+`policy` 控制 LLM 调用的重试策略、超时阈值和历史压缩参数。所有字段均有内置默认值，不填时直接生效：
+
+```yaml
+policy:
+  retry:
+    max_retries: 3                              # 总重试次数（不含首次）
+    retry_on_status_codes: [429, 500, 502, 503, 504]
+    # initial_delay_ms: 1000                   # 首次重试等待（毫秒）
+    # max_delay_ms: 30000                      # 指数退避上限（毫秒）
+    # exponential_base: 2.0                    # 退避底数
+  timeout:
+    llm_timeout_s: 180                         # LLM 调用超时（秒）
+    tool_timeout_s: 120                        # 工具执行超时（秒，0 = 不限制）
+    retrieval_timeout_s: 10                    # RAG 检索超时（秒）
+  compaction:
+    context_window_tokens: 200000              # 估算的上下文窗口
+    trigger_ratio: 0.5                         # 估算 token 超过 window*ratio 时压缩
+    compact_batch_ratio: 0.6                   # 单次压缩最旧 60% 消息
+    chars_per_token: 0.6                       # 字符到 token 的近似换算（中英混合）
+    default_max_messages: 20                   # user_settings.context_max_messages 兜底
+```
+
+字段说明：
+
+- `retry.max_retries`：失败后最多重试的次数（不含首次）。重试仅在 `retry_on_status_codes` 命中时触发，使用指数退避。
+- `retry.retry_on_status_codes`：触发重试的 HTTP 状态码列表。429（限流）和 5xx（服务端错误）是最常见场景。
+- `timeout.llm_timeout_s`：单次 LLM 流式调用的最长等待时间。Claude 长输出场景（reasoning / 长文）建议调高到 `240`（4 分钟）。
+- `timeout.tool_timeout_s`：单次工具执行的最长等待时间，`0` 表示不限制。
+- `timeout.retrieval_timeout_s`：RAG 向量检索超时。
+- `compaction.context_window_tokens`：估算的上下文窗口 token 数（Claude Sonnet/Opus 实际为 200k，按 100k 触发以预留输出空间）。
+- `compaction.trigger_ratio`：估算 token 超过 `context_window_tokens * trigger_ratio` 时触发摘要压缩。
+- `compaction.compact_batch_ratio`：单次压缩最旧 N% 的非 system 消息为一段 LLM 摘要。
+- `compaction.chars_per_token`：字符数到 token 的近似换算系数，中英混合保守值 0.6。
+- `compaction.default_max_messages`：LLM 压缩失败回退尾部裁剪时的兜底消息数；当用户设置了 `context_max_messages` 时以用户值为准。
+
+**Per-Profile 覆盖**：在 `llm.profiles[]` 中设置 `timeout_s` / `max_retries` 可以只覆盖该 profile 的值，不影响其他 profile：
+
+```yaml
+profiles:
+  - id: claude-opus
+    timeout_s: 240        # 只有 Opus 放宽到 4 分钟
+    max_retries: 5        # Opus priority tier 多重试几次
+```
 
 ## 认证配置（auth）
 

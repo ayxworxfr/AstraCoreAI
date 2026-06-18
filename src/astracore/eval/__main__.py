@@ -22,7 +22,7 @@ def _load_cases(path: str) -> list[Any]:
         options = ChatOptions(
             model_profile=item.get("model_profile"),
             use_tools=bool(item.get("use_tools", False)),
-            enable_thinking=bool(item.get("enable_thinking", False)),
+            thinking_mode=item.get("thinking_mode"),
             thinking_budget=int(item.get("thinking_budget", 8000)),
             enable_rag=bool(item.get("enable_rag", False)),
             enable_web=bool(item.get("enable_web", False)),

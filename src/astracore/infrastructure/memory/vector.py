@@ -116,6 +116,12 @@ class MemoryVectorAdapter:
         except Exception:
             pass
 
+    def _delete_batch_sync(self, ids: list[str]) -> None:
+        try:
+            self._collection.delete(ids=ids)
+        except Exception:
+            pass
+
     def _delete_by_conversation_sync(self, conversation_id: str, user_id: str) -> None:
         try:
             self._collection.delete(
@@ -189,6 +195,19 @@ class MemoryVectorAdapter:
             await loop.run_in_executor(None, lambda: self._delete_sync(memory_id))
         except Exception:
             logger.exception("MemoryVectorAdapter.delete failed for memory_id=%s", memory_id)
+
+    async def delete_batch(self, ids: list[str]) -> None:
+        """Delete multiple memories by id in a single Chroma call (no-op if unavailable)."""
+        if not ids:
+            return
+        await self._ensure_init()
+        if not self._available:
+            return
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, lambda: self._delete_batch_sync(ids))
+        except Exception:
+            logger.exception("MemoryVectorAdapter.delete_batch failed for ids=%s", ids)
 
     async def delete_by_conversation(self, conversation_id: str, *, user_id: str) -> None:
         """Delete all memories linked to a conversation (no-op if unavailable)."""

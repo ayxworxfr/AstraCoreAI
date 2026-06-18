@@ -1,11 +1,9 @@
-"""Tests for PolicyEngine — retry (tenacity), timeout, security, budget policies."""
-
-import asyncio
+"""Tests for PolicyEngine — retry (tenacity) and security policies."""
 
 import pytest
 
 from astracore.shared.policy.engine import PolicyConfig, PolicyEngine, _make_retry_predicate
-from astracore.shared.policy.rules import RetryRule, SecurityRule, TimeoutRule
+from astracore.shared.policy.rules import RetryRule, SecurityRule
 
 # ---------- _make_retry_predicate ----------
 
@@ -75,43 +73,6 @@ async def test_apply_retry_policy_does_not_retry_non_listed_status_code():
     with pytest.raises(ValueError):
         await engine.apply_retry_policy(client_error)
     assert call_count == 1  # no retries for non-listed status codes
-
-
-# ---------- apply_timeout_policy ----------
-
-
-async def test_apply_timeout_policy_raises_on_slow_function():
-    config = PolicyConfig(timeout=TimeoutRule(llm_timeout_ms=50))
-    engine = PolicyEngine(config)
-
-    async def slow():
-        await asyncio.sleep(10)
-        return "done"
-
-    with pytest.raises(asyncio.TimeoutError):
-        await engine.apply_timeout_policy(slow, timeout_type="llm")
-
-
-async def test_apply_timeout_policy_returns_result_on_fast_function():
-    engine = PolicyEngine()
-
-    async def fast():
-        return "result"
-
-    result = await engine.apply_timeout_policy(fast, timeout_type="llm")
-    assert result == "result"
-
-
-async def test_apply_timeout_policy_uses_correct_timeout_for_type():
-    # retrieval default = 10_000 ms → quick() at 10ms should succeed
-    engine = PolicyEngine()
-
-    async def quick():
-        await asyncio.sleep(0.01)
-        return "done"
-
-    result = await engine.apply_timeout_policy(quick, timeout_type="retrieval")
-    assert result == "done"
 
 
 # ---------- check_security_policy ----------

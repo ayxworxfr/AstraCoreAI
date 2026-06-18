@@ -7,6 +7,7 @@ import pytest
 
 from astracore.modules.chat.application.compactor import HistoryCompactor
 from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.shared.policy.rules import CompactionRule
 from astracore.shared.ports.llm import LLMResponse
 
 
@@ -24,6 +25,29 @@ def _assistant(content: str) -> Message:
 
 def _system(content: str) -> Message:
     return _msg(MessageRole.SYSTEM, content)
+
+
+def _make_compactor(
+    *,
+    llm: AsyncMock | None = None,
+    engine: MagicMock | None = None,
+    rule: CompactionRule | None = None,
+) -> HistoryCompactor:
+    """Build a HistoryCompactor with sensible mocks for tests that don't customise them."""
+    if llm is None:
+        llm = AsyncMock()
+        llm.generate = AsyncMock(
+            return_value=LLMResponse(content="这是一段摘要。", model="test-model")
+        )
+    if engine is None:
+        engine = MagicMock()
+        engine.create_memory = AsyncMock(return_value=None)
+    return HistoryCompactor(
+        llm_adapter=llm,
+        memory_engine=engine,
+        model="test-model",
+        rule=rule,
+    )
 
 
 @pytest.fixture
@@ -49,12 +73,12 @@ def compactor(mock_llm, mock_engine):
 
 
 def test_estimate_tokens_empty():
-    c = HistoryCompactor.__new__(HistoryCompactor)
+    c = _make_compactor()
     assert c.estimate_tokens([]) == 0
 
 
 def test_estimate_tokens_single_message():
-    c = HistoryCompactor.__new__(HistoryCompactor)
+    c = _make_compactor()
     msg = _user("hello")  # 5 chars * 0.6 = 3
     assert c.estimate_tokens([msg]) >= 1
 
@@ -79,11 +103,15 @@ def test_estimate_tokens_multiple_messages(compactor):
 
 
 @pytest.mark.asyncio
-async def test_no_compact_when_under_threshold(compactor):
+async def test_no_compact_when_under_threshold(mock_llm, mock_engine):
     """If token estimate is below threshold, messages returned unchanged."""
+    c = HistoryCompactor(
+        llm_adapter=mock_llm,
+        memory_engine=mock_engine,
+        rule=CompactionRule(context_window_tokens=200_000),
+    )
     msgs = [_user("hi"), _assistant("hello")]
-    context_window = 200_000
-    result = await compactor.maybe_compact(msgs, context_window, uuid4())
+    result = await c.maybe_compact(msgs, uuid4())
     assert result is msgs
 
 
@@ -91,24 +119,28 @@ async def test_no_compact_when_under_threshold(compactor):
 
 
 @pytest.mark.asyncio
-async def test_compact_triggered_reduces_message_count(compactor):
+async def test_compact_triggered_reduces_message_count(mock_llm, mock_engine):
     """After compaction the returned list must be shorter than the input."""
-    # Generate enough messages to exceed threshold
+    c = HistoryCompactor(
+        llm_adapter=mock_llm,
+        memory_engine=mock_engine,
+        rule=CompactionRule(context_window_tokens=1000),
+    )
     msgs = [_user("x" * 1000), _assistant("y" * 1000)] * 10  # 20 messages, large tokens
-    context_window = 1000  # very small window to force trigger
-
-    result = await compactor.maybe_compact(msgs, context_window, uuid4())
+    result = await c.maybe_compact(msgs, uuid4())
     assert len(result) < len(msgs)
 
 
 @pytest.mark.asyncio
-async def test_compact_first_message_is_summary(compactor):
+async def test_compact_first_message_is_summary(mock_llm, mock_engine):
     """After compaction the first non-system message must be the SYSTEM summary."""
+    c = HistoryCompactor(
+        llm_adapter=mock_llm,
+        memory_engine=mock_engine,
+        rule=CompactionRule(context_window_tokens=100),
+    )
     msgs = [_user("x" * 500)] * 20
-    context_window = 100
-
-    result = await compactor.maybe_compact(msgs, context_window, uuid4())
-    # Find first non-empty-content system message with compacted marker
+    result = await c.maybe_compact(msgs, uuid4())
     summary_msgs = [
         m for m in result if m.role == MessageRole.SYSTEM and m.metadata.get("compacted")
     ]
@@ -117,12 +149,15 @@ async def test_compact_first_message_is_summary(compactor):
 
 
 @pytest.mark.asyncio
-async def test_compact_persists_summary_to_memory_engine(compactor, mock_engine):
+async def test_compact_persists_summary_to_memory_engine(mock_llm, mock_engine):
     """Successful compaction must persist to memory engine."""
+    c = HistoryCompactor(
+        llm_adapter=mock_llm,
+        memory_engine=mock_engine,
+        rule=CompactionRule(context_window_tokens=100),
+    )
     msgs = [_user("x" * 500)] * 20
-    context_window = 100
-
-    await compactor.maybe_compact(msgs, context_window, uuid4())
+    await c.maybe_compact(msgs, uuid4())
     mock_engine.create_memory.assert_awaited_once()
 
 
@@ -134,13 +169,14 @@ async def test_compact_fallback_on_llm_failure(mock_engine):
     """If LLM call raises, compactor falls back to tail-trim without propagating the error."""
     bad_llm = AsyncMock()
     bad_llm.generate = AsyncMock(side_effect=RuntimeError("LLM is down"))
-    c = HistoryCompactor(llm_adapter=bad_llm, memory_engine=mock_engine)
-
+    c = HistoryCompactor(
+        llm_adapter=bad_llm,
+        memory_engine=mock_engine,
+        rule=CompactionRule(context_window_tokens=100),
+    )
     msgs = [_user("x" * 500)] * 20
-    context_window = 100
-
     # Must not raise
-    result = await c.maybe_compact(msgs, context_window, uuid4(), trim_limit=5)
+    result = await c.maybe_compact(msgs, uuid4(), trim_limit=5)
     assert len(result) <= 5
 
 
@@ -149,12 +185,13 @@ async def test_compact_fallback_preserves_message_integrity(mock_engine):
     """Fallback trim must return actual Message objects without modification."""
     bad_llm = AsyncMock()
     bad_llm.generate = AsyncMock(side_effect=Exception("fail"))
-    c = HistoryCompactor(llm_adapter=bad_llm, memory_engine=mock_engine)
-
+    c = HistoryCompactor(
+        llm_adapter=bad_llm,
+        memory_engine=mock_engine,
+        rule=CompactionRule(context_window_tokens=50),
+    )
     msgs = [_user(f"msg {i}") for i in range(30)]
-    context_window = 50
-
-    result = await c.maybe_compact(msgs, context_window, uuid4(), trim_limit=10)
+    result = await c.maybe_compact(msgs, uuid4(), trim_limit=10)
     assert all(isinstance(m, Message) for m in result)
     # Should be the last 10
     assert result == msgs[-10:]

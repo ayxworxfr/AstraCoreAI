@@ -9,6 +9,9 @@ import { apiClient } from '@/shared/services/apiClient';
 const { Header, Content } = Layout;
 
 const RAG_ENABLED = import.meta.env.VITE_FEATURE_RAG !== 'false';
+const SCHEDULING_ENABLED = import.meta.env.VITE_FEATURE_SCHEDULING !== 'false';
+const HEADER_BRAND_WIDTH = 180;
+const HEADER_USER_WIDTH = 132;
 
 export default function AppShell(): JSX.Element {
   const { theme, toggleTheme } = useSettingsStore();
@@ -47,6 +50,7 @@ export default function AppShell(): JSX.Element {
       ),
     },
     ...(RAG_ENABLED ? [{ key: '/rag', label: <NavLink to="/rag">RAG</NavLink> }] : []),
+    ...(SCHEDULING_ENABLED ? [{ key: '/scheduled-tasks', label: <NavLink to="/scheduled-tasks">任务</NavLink> }] : []),
     { key: '/system', label: <NavLink to="/system">系统</NavLink> },
   ];
 
@@ -61,14 +65,14 @@ export default function AppShell(): JSX.Element {
         style={{
           display: 'flex',
           alignItems: 'center',
-          padding: '0 20px',
+          padding: '0 16px',
           flexShrink: 0,
           height: 64,
           lineHeight: '64px',
           borderBottom: theme === 'light' ? '1px solid #e8edf2' : '1px solid rgba(255,255,255,0.06)',
         }}
       >
-        <div style={{ width: 200, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ width: HEADER_BRAND_WIDTH, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
           <RocketOutlined style={{ fontSize: 20, color: '#1677ff' }} />
           <Typography.Text strong style={{ fontSize: 15, letterSpacing: '-0.01em' }}>
             AstraCoreAI
@@ -87,11 +91,11 @@ export default function AppShell(): JSX.Element {
               lineHeight: '64px',
               fontSize: 14,
               fontWeight: 500,
-              minWidth: 380,
+              minWidth: 460,
             }}
           />
         </div>
-        <div style={{ width: 200, flexShrink: 0, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+        <div style={{ width: HEADER_USER_WIDTH, flexShrink: 0, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
           {user && (
             <Dropdown
               trigger={['click']}

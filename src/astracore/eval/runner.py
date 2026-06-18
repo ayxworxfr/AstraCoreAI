@@ -92,7 +92,7 @@ class EvalRunner:
                     session_id=session_id,
                     model_profile=opts.model_profile,
                     use_tools=opts.use_tools,
-                    enable_thinking=opts.enable_thinking,
+                    thinking_mode=opts.thinking_mode,
                     thinking_budget=opts.thinking_budget,
                     enable_rag=opts.enable_rag,
                     enable_web=opts.enable_web,

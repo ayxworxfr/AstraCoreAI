@@ -5,11 +5,13 @@ import MemoryPage from '@/features/memory/pages/MemoryPage';
 import PendingApprovalsPage from '@/features/memory/pages/PendingApprovalsPage';
 import RagPage from '@/features/rag/pages/RagPage';
 import SkillsPage from '@/features/skills/pages/SkillsPage';
+import SchedulingPage from '@/features/scheduling/pages/SchedulingPage';
 import SystemPage from '@/features/system/pages/SystemPage';
 import LoginPage from '@/features/auth/pages/LoginPage';
 import { useAuthStore } from '@/features/auth/store/authStore';
 
 const RAG_ENABLED = import.meta.env.VITE_FEATURE_RAG !== 'false';
+const SCHEDULING_ENABLED = import.meta.env.VITE_FEATURE_SCHEDULING !== 'false';
 
 function ProtectedRoute(): JSX.Element {
   const token = useAuthStore((s) => s.token);
@@ -32,6 +34,7 @@ export const router = createBrowserRouter([
           { path: 'memory/approvals', element: <PendingApprovalsPage /> },
           ...(RAG_ENABLED ? [{ path: 'rag', element: <RagPage /> }] : []),
           { path: 'skills', element: <SkillsPage /> },
+          ...(SCHEDULING_ENABLED ? [{ path: 'scheduled-tasks', element: <SchedulingPage /> }] : []),
           { path: 'system', element: <SystemPage /> },
         ],
       },

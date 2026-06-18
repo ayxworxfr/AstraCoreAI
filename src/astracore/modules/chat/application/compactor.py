@@ -7,30 +7,10 @@ from uuid import UUID
 from astracore.modules.chat.domain.message import Message, MessageRole
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.modules.memory.domain import MemoryScope, MemoryType
+from astracore.shared.policy.rules import CompactionRule
 from astracore.shared.ports.llm import LLMAdapter
 
 logger = logging.getLogger(__name__)
-
-# Characters per token coefficient (conservative estimate across CJK + English).
-# CJK chars are ~0.5 tokens each, English chars ~0.25, we use 0.6 to avoid
-# under-counting which would delay triggering compaction.
-_CHARS_PER_TOKEN = 0.6
-
-# Fraction of context window at which compaction is triggered.
-_TRIGGER_RATIO = 0.5
-
-# Fraction of oldest messages to batch into the summary.
-_COMPACT_BATCH_RATIO = 0.6
-
-
-def _estimate_message_tokens(msg: Message) -> int:
-    """Rough token count for a single message."""
-    text = msg.content or ""
-    for tc in msg.tool_calls:
-        text += str(tc.arguments)
-    for tr in msg.tool_results:
-        text += tr.content or ""
-    return max(1, int(len(text) * _CHARS_PER_TOKEN))
 
 
 class HistoryCompactor:
@@ -48,29 +28,40 @@ class HistoryCompactor:
         llm_adapter: LLMAdapter,
         memory_engine: MemoryEngine,
         model: str | None = None,
+        rule: CompactionRule | None = None,
     ) -> None:
         self._llm = llm_adapter
         self._memory_engine = memory_engine
         self._model = model
+        self._rule = rule or CompactionRule()
+
+    def _estimate_message_tokens(self, msg: Message) -> int:
+        """Rough token count for a single message (CJK + English mixed)."""
+        text = msg.content or ""
+        for tc in msg.tool_calls:
+            text += str(tc.arguments)
+        for tr in msg.tool_results:
+            text += tr.content or ""
+        return max(1, int(len(text) * self._rule.chars_per_token))
 
     def estimate_tokens(self, messages: list[Message]) -> int:
         """Estimate total token count for a list of messages."""
-        return sum(_estimate_message_tokens(m) for m in messages)
+        return sum(self._estimate_message_tokens(m) for m in messages)
 
     async def maybe_compact(
         self,
         messages: list[Message],
-        context_window: int,
         session_id: UUID,
-        trim_limit: int = 20,
+        trim_limit: int | None = None,
     ) -> list[Message]:
         """Compact history if token estimate exceeds the threshold.
 
-        Returns a new message list. On LLM failure, falls back to tail-trim.
-
-        ``trim_limit`` is the fallback message count used when LLM compaction fails.
+        Returns a new message list. On LLM failure, falls back to tail-trim using
+        ``trim_limit`` (or :attr:`CompactionRule.default_max_messages`).
         """
-        threshold = int(context_window * _TRIGGER_RATIO)
+        rule = self._rule
+        context_window = rule.context_window_tokens
+        threshold = int(context_window * rule.trigger_ratio)
         estimated = self.estimate_tokens(messages)
         if estimated <= threshold:
             return messages
@@ -86,7 +77,7 @@ class HistoryCompactor:
         non_system = [m for m in messages if m.role != MessageRole.SYSTEM]
         system_msgs = [m for m in messages if m.role == MessageRole.SYSTEM]
 
-        batch_size = max(2, int(len(non_system) * _COMPACT_BATCH_RATIO))
+        batch_size = max(2, int(len(non_system) * rule.compact_batch_ratio))
         to_compact = non_system[:batch_size]
         to_keep = non_system[batch_size:]
 
@@ -94,9 +85,10 @@ class HistoryCompactor:
             summary = await self._summarize(to_compact)
         except Exception:
             logger.warning("上下文压缩失败，回退到尾部裁剪", exc_info=True)
-            # Fallback: tail-trim to trim_limit
-            if trim_limit > 0 and len(messages) > trim_limit:
-                return messages[-trim_limit:]
+            # Fallback: tail-trim to trim_limit (configured default if not provided).
+            limit = trim_limit if trim_limit is not None else rule.default_max_messages
+            if limit > 0 and len(messages) > limit:
+                return messages[-limit:]
             return messages
 
         await self._persist_summary(summary, len(to_compact), session_id)

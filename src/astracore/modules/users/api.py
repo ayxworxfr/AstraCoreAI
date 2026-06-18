@@ -19,7 +19,7 @@ router = APIRouter()
 
 @lru_cache(maxsize=1)
 def _db_url() -> str:
-    return AstraCoreConfig().memory.db_url
+    return AstraCoreConfig().storage.db_url
 
 
 class UserResponse(BaseModel):

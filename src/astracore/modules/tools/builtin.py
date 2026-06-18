@@ -444,7 +444,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
             ToolParameter(
                 name="scope",
                 type=ToolParameterType.STRING,
-                description="范围（选填，默认 user）：user（跨会话持久）/ session（仅本次会话）/ global",
+                description="范围（选填，默认 session）：user（跨会话持久）/ session（仅本次会话）/ global",
                 required=False,
             ),
             ToolParameter(
@@ -515,10 +515,13 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         name="ask_user",
         func=_ask_user,
         description=(
-            "向用户提出一个问题并等待回复，用于在执行任务前确认关键决策、"
-            "收集缺失信息或让用户在多个选项中做出选择。"
-            "仅在真正需要用户输入才能继续的情况下使用；"
-            "不要用于可以合理推断答案的场景。"
+            "向用户提出一个问题并等待回复。"
+            "调用后执行会暂停，直到用户作答后自动继续，作答内容作为工具结果返回。\n"
+            "使用场景：\n"
+            "- 需要用户确认是否执行某个有风险或不可逆的操作\n"
+            "- 让用户在多个候选方案中做选择\n"
+            "- 缺少关键信息且无法合理推断时\n"
+            "不要为每一步都询问用户；可以推断或继续执行的场景不要使用。"
         ),
         parameters=[
             ToolParameter(
@@ -546,6 +549,197 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=False,
             ),
         ],
+    )
+
+    # ------------------------------------------------------------------
+    # Scheduling tools: schedule_task / list_scheduled_tasks / cancel_scheduled_task
+    # ------------------------------------------------------------------
+
+    async def _schedule_task(
+        prompt: str,
+        trigger_type: str,
+        trigger_config: dict[str, Any],
+        name: str | None = None,
+        timezone: str | None = None,
+        model_profile: str | None = None,
+        _context: dict[str, object] | None = None,
+    ) -> str:
+        from astracore.modules.scheduling.application.task_service import (  # noqa: PLC0415
+            ScheduledTaskService,
+        )
+        from astracore.modules.scheduling.domain.task import (  # noqa: PLC0415
+            CreateTaskRequest,
+            TriggerType,
+        )
+
+        ctx = _context or {}
+        user_id = str(ctx.get("user_id") or "default")
+        # 未显式指定时，沿用当前对话的模型 profile；都没有则使用系统默认值
+        _raw_profile = ctx.get("profile_id")
+        effective_profile: str | None = model_profile or (
+            str(_raw_profile) if _raw_profile is not None else None
+        )
+        cfg = AstraCoreConfig()
+
+        try:
+            svc = ScheduledTaskService(
+                db_url or cfg.storage.db_url, cfg.scheduling.default_timezone
+            )
+            task = await svc.create_task(
+                CreateTaskRequest(
+                    user_id=user_id,
+                    prompt=prompt,
+                    trigger_type=TriggerType(trigger_type),
+                    trigger_config=trigger_config,
+                    name=name,
+                    timezone=timezone,
+                    model_profile=effective_profile,
+                ),
+                max_per_user=cfg.scheduling.max_tasks_per_user,
+            )
+        except Exception as exc:
+            return f"创建定时任务失败：{exc}"
+
+        next_str = task.next_run_at.isoformat() if task.next_run_at else "未知"
+        return (
+            f"定时任务已创建（ID: {task.id}）\n"
+            f"名称：{task.name}\n"
+            f"触发器：{task.trigger_type.value} — {task.trigger_config}\n"
+            f"下次执行：{next_str}"
+        )
+
+    async def _list_scheduled_tasks(
+        status: str | None = None,
+        _context: dict[str, object] | None = None,
+    ) -> str:
+        from astracore.modules.scheduling.application.task_service import (  # noqa: PLC0415
+            ScheduledTaskService,
+        )
+        from astracore.modules.scheduling.domain.task import TaskFilter, TaskStatus  # noqa: PLC0415
+
+        ctx = _context or {}
+        user_id = str(ctx.get("user_id") or "default")
+        cfg = AstraCoreConfig()
+        svc = ScheduledTaskService(db_url or cfg.storage.db_url, cfg.scheduling.default_timezone)
+        status_filter = (
+            TaskStatus(status) if status and status in {s.value for s in TaskStatus} else None
+        )
+        tasks, total = await svc.list_tasks(
+            TaskFilter(user_id=user_id, status=status_filter, page=1, page_size=20)
+        )
+        if not tasks:
+            return "当前没有定时任务。"
+        lines = [f"共 {total} 个定时任务："]
+        for t in tasks:
+            next_str = t.next_run_at.isoformat() if t.next_run_at else "—"
+            lines.append(f"• [{t.status.value}] {t.name}（ID: {t.id}）  下次执行：{next_str}")
+        return "\n".join(lines)
+
+    async def _cancel_scheduled_task(
+        task_id: str,
+        _context: dict[str, object] | None = None,
+    ) -> str:
+        from astracore.modules.scheduling.application.task_service import (  # noqa: PLC0415
+            ScheduledTaskService,
+        )
+
+        ctx = _context or {}
+        user_id = str(ctx.get("user_id") or "default")
+        cfg = AstraCoreConfig()
+        svc = ScheduledTaskService(db_url or cfg.storage.db_url, cfg.scheduling.default_timezone)
+        deleted = await svc.delete_task(task_id, user_id)
+        if deleted:
+            return f"定时任务（ID: {task_id}）已删除。"
+        return f"未找到 ID 为 {task_id!r} 的定时任务，或无权操作。"
+
+    native.register_tool(
+        name="schedule_task",
+        func=_schedule_task,
+        description=(
+            "创建一个定时任务，让 AI 在指定时间或周期性地自动执行某个操作。"
+            "创建成功后返回任务 ID 与下次执行时间。\n"
+            "触发信号：\n"
+            "- 「每天…」「每周一…」「每小时…」→ trigger_type=cron 或 interval\n"
+            "- 「下周三 9:00…」「在某具体时刻…」→ trigger_type=date\n"
+            "- 「提醒我…」「自动发送…」「定期汇总…」→ 同上\n"
+            "支持的触发器：\n"
+            "  cron — 标准 5 字段 cron 表达式（如 '0 9 * * *' 每天 9 点）\n"
+            "  interval — 每隔 N 秒执行一次\n"
+            "  date — 一次性在指定时刻执行（ISO8601 格式）\n"
+            "管理已有任务请用 list_scheduled_tasks 与 cancel_scheduled_task。"
+        ),
+        parameters=[
+            ToolParameter(
+                name="prompt",
+                type=ToolParameterType.STRING,
+                description="任务的意图描述，触发时作为用户消息送入 AI",
+                required=True,
+            ),
+            ToolParameter(
+                name="trigger_type",
+                type=ToolParameterType.STRING,
+                description="触发器类型：cron | interval | date",
+                required=True,
+            ),
+            ToolParameter(
+                name="trigger_config",
+                type=ToolParameterType.OBJECT,
+                description=(
+                    "触发器参数：\n"
+                    '  cron → {"expr": "0 9 * * *"}\n'
+                    '  interval → {"seconds": 3600}\n'
+                    '  date → {"run_at": "2026-06-20T14:00:00+08:00"}'
+                ),
+                required=True,
+            ),
+            ToolParameter(
+                name="name",
+                type=ToolParameterType.STRING,
+                description="任务显示名称（选填，缺省取 prompt 前 24 字）",
+                required=False,
+            ),
+            ToolParameter(
+                name="timezone",
+                type=ToolParameterType.STRING,
+                description="时区（选填，默认 Asia/Shanghai）",
+                required=False,
+            ),
+            ToolParameter(
+                name="model_profile",
+                type=ToolParameterType.STRING,
+                description="触发时使用的模型 profile ID（选填）",
+                required=False,
+            ),
+        ],
+    )
+
+    native.register_tool(
+        name="list_scheduled_tasks",
+        func=_list_scheduled_tasks,
+        description="列出当前用户的定时任务。返回任务 ID、名称、状态和下次执行时间。",
+        parameters=[
+            ToolParameter(
+                name="status",
+                type=ToolParameterType.STRING,
+                description="状态筛选（选填）：active | paused | finished",
+                required=False,
+            ),
+        ],
+    )
+
+    native.register_tool(
+        name="cancel_scheduled_task",
+        func=_cancel_scheduled_task,
+        description="删除（取消）一个定时任务。需先通过 list_scheduled_tasks 获取任务 ID。",
+        parameters=[
+            ToolParameter(
+                name="task_id",
+                type=ToolParameterType.STRING,
+                description="要删除的任务 ID",
+                required=True,
+            ),
+        ],
+        requires_confirmation=True,
     )
 
     # 技能工具：load_skill / get_skill_reference / run_skill_script

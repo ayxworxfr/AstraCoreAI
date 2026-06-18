@@ -27,15 +27,15 @@ router = APIRouter()
 
 @lru_cache(maxsize=1)
 def _get_db_url() -> str:
-    return AstraCoreConfig().memory.db_url
+    return AstraCoreConfig().storage.db_url
 
 
 @lru_cache(maxsize=1)
 def _get_vector_adapter() -> MemoryVectorAdapter:
     cfg = AstraCoreConfig()
     return MemoryVectorAdapter(
-        persist_directory=cfg.retrieval.persist_directory,
-        embedding_model=cfg.retrieval.embedding_model,
+        persist_directory=cfg.storage.vector.persist_directory,
+        embedding_model=cfg.storage.vector.embedding_model,
     )
 
 

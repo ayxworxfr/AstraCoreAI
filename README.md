@@ -55,6 +55,18 @@ Claude 通过 `load_skill` 工具按需加载专业能力包（SKILL.md 格式�
 - JWT 认证：register / login，admin / user 双角色，首个用户自动为管理员
 - SecurityValidator：XSS 检测、输入长度限制、敏感字段脱敏
 
+### 计划任务（Scheduled Tasks）
+
+基于 APScheduler 的定时任务系统，支持三种触发方式：
+
+| 触发类型 | 说明 | 示例 |
+|----------|------|------|
+| `cron` | 标准 crontab 表达式 | `0 9 * * 1-5`（工作日 9 点） |
+| `interval` | 固定间隔重复 | 每 30 分钟 / 每小时 |
+| `date` | 单次指定时间 | 一次性定时发送 |
+
+每个任务存储一段 Prompt，触发时由 `ChatPipeline` 完整执行（含工具、记忆、Skill），结果写回任务的 `conversation_id` 可在前端查看。支持暂停 / 恢复 / 立即执行 / 批量删除 / 按名称和状态筛选。
+
 ### 其他能力
 
 - **HistoryCompactor**：context_window 50% 触发，LLM 摘要 + MemoryEngine 持久化
@@ -194,6 +206,16 @@ Skill 文件位于 `src/astracore/modules/skills/builtin/`，Claude 通过 `load
 | `run_skill_script` | Native | 执行 Skill 附带的脚本 |
 | `spawn_agents` | Native | 启动并行子 Agent（2–5 个） |
 | `ask_user` | Native | HITL 主动询问用户 |
+
+### 前端功能页面
+
+| 页面 | 功能 |
+|------|------|
+| 聊天（Chat） | SSE 流式对话、会话管理、工具调用展示、HITL 审批 |
+| 记忆（Memory） | 记忆增删查改、多选批量删除、作用域筛选 |
+| 计划任务（Scheduling） | 创建 cron/interval/date 任务、暂停/恢复/立即执行、批量删除、名称/状态搜索 |
+| 技能（Skills） | Skill CRUD、SKILL.md 编辑 |
+| 知识库（RAG） | 文档上传、向量检索调试 |
 
 ---
 
@@ -359,6 +381,7 @@ async with AstraCoreClient(hooks=registry) as client:
 | 前端设计方案 | `docs/前端设计方案.md` |
 | 子系统设计方案 | `docs/子系统设计方案.md` |
 | 专业度评估与优化路线 | `docs/专业度评估与优化路线.md` |
+| 系统提示词设计 | `docs/系统提示词设计.md` |
 | 贡献指南 | `docs/CONTRIBUTING.md` |
 
 ---

@@ -14,12 +14,18 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm.attributes import flag_modified as _flag_modified
 from sse_starlette.sse import EventSourceResponse
 
-from astracore.infrastructure.db.models import ChatRunRow, ChatSessionRow, ConversationRow, UserRow
+from astracore.infrastructure.db.models import ChatRunRow, ChatSessionRow, UserRow
 from astracore.infrastructure.db.session import get_session
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
 from astracore.infrastructure.memory.vector import MemoryVectorAdapter
 from astracore.modules.auth.dependencies import get_current_user
+from astracore.modules.chat.application.run_executor import (
+    execute_run_loop,
+    update_conversation_meta,
+    update_run_row,
+)
+from astracore.modules.chat.application.run_factory import create_chat_run_row
 from astracore.modules.chat.domain.chat_context import ChatContext
 from astracore.modules.chat.domain.chat_options import ChatOptions
 from astracore.modules.chat.domain.message import Message, MessageRole
@@ -31,8 +37,8 @@ from astracore.modules.tools.ports.tool import ToolAdapter
 from astracore.sdk.config import AstraCoreConfig
 from astracore.shared.domain.hitl import HITLAnswer, PendingQuestion
 from astracore.shared.observability.logger import get_logger
+from astracore.shared.policy.engine import PolicyConfig as _EnginePolicyConfig
 from astracore.shared.policy.engine import PolicyEngine
-from astracore.shared.ports.llm import StreamEventType
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -123,7 +129,7 @@ def _get_settings() -> AstraCoreConfig:
 
 @lru_cache(maxsize=1)
 def _get_memory_adapter() -> HybridMemoryAdapter:
-    cfg = _get_settings().memory
+    cfg = _get_settings().storage
     return HybridMemoryAdapter(redis_url=cfg.redis_url, db_url=cfg.db_url)
 
 
@@ -131,8 +137,8 @@ def _get_memory_adapter() -> HybridMemoryAdapter:
 def _get_vector_adapter() -> MemoryVectorAdapter:
     cfg = _get_settings()
     return MemoryVectorAdapter(
-        persist_directory=cfg.retrieval.persist_directory,
-        embedding_model=cfg.retrieval.embedding_model,
+        persist_directory=cfg.storage.vector.persist_directory,
+        embedding_model=cfg.storage.vector.embedding_model,
     )
 
 
@@ -143,8 +149,14 @@ def _get_chat_pipeline() -> ChatPipeline:
         config=cfg,
         memory=_get_memory_adapter(),
         rag_pipeline=rag_api._get_rag_pipeline(),
-        policy=PolicyEngine(),
-        tool_adapter=build_tool_adapter(db_url=cfg.memory.db_url),
+        policy=PolicyEngine(
+            config=_EnginePolicyConfig(
+                retry=cfg.policy.retry,
+                timeout=cfg.policy.timeout,
+                compaction=cfg.policy.compaction,
+            )
+        ),
+        tool_adapter=build_tool_adapter(db_url=cfg.storage.db_url),
         vector_adapter=_get_vector_adapter(),
     )
 
@@ -153,7 +165,9 @@ def _resolve_tool_adapter(http_request: Request) -> ToolAdapter:
     """Get the tool adapter from app.state (set by lifespan) or fall back to builtins."""
     adapter = getattr(http_request.app.state, "tool_adapter", None)
     return (
-        adapter if adapter is not None else build_tool_adapter(db_url=_get_settings().memory.db_url)
+        adapter
+        if adapter is not None
+        else build_tool_adapter(db_url=_get_settings().storage.db_url)
     )
 
 
@@ -197,8 +211,10 @@ class ChatRequest(BaseModel):
     model_profile: str | None = None
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     use_tools: bool = False
-    enable_thinking: bool = False
+    thinking_mode: str | None = None
     thinking_budget: int = Field(default=8000, ge=1000, le=32000)
+    reasoning_effort: str | None = None
+    verbosity: str | None = None
     enable_rag: bool = False
     enable_web: bool = False
 
@@ -207,8 +223,10 @@ class ChatRequest(BaseModel):
             model_profile=self.model_profile,
             temperature=self.temperature,
             use_tools=self.use_tools,
-            enable_thinking=self.enable_thinking,
+            thinking_mode=self.thinking_mode,
             thinking_budget=self.thinking_budget,
+            reasoning_effort=self.reasoning_effort,
+            verbosity=self.verbosity,
             enable_rag=self.enable_rag,
             enable_web=self.enable_web,
         )
@@ -295,7 +313,7 @@ _VISIBLE_RUN_STATUSES = {"done", "cancelled", "error"}
 
 
 async def _load_done_runs(session_id: UUID) -> list[ChatRunRow]:
-    async with get_session(_get_settings().memory.db_url) as db:
+    async with get_session(_get_settings().storage.db_url) as db:
         result = await db.execute(
             select(ChatRunRow)
             .where(
@@ -321,12 +339,12 @@ def _paginate_messages(
 
 
 async def _get_run_row(run_id: str) -> ChatRunRow | None:
-    async with get_session(_get_settings().memory.db_url) as db:
+    async with get_session(_get_settings().storage.db_url) as db:
         return await db.get(ChatRunRow, run_id)
 
 
 async def _get_active_run_row(session_id: UUID) -> ChatRunRow | None:
-    async with get_session(_get_settings().memory.db_url) as db:
+    async with get_session(_get_settings().storage.db_url) as db:
         result = await db.execute(
             select(ChatRunRow)
             .where(
@@ -340,40 +358,20 @@ async def _get_active_run_row(session_id: UUID) -> ChatRunRow | None:
 
 
 async def _update_run_row(run_id: str, **patch: Any) -> ChatRunRow | None:
-    async with get_session(_get_settings().memory.db_url) as db:
-        row = await db.get(ChatRunRow, run_id)
-        if row is None:
-            return None
-        for key, value in patch.items():
-            setattr(row, key, value)
-        row.updated_at = datetime.now(UTC)
-        if row.status in _RUN_TERMINAL_STATUSES and row.completed_at is None:
-            row.completed_at = datetime.now(UTC)
-        await db.commit()
-        await db.refresh(row)
-        return row
+    return await update_run_row(_get_settings().storage.db_url, run_id, **patch)
 
 
 async def _create_run_row(
     request: ChatRequest, session_id: UUID, user_id: str = "default"
 ) -> ChatRunRow:
-    run_id = str(uuid4())
-    now = datetime.now(UTC)
-    row = ChatRunRow(
-        id=run_id,
-        session_id=str(session_id),
+    return await create_chat_run_row(
+        db_url=_get_settings().storage.db_url,
+        session_id=session_id,
+        prompt=request.message,
         user_id=user_id,
-        status="running",
-        request=request.model_dump(mode="json"),
-        user_message=request.message,
-        created_at=now,
-        updated_at=now,
+        trigger_source="user",
+        request_payload=request.model_dump(mode="json"),
     )
-    async with get_session(_get_settings().memory.db_url) as db:
-        db.add(row)
-        await db.commit()
-        await db.refresh(row)
-        return row
 
 
 async def _update_conversation_from_messages(session_id: UUID) -> dict[str, Any] | None:
@@ -381,27 +379,7 @@ async def _update_conversation_from_messages(session_id: UUID) -> dict[str, Any]
 
     Returns the updated fields, or None if the conversation row does not exist.
     """
-    runs = await _load_done_runs(session_id)
-    visible = [message for run in runs for message in _run_row_to_messages(run)]
-    preview = visible[-1].content[:256] if visible else ""
-    async with get_session(_get_settings().memory.db_url) as db:
-        row = await db.get(ConversationRow, str(session_id))
-        if row is None:
-            return None
-        if row.title == "新会话" and row.message_count == 0 and visible:
-            first_user = next((m for m in visible if m.role == MessageRole.USER.value), None)
-            if first_user:
-                row.title = first_user.content[:24] or "新会话"
-        row.last_message_preview = preview
-        row.message_count = len(visible)
-        row.updated_at = datetime.now(UTC)
-        await db.commit()
-        return {
-            "title": row.title,
-            "last_message_preview": row.last_message_preview,
-            "message_count": row.message_count,
-            "updated_at": row.updated_at.isoformat(),
-        }
+    return await update_conversation_meta(_get_settings().storage.db_url, session_id)
 
 
 async def _rebuild_short_term_from_runs(session_id: UUID) -> None:
@@ -427,16 +405,6 @@ async def _rebuild_short_term_from_runs(session_id: UUID) -> None:
 
 async def _execute_run(*, run_id: str, ctx: ChatContext, user_id: str = "default") -> None:
     """Stream a fully-resolved ChatContext and broadcast SSE events for the run."""
-    accumulated_content = ""
-    thinking_blocks: list[str] = []
-    tool_activity: list[dict[str, Any]] = []
-    round_count = 0
-    round_text_buffer: list[str] = []
-    in_tool_round = False
-    total_input_tokens = 0
-    total_output_tokens = 0
-    memory_saved_by_tool = False  # AI 本轮是否主动调用了 save_memory
-
     cfg = _get_settings()
 
     async def _hitl_callback(q: PendingQuestion) -> dict[str, Any]:
@@ -466,236 +434,17 @@ async def _execute_run(*, run_id: str, ctx: ChatContext, user_id: str = "default
             _broadcast_run_event(run_id, "user_input_resolved", {"question_id": q.question_id})
         return answer
 
-    async for event in _get_chat_pipeline().stream(
-        ctx, extra_context={"hitl_callback": _hitl_callback}
-    ):
-        if event.event_type == StreamEventType.DONE:
-            if event.metadata.get("source") == "tool_loop":
-                # Phase boundary: closing round is about to begin.
-                # Flush buffered intermediate text as a single event to avoid queue overflow.
-                if round_text_buffer:
-                    flushed = "".join(round_text_buffer)
-                    accumulated_content += flushed
-                    _broadcast_run_event(run_id, "message", {"text": flushed})
-                round_text_buffer = []
-                in_tool_round = False
-            else:
-                # Final DONE; extract usage, flush remaining buffer, and exit.
-                _u = event.metadata.get("usage", {})
-                total_input_tokens = int(_u.get("input_tokens", 0))
-                total_output_tokens = int(_u.get("output_tokens", 0))
-                if round_text_buffer:
-                    flushed = "".join(round_text_buffer)
-                    accumulated_content += flushed
-                    _broadcast_run_event(run_id, "message", {"text": flushed})
-                break
-        elif event.event_type == StreamEventType.ROUND_START:
-            if round_text_buffer:
-                if not thinking_blocks:
-                    thinking_blocks.append("")
-                flushed = "".join(round_text_buffer)
-                thinking_blocks[-1] += flushed
-                _broadcast_run_event(run_id, "thinking", {"text": flushed})
-            round_text_buffer = []
-            in_tool_round = False
-            round_count = int(event.metadata.get("round", round_count + 1))
-            thinking_blocks.append("")
-            _broadcast_run_event(run_id, "thinking_start", {"round": round_count})
-        elif event.event_type == StreamEventType.TEXT_DELTA and event.content:
-            if in_tool_round:
-                if not thinking_blocks:
-                    thinking_blocks.append("")
-                thinking_blocks[-1] += event.content
-                _broadcast_run_event(run_id, "thinking", {"text": event.content})
-            elif ctx.mode == "normal":
-                # Normal mode: directly emit as message text.
-                accumulated_content += event.content
-                _broadcast_run_event(run_id, "message", {"text": event.content})
-            else:
-                # Tool-loop mode, between tool rounds: buffer until flush point.
-                round_text_buffer.append(event.content)
-        elif event.event_type == StreamEventType.THINKING_DELTA and event.content:
-            if not thinking_blocks:
-                thinking_blocks.append("")
-                if ctx.mode == "normal":
-                    _broadcast_run_event(run_id, "thinking_start", {"round": 1})
-            thinking_blocks[-1] += event.content
-            _broadcast_run_event(run_id, "thinking", {"text": event.content})
-        elif event.event_type == StreamEventType.THINKING_STOP:
-            _broadcast_run_event(
-                run_id,
-                "thinking_stop",
-                {"duration_ms": event.metadata.get("duration_ms", 0)},
-            )
-        elif (
-            event.event_type
-            in {
-                StreamEventType.TOOL_CALL,
-                StreamEventType.TOOL_CALL_ERROR,
-            }
-            and event.tool_call
-        ):
-            if not in_tool_round:
-                if not thinking_blocks:
-                    thinking_blocks.append("")
-                if round_text_buffer:
-                    flushed = "".join(round_text_buffer)
-                    thinking_blocks[-1] += flushed
-                    _broadcast_run_event(run_id, "thinking", {"text": flushed})
-                round_text_buffer = []
-                in_tool_round = True
-            if event.tool_call.name == "save_memory":
-                memory_saved_by_tool = True
-            item: dict[str, Any] = {
-                "name": event.tool_call.name,
-                "tool_call_id": event.tool_call.id,
-                "done": False,
-                "input": event.tool_call.arguments,
-            }
-            tool_activity.append(item)
-            _broadcast_run_event(
-                run_id,
-                "tool_start",
-                {
-                    "tool": event.tool_call.name,
-                    "tool_call_id": event.tool_call.id,
-                    "input": event.tool_call.arguments,
-                },
-            )
-        elif event.event_type == StreamEventType.TOOL_RESULT:
-            tool_name = str(event.metadata.get("tool", ""))
-            tool_call_id = str(event.metadata.get("tool_call_id", ""))
-            result_text = str(event.metadata.get("result", ""))
-            for item in tool_activity:
-                if item.get("tool_call_id") == tool_call_id and not item.get("done"):
-                    item.update(
-                        {
-                            "done": True,
-                            "result": result_text,
-                            "isError": bool(event.metadata.get("is_error", False)),
-                            "durationMs": int(event.metadata.get("duration_ms", 0)),
-                        }
-                    )
-                    break
-            _broadcast_run_event(
-                run_id,
-                "tool_result",
-                {
-                    "tool": tool_name,
-                    "tool_call_id": tool_call_id,
-                    "input": event.metadata.get("input", {}),
-                    "result": result_text,
-                    "is_error": event.metadata.get("is_error", False),
-                    "duration_ms": event.metadata.get("duration_ms", 0),
-                },
-            )
-        elif event.event_type == StreamEventType.AGENT_START:
-            _broadcast_run_event(
-                run_id,
-                "agent_start",
-                {
-                    "agent_id": event.metadata.get("agent_id"),
-                    "task": event.metadata.get("task"),
-                    "model": event.metadata.get("model"),
-                },
-            )
-        elif event.event_type == StreamEventType.AGENT_TEXT_DELTA and event.content:
-            _broadcast_run_event(
-                run_id,
-                "agent_message",
-                {"agent_id": event.metadata.get("agent_id"), "text": event.content},
-            )
-        elif event.event_type == StreamEventType.AGENT_THINKING_DELTA and event.content:
-            _broadcast_run_event(
-                run_id,
-                "agent_thinking",
-                {"agent_id": event.metadata.get("agent_id"), "text": event.content},
-            )
-        elif event.event_type == StreamEventType.AGENT_TOOL_CALL and event.tool_call:
-            _broadcast_run_event(
-                run_id,
-                "agent_tool_start",
-                {
-                    "agent_id": event.metadata.get("agent_id"),
-                    "tool": event.tool_call.name,
-                    "tool_call_id": event.tool_call.id,
-                    "input": event.tool_call.arguments,
-                },
-            )
-        elif event.event_type == StreamEventType.AGENT_TOOL_RESULT:
-            _broadcast_run_event(
-                run_id,
-                "agent_tool_result",
-                {
-                    "agent_id": event.metadata.get("agent_id"),
-                    "tool": event.metadata.get("tool"),
-                    "tool_call_id": event.metadata.get("tool_call_id", ""),
-                    "result": event.metadata.get("result"),
-                    "is_error": event.metadata.get("is_error", False),
-                    "duration_ms": event.metadata.get("duration_ms", 0),
-                },
-            )
-        elif event.event_type == StreamEventType.AGENT_DONE:
-            _broadcast_run_event(
-                run_id,
-                "agent_done",
-                {
-                    "agent_id": event.metadata.get("agent_id"),
-                    "duration_ms": event.metadata.get("duration_ms", 0),
-                    "error": event.metadata.get("error"),
-                },
-            )
-
-        _update_active_run_state(
-            run_id,
-            assistant_content=accumulated_content,
-            thinking_blocks=list(thinking_blocks),
-            tool_activity=list(tool_activity),
-        )
-
-    row = await _update_run_row(
-        run_id,
-        assistant_content=accumulated_content,
-        thinking_blocks=thinking_blocks,
-        tool_activity=[{**item, "done": True} for item in tool_activity],
-        status="done",
-        input_tokens=total_input_tokens or None,
-        output_tokens=total_output_tokens or None,
-        model=ctx.profile.model or None,
+    await execute_run_loop(
+        run_id=run_id,
+        ctx=ctx,
+        user_id=user_id,
+        pipeline=_get_chat_pipeline(),
+        db_url=cfg.storage.db_url,
+        event_sink=lambda name, data: _broadcast_run_event(run_id, name, data),
+        state_sink=lambda **patch: _update_active_run_state(run_id, **patch),
+        snapshot_sink=lambda row: _broadcast_snapshot(run_id, row),
+        hitl_callback=_hitl_callback,
     )
-    conv_meta = await _update_conversation_from_messages(ctx.session_id)
-    if total_input_tokens or total_output_tokens:
-        _broadcast_run_event(
-            run_id,
-            "usage",
-            {
-                "input_tokens": total_input_tokens,
-                "output_tokens": total_output_tokens,
-                "model": ctx.profile.model,
-            },
-        )
-    if memory_saved_by_tool:
-        logger.info("本轮已调用 save_memory，跳过自动提取: run_id=%s", run_id)
-    else:
-        logger.info("记忆自动提取: run_id=%s, content_len=%d", run_id, len(accumulated_content))
-        try:
-            cfg = _get_settings()
-            user_engine = MemoryEngine(SQLMemoryStore(cfg.memory.db_url), user_id=user_id)
-            await user_engine.extract_and_store(
-                session_id=ctx.session_id,
-                user_message=ctx.message,
-                assistant_content=accumulated_content,
-                source_run_id=run_id,
-                llm_adapter=_get_chat_pipeline().get_llm_adapter(ctx.profile),
-                model=ctx.profile.model,
-                session_only=True,
-            )
-            logger.info("记忆自动提取完成: run_id=%s", run_id)
-        except Exception:
-            logger.exception("Memory 自动提取失败，run_id=%s", run_id)
-    if row:
-        _broadcast_snapshot(run_id, row)
-    _broadcast_run_event(run_id, "done", {"conversation": conv_meta} if conv_meta else {})
 
 
 async def _run_chat_in_background(
@@ -745,11 +494,11 @@ async def delete_session(
     cfg = _get_settings()
     await _get_memory_adapter().delete_session_memory(session_id)
     await MemoryEngine(
-        SQLMemoryStore(cfg.memory.db_url),
+        SQLMemoryStore(cfg.storage.db_url),
         user_id=current_user.id,
         vector_adapter=_get_vector_adapter(),
     ).delete_conversation_memories(session_id)
-    async with get_session(_get_settings().memory.db_url) as db:
+    async with get_session(_get_settings().storage.db_url) as db:
         await db.execute(delete(ChatRunRow).where(ChatRunRow.session_id == str(session_id)))
         session_row = await db.get(ChatSessionRow, str(session_id))
         if session_row is not None:
@@ -766,7 +515,7 @@ async def delete_session_message(
 ) -> None:
     """Delete a visible history message using its run-based message id."""
     run_id = message_id.removesuffix(":assistant")
-    async with get_session(_get_settings().memory.db_url) as db:
+    async with get_session(_get_settings().storage.db_url) as db:
         row = await db.get(ChatRunRow, run_id)
         if row is None or row.session_id != str(session_id):
             raise HTTPException(status_code=404, detail="消息未找到")
@@ -967,7 +716,7 @@ async def chat(
         )
         try:
             cfg = _get_settings()
-            user_engine = MemoryEngine(SQLMemoryStore(cfg.memory.db_url), user_id=current_user.id)
+            user_engine = MemoryEngine(SQLMemoryStore(cfg.storage.db_url), user_id=current_user.id)
             await user_engine.extract_and_store(
                 session_id=session_id,
                 user_message=request.message,

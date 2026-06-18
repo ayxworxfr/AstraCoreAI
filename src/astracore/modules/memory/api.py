@@ -20,15 +20,15 @@ router = APIRouter()
 
 @lru_cache(maxsize=1)
 def _get_db_url() -> str:
-    return AstraCoreConfig().memory.db_url
+    return AstraCoreConfig().storage.db_url
 
 
 @lru_cache(maxsize=1)
 def _get_vector_adapter() -> MemoryVectorAdapter:
     cfg = AstraCoreConfig()
     return MemoryVectorAdapter(
-        persist_directory=cfg.retrieval.persist_directory,
-        embedding_model=cfg.retrieval.embedding_model,
+        persist_directory=cfg.storage.vector.persist_directory,
+        embedding_model=cfg.storage.vector.embedding_model,
     )
 
 
@@ -248,6 +248,23 @@ async def delete_memory(
     current_user: UserRow = Depends(get_current_user),
 ) -> None:
     await _get_user_engine(current_user.id).delete_memory(memory_id)
+
+
+class BatchDeleteRequest(BaseModel):
+    ids: list[str] = Field(min_length=1)
+
+
+class BatchDeleteResponse(BaseModel):
+    deleted: int
+
+
+@router.post("/batch-delete", response_model=BatchDeleteResponse)
+async def batch_delete_memory(
+    body: BatchDeleteRequest,
+    current_user: UserRow = Depends(get_current_user),
+) -> BatchDeleteResponse:
+    deleted = await _get_user_engine(current_user.id).delete_memories_by_ids(body.ids)
+    return BatchDeleteResponse(deleted=deleted)
 
 
 # ------------------------------------------------------------------

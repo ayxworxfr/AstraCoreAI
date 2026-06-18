@@ -66,8 +66,8 @@ class ChatContext:
     # ------------------------------------------------------------------
 
     llm_kwargs: dict[str, Any] = field(default_factory=dict, hash=False)
-    """透传给 LLM 适配器的额外关键字参数，例如 ``enable_thinking=True``、
-    ``thinking_budget=8000``。不参与哈希，因其内容随请求变化。"""
+    """透传给 LLM 适配器的额外关键字参数，例如 ``thinking_mode='on'``、
+    ``thinking_budget=8000``、``enable_prompt_cache=True``。不参与哈希，因其内容随请求变化。"""
 
     # ------------------------------------------------------------------
     # 工具相关

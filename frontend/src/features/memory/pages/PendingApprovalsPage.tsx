@@ -4,15 +4,16 @@ import {
   Badge,
   Button,
   Card,
+  Checkbox,
+  Empty,
   Flex,
-  Table,
+  Spin,
   Tag,
   Tooltip,
   Typography,
 } from 'antd';
-import { CheckOutlined, CloseOutlined, ReloadOutlined } from '@ant-design/icons';
-import { apiClient } from '@/shared/services/apiClient';
-import { normalizeError } from '@/shared/services/apiClient';
+import { CheckOutlined, CloseOutlined, ReloadOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { apiClient, normalizeError } from '@/shared/services/apiClient';
 import { formatAppDateTime } from '@/shared/utils/time';
 import { useSkillStore } from '@/features/skills/store/skillStore';
 import AppScrollArea from '@/shared/components/AppScrollArea';
@@ -35,6 +36,11 @@ type PendingPromotionListResponse = {
   items: PendingPromotionItem[];
 };
 
+const SCOPE_LABEL: Record<string, string> = {
+  user: '用户级',
+  project: '项目级',
+};
+
 const SCOPE_COLOR: Record<string, string> = {
   user: 'purple',
   project: 'cyan',
@@ -51,6 +57,109 @@ async function batchReview(ids: string[], action: 'approve' | 'reject'): Promise
   await apiClient.post('/api/v1/memory/pending-approvals/batch-review', {
     decisions: ids.map((id) => ({ id, action })),
   });
+}
+
+type ApprovalCardProps = {
+  item: PendingPromotionItem;
+  selected: boolean;
+  actionLoading: boolean;
+  timezone: string;
+  onSelect: (id: string, checked: boolean) => void;
+  onApprove: (id: string) => void;
+  onReject: (id: string) => void;
+};
+
+function ApprovalCard({
+  item,
+  selected,
+  actionLoading,
+  timezone,
+  onSelect,
+  onApprove,
+  onReject,
+}: ApprovalCardProps) {
+  return (
+    <Card
+      size="small"
+      styles={{ body: { padding: '14px 16px' } }}
+      style={{
+        borderRadius: 12,
+        border: selected ? '1.5px solid #1677ff' : undefined,
+        transition: 'border-color 0.15s',
+      }}
+    >
+      <Flex gap={12} align="flex-start">
+        <Checkbox
+          checked={selected}
+          onChange={(e) => onSelect(item.id, e.target.checked)}
+          style={{ marginTop: 3, flexShrink: 0 }}
+        />
+        <Flex vertical gap={8} style={{ flex: 1, minWidth: 0 }}>
+          {/* 标题行：scope tag + subject + 时间 */}
+          <Flex align="center" justify="space-between" gap={8}>
+            <Flex align="center" gap={8} style={{ minWidth: 0, flex: 1 }}>
+              <Tag color={SCOPE_COLOR[item.target_scope] ?? 'default'} style={{ flexShrink: 0, marginInlineEnd: 0 }}>
+                {SCOPE_LABEL[item.target_scope] ?? item.target_scope}
+              </Tag>
+              <Typography.Text
+                strong
+                style={{ fontSize: 14 }}
+                ellipsis={{ tooltip: item.candidate_subject || '未命名记忆' }}
+              >
+                {item.candidate_subject || '未命名记忆'}
+              </Typography.Text>
+            </Flex>
+            <Typography.Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>
+              {formatAppDateTime(item.created_at, timezone)}
+            </Typography.Text>
+          </Flex>
+
+          {/* 记忆内容 */}
+          <Typography.Paragraph
+            style={{ margin: 0, fontSize: 13 }}
+            ellipsis={{ rows: 3, expandable: true, symbol: '展开' }}
+          >
+            {item.candidate_content}
+          </Typography.Paragraph>
+
+          {/* 原因 + 操作 */}
+          <Flex align="flex-end" justify="space-between" gap={12} wrap="wrap">
+            {item.reason ? (
+              <Typography.Text type="secondary" italic style={{ fontSize: 12, flex: 1, minWidth: 0 }}>
+                AI 建议原因：{item.reason}
+              </Typography.Text>
+            ) : (
+              <span style={{ flex: 1 }} />
+            )}
+            <Flex gap={8} style={{ flexShrink: 0 }}>
+              <Tooltip title="批准并晋升为持久记忆">
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<CheckOutlined />}
+                  loading={actionLoading}
+                  onClick={() => onApprove(item.id)}
+                >
+                  批准
+                </Button>
+              </Tooltip>
+              <Tooltip title="拒绝，保持为短期记忆">
+                <Button
+                  danger
+                  size="small"
+                  icon={<CloseOutlined />}
+                  loading={actionLoading}
+                  onClick={() => onReject(item.id)}
+                >
+                  拒绝
+                </Button>
+              </Tooltip>
+            </Flex>
+          </Flex>
+        </Flex>
+      </Flex>
+    </Card>
+  );
 }
 
 export default function PendingApprovalsPage(): JSX.Element {
@@ -80,6 +189,17 @@ export default function PendingApprovalsPage(): JSX.Element {
     void load();
   }, []);
 
+  const toggleSelect = (id: string, checked: boolean) => {
+    setSelectedIds((prev) => (checked ? [...prev, id] : prev.filter((x) => x !== id)));
+  };
+
+  const allSelected = items.length > 0 && selectedIds.length === items.length;
+  const someSelected = selectedIds.length > 0 && selectedIds.length < items.length;
+
+  const toggleSelectAll = () => {
+    setSelectedIds(allSelected ? [] : items.map((i) => i.id));
+  };
+
   const handleSingle = async (id: string, action: 'approve' | 'reject') => {
     setActionLoading((prev) => ({ ...prev, [id]: true }));
     try {
@@ -106,160 +226,112 @@ export default function PendingApprovalsPage(): JSX.Element {
     }
   };
 
-  const columns = [
-    {
-      title: '主题',
-      dataIndex: 'candidate_subject',
-      key: 'candidate_subject',
-      width: 180,
-      render: (v: string) => <Typography.Text strong style={{ fontSize: 13 }}>{v || '（无标题）'}</Typography.Text>,
-    },
-    {
-      title: '内容',
-      dataIndex: 'candidate_content',
-      key: 'candidate_content',
-      render: (v: string) => (
-        <Typography.Text style={{ fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-          {v.length > 200 ? v.slice(0, 200) + '...' : v}
-        </Typography.Text>
-      ),
-    },
-    {
-      title: '目标范围',
-      dataIndex: 'target_scope',
-      key: 'target_scope',
-      width: 90,
-      render: (v: string) => <Tag color={SCOPE_COLOR[v] ?? 'default'}>{v}</Tag>,
-    },
-    {
-      title: '原因',
-      dataIndex: 'reason',
-      key: 'reason',
-      width: 200,
-      render: (v: string) => (
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {v || '—'}
-        </Typography.Text>
-      ),
-    },
-    {
-      title: '时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      width: 130,
-      render: (v: string) => (
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {formatAppDateTime(v, timezone)}
-        </Typography.Text>
-      ),
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 110,
-      render: (_: unknown, record: PendingPromotionItem) => (
-        <Flex gap={6}>
-          <Tooltip title="批准并晋升为持久记忆">
-            <Button
-              size="small"
-              type="primary"
-              icon={<CheckOutlined />}
-              loading={actionLoading[record.id]}
-              onClick={() => { void handleSingle(record.id, 'approve'); }}
-              style={{ borderRadius: 6 }}
-            />
-          </Tooltip>
-          <Tooltip title="拒绝，保持为短期记忆">
-            <Button
-              size="small"
-              danger
-              icon={<CloseOutlined />}
-              loading={actionLoading[record.id]}
-              onClick={() => { void handleSingle(record.id, 'reject'); }}
-              style={{ borderRadius: 6 }}
-            />
-          </Tooltip>
-        </Flex>
-      ),
-    },
-  ];
+  const selectedCount = selectedIds.length;
 
   return (
     <AppScrollArea style={{ height: '100%' }}>
-      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '24px 24px' }}>
-        <Flex align="center" justify="space-between" style={{ marginBottom: 16 }}>
-          <Flex align="center" gap={10}>
-            <Typography.Title level={4} style={{ margin: 0 }}>
-              待审批记忆晋升
-            </Typography.Title>
-            <Badge count={total} showZero style={{ fontSize: 11 }} />
+      <Flex vertical gap={16} style={{ maxWidth: 900, margin: '0 auto', padding: '24px 24px' }}>
+        {/* 页面 header */}
+        <Card
+          bordered={false}
+          styles={{ body: { padding: 20 } }}
+          style={{
+            background: 'linear-gradient(135deg, rgba(22,119,255,0.12), rgba(114,46,209,0.08))',
+            border: '1px solid rgba(120, 144, 180, 0.18)',
+            borderRadius: 16,
+          }}
+        >
+          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+            <div>
+              <Flex align="center" gap={10}>
+                <SafetyCertificateOutlined style={{ fontSize: 20, color: '#1677ff' }} />
+                <Typography.Title level={3} style={{ margin: 0 }}>
+                  待审批
+                </Typography.Title>
+                <Badge count={total} showZero color="#1677ff" />
+              </Flex>
+              <Typography.Text type="secondary" style={{ marginTop: 4, display: 'block' }}>
+                AI 判断为值得长期保留的记忆，晋升前需要你确认。
+              </Typography.Text>
+            </div>
+            <Flex gap={8} align="center" wrap="wrap">
+              {selectedCount > 0 && (
+                <>
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<CheckOutlined />}
+                    loading={loading}
+                    onClick={() => { void handleBatch('approve'); }}
+                  >
+                    批准 ({selectedCount})
+                  </Button>
+                  <Button
+                    danger
+                    size="small"
+                    icon={<CloseOutlined />}
+                    loading={loading}
+                    onClick={() => { void handleBatch('reject'); }}
+                  >
+                    拒绝 ({selectedCount})
+                  </Button>
+                </>
+              )}
+              <Button icon={<ReloadOutlined />} loading={loading} onClick={() => { void load(); }}>
+                刷新
+              </Button>
+            </Flex>
           </Flex>
-          <Flex gap={8}>
-            {selectedIds.length > 0 && (
-              <>
-                <Button
-                  type="primary"
-                  size="small"
-                  icon={<CheckOutlined />}
-                  onClick={() => { void handleBatch('approve'); }}
-                  loading={loading}
-                >
-                  批量批准 ({selectedIds.length})
-                </Button>
-                <Button
-                  danger
-                  size="small"
-                  icon={<CloseOutlined />}
-                  onClick={() => { void handleBatch('reject'); }}
-                  loading={loading}
-                >
-                  批量拒绝 ({selectedIds.length})
-                </Button>
-              </>
-            )}
-            <Button
-              size="small"
-              icon={<ReloadOutlined />}
-              onClick={() => { void load(); }}
-              loading={loading}
-            >
-              刷新
-            </Button>
-          </Flex>
-        </Flex>
-
-        {error && (
-          <Alert
-            type="error"
-            message={error}
-            closable
-            onClose={() => setError(null)}
-            style={{ marginBottom: 12 }}
-          />
-        )}
-
-        <Card styles={{ body: { padding: 0 } }}>
-          <Table<PendingPromotionItem>
-            dataSource={items}
-            columns={columns}
-            rowKey="id"
-            loading={loading}
-            size="small"
-            rowSelection={{
-              selectedRowKeys: selectedIds,
-              onChange: (keys) => setSelectedIds(keys as string[]),
-            }}
-            pagination={false}
-            locale={{ emptyText: '暂无待审批记忆' }}
-          />
         </Card>
 
-        {items.length === 0 && !loading && (
-          <Typography.Text type="secondary" style={{ fontSize: 13, display: 'block', textAlign: 'center', marginTop: 16 }}>
-            没有需要审批的记忆晋升请求
-          </Typography.Text>
+        {error && (
+          <Alert type="error" message={error} closable onClose={() => setError(null)} />
         )}
-      </div>
+
+        {/* 列表区域 */}
+        {loading && items.length === 0 ? (
+          <Flex justify="center" style={{ padding: '60px 0' }}>
+            <Spin size="large" />
+          </Flex>
+        ) : items.length === 0 ? (
+          <Card bordered={false} style={{ borderRadius: 16 }}>
+            <Empty
+              description="暂无待审批的记忆晋升"
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              style={{ padding: '40px 0' }}
+            />
+          </Card>
+        ) : (
+          <Flex vertical gap={8}>
+            {/* 全选栏 */}
+            <Flex align="center" gap={10} style={{ padding: '0 4px' }}>
+              <Checkbox checked={allSelected} indeterminate={someSelected} onChange={toggleSelectAll}>
+                <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                  {allSelected ? '取消全选' : '全选'}
+                </Typography.Text>
+              </Checkbox>
+              {selectedCount > 0 && (
+                <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                  已选 {selectedCount} / {items.length}
+                </Typography.Text>
+              )}
+            </Flex>
+
+            {items.map((item) => (
+              <ApprovalCard
+                key={item.id}
+                item={item}
+                selected={selectedIds.includes(item.id)}
+                actionLoading={actionLoading[item.id] ?? false}
+                timezone={timezone}
+                onSelect={toggleSelect}
+                onApprove={(id) => { void handleSingle(id, 'approve'); }}
+                onReject={(id) => { void handleSingle(id, 'reject'); }}
+              />
+            ))}
+          </Flex>
+        )}
+      </Flex>
     </AppScrollArea>
   );
 }

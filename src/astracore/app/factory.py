@@ -66,22 +66,49 @@ async def lifespan(app: FastAPI) -> Any:
     cfg = AstraCoreConfig()
 
     try:
-        await init_db(cfg.memory.db_url)
+        await init_db(cfg.storage.db_url)
     except Exception:
         logger.exception("数据库初始化失败，不影响服务启动")
 
     try:
-        await seed_builtin_skills(cfg.memory.db_url, extra_skill_dirs=cfg.skills.extra_dirs)
+        await seed_builtin_skills(cfg.storage.db_url, extra_skill_dirs=cfg.skills.extra_dirs)
     except Exception:
         logger.exception("内置 Skill 种子写入失败，不影响服务启动")
 
-    if cfg.retrieval.enabled:
+    if cfg.storage.vector.enabled:
         try:
             pipeline = rag._get_rag_pipeline()
             # Run in background so slow model downloads don't block server startup
             asyncio.create_task(seed_documents(pipeline))
         except Exception:
             logger.exception("种子文档写入失败，不影响服务启动")
+
+    if cfg.scheduling.enabled:
+        try:
+            from astracore.modules.chat.api import _get_chat_pipeline  # noqa: PLC0415
+            from astracore.modules.scheduling.application.task_service import (  # noqa: PLC0415
+                ScheduledTaskService,
+            )
+            from astracore.modules.scheduling.runner import init_runner  # noqa: PLC0415
+            from astracore.modules.scheduling.scheduler import init_scheduler  # noqa: PLC0415
+
+            scheduler = init_scheduler(
+                db_url=cfg.storage.db_url,
+                misfire_grace_seconds=cfg.scheduling.misfire_grace_seconds,
+            )
+            init_runner(
+                pipeline_factory=_get_chat_pipeline,
+                config_factory=lambda: cfg,
+                max_concurrent_runs=cfg.scheduling.max_concurrent_runs,
+            )
+            svc = ScheduledTaskService(cfg.storage.db_url, cfg.scheduling.default_timezone)
+            active_tasks = await svc.load_all_active_tasks()
+            for task in active_tasks:
+                svc._register_with_scheduler(task)
+            scheduler.start()
+            logger.info("Scheduler started with %d active job(s)", len(active_tasks))
+        except Exception:
+            logger.exception("Scheduler 初始化失败，不影响主服务启动")
 
     mcp_adapter = None
     if cfg.mcp.servers:
@@ -99,13 +126,13 @@ async def lifespan(app: FastAPI) -> Any:
             mcp_adapter = MCPToolAdapter(mcp_configs)
 
             # 先挂内置工具，MCP 在后台启动，不阻塞服务就绪
-            app.state.tool_adapter = build_tool_adapter(db_url=cfg.memory.db_url)
+            app.state.tool_adapter = build_tool_adapter(db_url=cfg.storage.db_url)
 
             async def _start_mcp() -> None:
                 try:
                     await asyncio.wait_for(mcp_adapter.start(), timeout=30)
                     app.state.tool_adapter = CompositeToolAdapter(
-                        [build_tool_adapter(db_url=cfg.memory.db_url), mcp_adapter]
+                        [build_tool_adapter(db_url=cfg.storage.db_url), mcp_adapter]
                     )
                     logger.info("MCP tool adapter started with %d server(s)", len(mcp_configs))
                 except Exception:
@@ -116,6 +143,15 @@ async def lifespan(app: FastAPI) -> Any:
             logger.exception("MCP 适配器初始化失败，回退到内置工具")
 
     yield
+
+    if cfg.scheduling.enabled:
+        try:
+            from astracore.modules.scheduling.scheduler import get_scheduler  # noqa: PLC0415
+
+            get_scheduler().shutdown(wait=False)
+            logger.info("Scheduler stopped")
+        except Exception:
+            logger.exception("Scheduler 停止时出错")
 
     if mcp_adapter is not None:
         try:
@@ -156,13 +192,22 @@ def create_app() -> FastAPI:
     app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
     app.include_router(chat.router, prefix="/api/v1/chat", tags=["chat"])
     app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["conversations"])
-    if cfg.retrieval.enabled:
+    if cfg.storage.vector.enabled:
         app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
     app.include_router(skills.router, prefix="/api/v1/skills", tags=["skills"])
     app.include_router(memory.router, prefix="/api/v1/memory", tags=["memory"])
     app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])
     app.include_router(settings.router, prefix="/api/v1/settings", tags=["settings"])
     app.include_router(system.router, prefix="/api/v1/system", tags=["system"])
+
+    if cfg.scheduling.enabled:
+        from astracore.modules.scheduling import api as scheduling  # noqa: PLC0415
+
+        app.include_router(
+            scheduling.router,
+            prefix="/api/v1/scheduled-tasks",
+            tags=["scheduled-tasks"],
+        )
 
     dist_dir = Path(__file__).resolve().parents[3] / "frontend" / "dist"
     if dist_dir.exists():

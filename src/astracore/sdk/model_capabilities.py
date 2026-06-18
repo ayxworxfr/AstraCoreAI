@@ -8,9 +8,15 @@ class LLMCapabilities(BaseModel):
 
     tools: bool = True
     thinking: bool = False
+    adaptive_thinking_only: bool = False
+    """Opus 4.7+ only supports adaptive thinking; budget_tokens is not accepted."""
     temperature: bool = True
     anthropic_blocks: bool = False
     structured_output_via_tools: bool = True
+    prompt_cache: bool = False
+    """Anthropic prompt caching via cache_control blocks."""
+    reasoning_effort_capable: bool = False
+    """GPT-5 / o-series: supports reasoning_effort and verbosity parameters."""
 
 
 _DEFAULT_CAPABILITIES = LLMCapabilities()
@@ -31,17 +37,32 @@ def infer_model_capabilities(
         return LLMCapabilities(
             tools=True,
             thinking=True,
+            adaptive_thinking_only=False,
             temperature=True,
             anthropic_blocks=False,
             structured_output_via_tools=False,  # thinking 模式不支持 tool_choice
+            prompt_cache=True,
         )
 
     if normalized_model == "claude-opus-4-7":
         return LLMCapabilities(
             tools=True,
-            thinking=False,
+            thinking=True,
+            adaptive_thinking_only=True,  # Opus 4.7+ 只支持 adaptive，不接受 budget_tokens
             temperature=False,
             anthropic_blocks=False,
+            prompt_cache=True,
+        )
+
+    if normalized_model in ("gpt-5", "gpt-5.5") or (
+        "gpt-5" in normalized_model and normalized_protocol in ("openai", "responses")
+    ):
+        return LLMCapabilities(
+            tools=True,
+            thinking=False,
+            temperature=True,
+            anthropic_blocks=False,
+            reasoning_effort_capable=True,
         )
 
     if normalized_model == "deepseek-v4-flash":

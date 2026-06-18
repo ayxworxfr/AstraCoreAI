@@ -22,6 +22,7 @@ import { fetchConversations } from '@/features/chat/services/conversationService
 import {
   createMemory,
   deleteMemory,
+  deleteMemoryBatch,
   fetchMemory,
   updateMemory,
   type MemoryCreateRequest,
@@ -89,6 +90,7 @@ export default function MemoryPage(): JSX.Element {
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<MemoryApiItem | null>(null);
   const [projectModalOpen, setProjectModalOpen] = useState(false);
@@ -120,6 +122,7 @@ export default function MemoryPage(): JSX.Element {
   );
 
   const load = async () => {
+    setSelectedRowKeys([]);
     setLoading(true);
     setError(null);
     try {
@@ -196,6 +199,20 @@ export default function MemoryPage(): JSX.Element {
     await load();
   };
 
+  const handleBatchDelete = () => {
+    Modal.confirm({
+      title: `删除 ${selectedRowKeys.length} 条记忆？`,
+      content: '此操作不可撤销。',
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        await deleteMemoryBatch(selectedRowKeys);
+        await load();
+      },
+    });
+  };
+
   const submitProject = async () => {
     const values = await projectForm.validateFields();
     await createProject({
@@ -236,6 +253,11 @@ export default function MemoryPage(): JSX.Element {
             <Button icon={<ReloadOutlined />} onClick={() => { void load(); }}>
               刷新
             </Button>
+            {selectedRowKeys.length > 0 && (
+              <Button danger icon={<DeleteOutlined />} onClick={handleBatchDelete}>
+                删除所选 ({selectedRowKeys.length})
+              </Button>
+            )}
             <NavLink to="/memory/approvals">
               <Button>待审批</Button>
             </NavLink>
@@ -321,6 +343,10 @@ export default function MemoryPage(): JSX.Element {
           loading={loading}
           dataSource={items}
           pagination={{ pageSize: 12, showSizeChanger: false }}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (keys) => setSelectedRowKeys(keys as string[]),
+          }}
           locale={{
             emptyText: (
               <Empty

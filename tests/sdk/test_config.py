@@ -82,9 +82,11 @@ def test_llm_profile_infers_claude_opus_capabilities() -> None:
     )
 
     assert profile.capabilities.tools is True
-    assert profile.capabilities.thinking is False
+    assert profile.capabilities.thinking is True
+    assert profile.capabilities.adaptive_thinking_only is True
     assert profile.capabilities.temperature is False
     assert profile.capabilities.anthropic_blocks is False
+    assert profile.capabilities.prompt_cache is True
 
 
 def test_llm_profile_infers_deepseek_anthropic_capabilities() -> None:
@@ -130,12 +132,12 @@ llm:
       base_url: https://proxy.example.com/aws
       api_key_env: ANTHROPIC_PROXY_API_KEY
       model: claude-sonnet-4-6
-memory:
-  redis_url: redis://localhost:6379/0
+storage:
   db_url: sqlite+aiosqlite:///./astracore.db
-retrieval:
-  collection_name: astracore
-  persist_directory: ./chroma_db
+  redis_url: redis://localhost:6379/0
+  vector:
+    collection_name: astracore
+    persist_directory: ./chroma_db
 mcp:
   servers:
     - type: filesystem
@@ -156,5 +158,8 @@ mcp:
     assert profile.id == "claude-sonnet"
     assert profile.api_key == "test-key"
     assert profile.capabilities.thinking is True
+    assert cfg.storage.db_url == "sqlite+aiosqlite:///./astracore.db"
+    assert cfg.storage.vector.collection_name == "astracore"
+    assert cfg.storage.vector.persist_directory == "./chroma_db"
     assert len(cfg.mcp.servers) == 2
     assert cfg.mcp.servers[0].name == "filesystem"

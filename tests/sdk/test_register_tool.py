@@ -138,7 +138,7 @@ def test_chat_options_fields():
         "model_profile",
         "temperature",
         "use_tools",
-        "enable_thinking",
+        "thinking_mode",
         "thinking_budget",
         "enable_rag",
         "enable_web",

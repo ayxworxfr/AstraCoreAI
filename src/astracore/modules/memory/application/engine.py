@@ -274,6 +274,12 @@ class MemoryEngine:
         if self._vector_adapter is not None:
             await self._vector_adapter.delete(memory_id)
 
+    async def delete_memories_by_ids(self, ids: list[str]) -> int:
+        count = await self._store.delete_memories_by_ids(ids)
+        if self._vector_adapter is not None:
+            await self._vector_adapter.delete_batch(ids)
+        return count
+
     async def delete_session_memories(self, session_id: UUID) -> int:
         return await self._store.delete_memories(
             scope=MemoryScope.SESSION,

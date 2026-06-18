@@ -16,6 +16,12 @@ from astracore.shared.ports.llm import LLMResponse
 _CONFIG_YAML_ENV_KEYS = ("ANTHROPIC_PROXY_API_KEY", "DEEPSEEK_API_KEY")
 
 
+@pytest.fixture(scope="function")
+def manual_test():
+    if not os.environ.get("MANUAL_TEST"):
+        pytest.skip("skip manual test")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _ensure_test_api_keys():
     """Inject placeholder API keys so config.yaml loads cleanly during tests.

@@ -10,16 +10,23 @@ llm:
       extra_headers:
         anthropic-beta: context-1m-2025-08-07
       max_tokens: 16384
+      # top_p: null             # 核采样概率截断，与 temperature 二选一
+      # stop_sequences: []      # 强终止序列，最多 4 条
+      # enable_prompt_cache: false  # 开启 Anthropic prompt caching
+      # thinking_mode: off      # 'off' | 'on' | 'adaptive'
+      # thinking_budget: 8000   # thinking_mode='on' 时的 token 预算（≥1000）
+      # timeout_s: null         # 覆盖全局超时（秒）
+      # max_retries: null       # 覆盖全局重试次数
+      # service_tier: null      # 'priority' | 'standard' | 'batch'
 
     - id: claude-opus
       label: Claude Opus
       protocol: anthropic
       base_url: https://anyrouter.top
       api_key_env: ANTHROPIC_PROXY_API_KEY
-      model: claude-opus-4-7
-      extra_headers:
-        anthropic-beta: context-1m-2025-08-07
+      model: claude-opus-4-6
       max_tokens: 16384
+      # thinking_mode: adaptive # Opus 4.7+ 支持 adaptive 自适应思考
 
     - id: deepseek-chat
       label: DeepSeek Chat
@@ -29,12 +36,12 @@ llm:
       model: deepseek-v4-flash
       max_tokens: 16384
 
-    - id: gpt-5-5
-      label: GPT-5.5
-      protocol: responses
-      base_url: https://anyrouter.top/v1
+    - id: deepseek-v4-pro
+      label: DeepSeek V4 Pro
+      protocol: openai
+      base_url: https://llm-proxy.oa.com/private/v1
       api_key_env: ANTHROPIC_PROXY_API_KEY
-      model: gpt-5.5
+      model: deepseek-v4-pro
       max_tokens: 16384
 
     - id: glm-5-1
@@ -45,23 +52,49 @@ llm:
       model: glm-5.1
       max_tokens: 16384
 
+# policy 全局默认
+policy:
+  retry:
+    max_retries: 3
+    retry_on_status_codes: [429, 500, 502, 503, 504]
+  timeout:
+    llm_timeout_s: 180          # LLM 调用超时（秒）
+    tool_timeout_s: 120         # 工具执行超时（秒，0 = 不限制）
+    retrieval_timeout_s: 10     # RAG 检索超时（秒）
+  compaction:
+    context_window_tokens: 200000  # 估算上下文窗口
+    trigger_ratio: 0.5             # 估算 token 超过 window*ratio 时压缩
+    compact_batch_ratio: 0.6       # 单次压缩最旧 60% 消息
+    chars_per_token: 0.6           # 字符到 token 的近似换算（中英混合）
+    default_max_messages: 20       # user_settings.context_max_messages 兜底
+
 agent:
   max_tool_result_chars: 20000
   max_tool_iterations: 8
-  tool_timeout_s: 60
   enable_spawn_agents: false
 
-memory:
-  redis_url: redis://localhost:6379/0
-  db_url: sqlite+aiosqlite:///./astracore.db
-
-retrieval:
-  # 设为 false 可完全关闭 RAG 功能（不注册 /api/v1/rag 路由，不加载向量模型）
+hitl:
   enabled: true
-  collection_name: astracore
-  persist_directory: ./chroma_db
-  # embedding_model: all-MiniLM-L6-v2          # 默认，英文场景，~90MB
-  embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言场景，~420MB
+  inline_question_timeout: 300
+  require_tool_approval: true
+  require_memory_promotion_approval: false
+
+# 认证配置
+auth:
+  secret_key: change-me-in-production   # 生产环境必须替换为强随机字符串
+  token_expire_days: 30                 # JWT token 有效期（天）
+  allow_registration: true              # false 时关闭注册接口（首个用户注册后建议关闭）
+
+storage:
+  db_url: sqlite+aiosqlite:///./astracore.db
+  redis_url: redis://localhost:6379/0
+  vector:
+    # 设为 false 可完全关闭 RAG 功能（不注册 /api/v1/rag 路由，不加载向量模型）
+    enabled: true
+    collection_name: astracore
+    persist_directory: ./chroma_db
+    # embedding_model: all-MiniLM-L6-v2          # 默认，英文场景，~90MB
+    embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言场景，~420MB
 
 mcp:
   servers:
@@ -73,11 +106,12 @@ mcp:
       allow_dirs:
         - ~/develope
 
-hitl:
+scheduling:
   enabled: true
-  inline_question_timeout: 300
-  require_tool_approval: true
-  require_memory_promotion_approval: true
+  max_tasks_per_user: 50
+  default_timezone: Asia/Shanghai
+  misfire_grace_seconds: 300
+  max_concurrent_runs: 5
 
 debug:
-  log_prompts: false
+  log_prompts: true

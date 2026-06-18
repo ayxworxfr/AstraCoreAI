@@ -12,9 +12,11 @@ import {
   DeleteOutlined,
   GlobalOutlined,
   DownCircleOutlined,
+  DownOutlined,
   CloseCircleOutlined,
 } from '@ant-design/icons';
-import { Flex, Typography, Alert, Avatar, Button, Collapse, Tooltip, Popover, theme } from 'antd';
+import { Flex, Typography, Alert, Avatar, Button, Collapse, Tooltip, Popover, Dropdown, theme } from 'antd';
+import type { MenuProps } from 'antd';
 import { useChatStore } from '@/features/chat/store/chatStore';
 import { useSkillStore } from '@/features/skills/store/skillStore';
 import MarkdownContent from './MarkdownContent';
@@ -31,6 +33,74 @@ const SUGGESTED_PROMPTS = [
   { key: '3', label: '给我讲个故事吧', icon: <ThunderboltOutlined /> },
   { key: '4', label: '我们来玩个游戏吧', icon: <ThunderboltOutlined /> },
 ];
+
+type ThinkingPreference = 'off' | 'on' | 'adaptive';
+
+const THINKING_MODE_OPTIONS: Array<{ value: ThinkingPreference; label: string; title: string }> = [
+  { value: 'off', label: '关', title: '关闭思考' },
+  { value: 'on', label: '深度', title: '强制使用深度思考' },
+  { value: 'adaptive', label: '自适应', title: '由模型按问题复杂度决定是否深度思考' },
+];
+
+function ThinkingModeSelector({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: ThinkingPreference;
+  disabled: boolean;
+  onChange: (value: ThinkingPreference) => void;
+}) {
+  const { token } = theme.useToken();
+  const active = value !== 'off';
+  const selected = THINKING_MODE_OPTIONS.find((option) => option.value === value);
+  const menuItems: MenuProps['items'] = THINKING_MODE_OPTIONS.map((option) => ({
+    key: option.value,
+    label: (
+      <Flex vertical gap={2}>
+        <Typography.Text strong={value === option.value}>{option.label}</Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>{option.title}</Typography.Text>
+      </Flex>
+    ),
+  }));
+
+  return (
+    <Tooltip title={selected?.title ?? '选择思考模式'}>
+      <Dropdown
+        disabled={disabled}
+        trigger={['click']}
+        menu={{
+          items: menuItems,
+          selectedKeys: [value],
+          onClick: ({ key }) => onChange(key as ThinkingPreference),
+        }}
+      >
+        <Button
+          aria-label="选择思考模式"
+          size="small"
+          disabled={disabled}
+          type={active ? 'primary' : 'default'}
+          ghost={active}
+          icon={<ThunderboltOutlined />}
+          style={{
+            borderRadius: 20,
+            fontSize: 12,
+            height: 26,
+            padding: '0 10px',
+            ...(active
+              ? { borderColor: '#7c3aed', color: '#7c3aed', background: '#faf5ff' }
+              : { color: token.colorTextSecondary }),
+          }}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {selected?.label ?? '思考'}
+            <DownOutlined style={{ fontSize: 10, opacity: 0.7 }} />
+          </span>
+        </Button>
+      </Dropdown>
+    </Tooltip>
+  );
+}
 
 function ThinkingBlock({
   thinking,
@@ -632,7 +702,7 @@ export default function ChatMain(): JSX.Element {
     hasMoreMessages,
     isLoadingMessages,
     isLoadingMoreMessages,
-    enableThinking,
+    thinkingMode,
     enableRag,
     enableTools,
     enableWeb,
@@ -640,7 +710,7 @@ export default function ChatMain(): JSX.Element {
     latestUsageByConversation,
     pendingQuestionByConversation,
     initConversations,
-    setEnableThinking,
+    setThinkingMode,
     setEnableRag,
     setEnableTools,
     setEnableWeb,
@@ -916,27 +986,11 @@ export default function ChatMain(): JSX.Element {
         <div style={{ maxWidth: 860, margin: '0 auto', width: '100%', padding: '0 24px' }}>
           {/* 工具栏独立一行，不占 Sender 内部空间 */}
           <Flex align="center" gap={6} style={{ marginBottom: 8, flexWrap: 'wrap' }}>
-            <Tooltip title={enableThinking ? '关闭深度思考' : '开启深度思考（Extended Thinking）'}>
-              <Button
-                size="small"
-                type={enableThinking ? 'primary' : 'default'}
-                ghost={enableThinking}
-                disabled={toolbarDisabled}
-                onClick={() => setEnableThinking(!enableThinking)}
-                style={{
-                  borderRadius: 20,
-                  fontSize: 12,
-                  height: 26,
-                  padding: '0 10px',
-                  ...(enableThinking
-                    ? { borderColor: '#722ed1', color: '#722ed1', background: '#f9f0ff' }
-                    : {}),
-                }}
-                icon={<span style={{ fontSize: 11 }}>✦</span>}
-              >
-                深度思考
-              </Button>
-            </Tooltip>
+            <ThinkingModeSelector
+              value={thinkingMode}
+              disabled={toolbarDisabled}
+              onChange={setThinkingMode}
+            />
 
             <Tooltip title={enableRag ? '关闭知识库检索' : '开启知识库检索（RAG）'}>
               <Button
