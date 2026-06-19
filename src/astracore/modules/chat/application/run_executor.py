@@ -351,6 +351,8 @@ async def execute_run_loop(
 
     _sink("done", {"conversation": conv_meta} if conv_meta else {})
 
+    # 取消自动提取，节约 token
+    memory_saved_by_tool = True
     if memory_saved_by_tool:
         logger.info("本轮已调用 save_memory，跳过自动提取: run_id=%s", run_id)
     else:

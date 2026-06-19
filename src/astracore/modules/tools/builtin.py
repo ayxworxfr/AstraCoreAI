@@ -167,7 +167,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         content: str,
         subject: str = "",
         memory_type: str = "fact",
-        scope: str = "user",
+        scope: str = "session",
         importance: int = 3,
         _context: dict[str, object] | None = None,
     ) -> str:
@@ -444,7 +444,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
             ToolParameter(
                 name="scope",
                 type=ToolParameterType.STRING,
-                description="范围（选填，默认 session）：user（跨会话持久）/ session（仅本次会话）/ global",
+                description="范围（选填，默认 session）：session（仅本次会话）/ user（跨会话持久）/ global",
                 required=False,
             ),
             ToolParameter(
