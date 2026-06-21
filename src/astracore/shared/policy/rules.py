@@ -39,7 +39,7 @@ class CompactionRule(BaseModel):
     chars_per_token: float = Field(default=0.6, gt=0.0)
     """字符数到 token 的近似换算系数（中文混合场景默认 0.6）。"""
 
-    default_max_messages: int = Field(default=20, ge=1)
+    default_max_messages: int = Field(default=10, ge=1)
     """未配置 ``user_settings.context_max_messages`` 时的历史消息数兜底。"""
 
 
