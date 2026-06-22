@@ -273,3 +273,53 @@ def test_build_tool_definitions_excludes_optional_params(mock_llm):
     required = defs[0]["input_schema"]["required"]
     assert "required_p" in required
     assert "optional_p" not in required
+
+
+# ---------- 工具结果截断（max_output_chars metadata override） ----------
+
+
+def test_get_tool_max_chars_uses_per_tool_metadata(mock_llm):
+    """注册时声明 metadata['max_output_chars'] 应覆盖全局上限。"""
+    tools = MagicMock()
+    tools.get_definitions.return_value = [
+        ToolDefinition(
+            name="web_search",
+            description="search",
+            parameters=[],
+            metadata={"max_output_chars": 8_000},
+        )
+    ]
+    uc = ToolLoopUseCase(mock_llm, tools, PolicyEngine(), max_tool_result_chars=20_000)
+    assert uc._get_tool_max_chars("web_search") == 8_000
+
+
+def test_get_tool_max_chars_falls_back_to_global(mock_llm):
+    """未声明 metadata 的工具回退到全局 max_tool_result_chars。"""
+    tools = MagicMock()
+    tools.get_definitions.return_value = [
+        ToolDefinition(name="plain_tool", description="d", parameters=[])
+    ]
+    uc = ToolLoopUseCase(mock_llm, tools, PolicyEngine(), max_tool_result_chars=20_000)
+    assert uc._get_tool_max_chars("plain_tool") == 20_000
+
+
+def test_truncate_tool_result_appends_hint_when_over_limit(loop_uc):
+    raw = "x" * 100
+    out = loop_uc._truncate_tool_result(raw, limit=20)
+    assert out.startswith("x" * 20)
+    assert "[内容已截断" in out
+    assert "100 字符" in out
+
+
+def test_truncate_tool_result_passes_through_when_within_limit(loop_uc):
+    raw = "short content"
+    assert loop_uc._truncate_tool_result(raw, limit=100) == raw
+
+
+def test_truncate_tool_result_uses_global_limit_when_no_override(mock_llm, mock_tools):
+    """limit=None 时回退到 self.max_tool_result_chars。"""
+    uc = ToolLoopUseCase(mock_llm, mock_tools, PolicyEngine(), max_tool_result_chars=50)
+    raw = "y" * 200
+    out = uc._truncate_tool_result(raw)  # limit=None
+    assert out.startswith("y" * 50)
+    assert "[内容已截断" in out

@@ -196,6 +196,8 @@ class MessageItem(BaseModel):
     created_at: str = ""
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
     model: str | None = None
 
 
@@ -303,6 +305,8 @@ def _run_row_to_messages(row: ChatRunRow) -> list[MessageItem]:
                 created_at=_utc_iso(row.completed_at or row.updated_at),
                 input_tokens=row.input_tokens,
                 output_tokens=row.output_tokens,
+                cache_read_input_tokens=row.cache_read_input_tokens,
+                cache_creation_input_tokens=row.cache_creation_input_tokens,
                 model=row.model,
             )
         )

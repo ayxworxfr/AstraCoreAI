@@ -146,6 +146,8 @@ async def execute_run_loop(
     round_count = 0
     total_input_tokens = 0
     total_output_tokens = 0
+    total_cache_read_input_tokens = 0
+    total_cache_creation_input_tokens = 0
     memory_saved_by_tool = False
 
     extra: dict[str, Any] = {}
@@ -165,6 +167,8 @@ async def execute_run_loop(
                 _u = event.metadata.get("usage", {})
                 total_input_tokens = int(_u.get("input_tokens", 0))
                 total_output_tokens = int(_u.get("output_tokens", 0))
+                total_cache_read_input_tokens = int(_u.get("cache_read_input_tokens", 0))
+                total_cache_creation_input_tokens = int(_u.get("cache_creation_input_tokens", 0))
                 if round_text_buffer:
                     flushed = "".join(round_text_buffer)
                     accumulated_content += flushed
@@ -331,6 +335,8 @@ async def execute_run_loop(
         status="done",
         input_tokens=total_input_tokens or None,
         output_tokens=total_output_tokens or None,
+        cache_read_input_tokens=total_cache_read_input_tokens or None,
+        cache_creation_input_tokens=total_cache_creation_input_tokens or None,
         model=ctx.profile.model or None,
     )
 
@@ -342,6 +348,8 @@ async def execute_run_loop(
             {
                 "input_tokens": total_input_tokens,
                 "output_tokens": total_output_tokens,
+                "cache_read_input_tokens": total_cache_read_input_tokens,
+                "cache_creation_input_tokens": total_cache_creation_input_tokens,
                 "model": ctx.profile.model,
             },
         )

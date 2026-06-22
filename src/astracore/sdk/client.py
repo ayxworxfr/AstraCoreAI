@@ -536,6 +536,7 @@ class AstraCoreClient:
         func: Any,
         description: str,
         parameters: list[ToolParameter],
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Register a custom tool available during tool-loop calls."""
         self._require_initialized()
@@ -544,6 +545,7 @@ class AstraCoreClient:
             func=func,
             description=description,
             parameters=parameters,
+            metadata=metadata,
         )
 
     # ------------------------------------------------------------------

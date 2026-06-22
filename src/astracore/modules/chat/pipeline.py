@@ -186,6 +186,9 @@ class ChatPipeline:
                     supports_temperature=profile.capabilities.temperature,
                     use_anthropic_blocks=profile.capabilities.anthropic_blocks,
                     structured_output_via_tools=profile.capabilities.structured_output_via_tools,
+                    timeout=self._config.policy.timeout.build_llm_httpx_timeout(
+                        overall_override=profile.timeout_s
+                    ),
                 )
             else:
                 self._llm_adapters[profile.id] = OpenAIAdapter(
@@ -195,6 +198,9 @@ class ChatPipeline:
                     extra_headers=profile.extra_headers,
                     protocol=profile.protocol,
                     max_tokens=profile.max_tokens,
+                    timeout=self._config.policy.timeout.build_llm_httpx_timeout(
+                        overall_override=profile.timeout_s
+                    ),
                 )
         return self._llm_adapters[profile.id]
 
@@ -549,6 +555,8 @@ class ChatPipeline:
         completed = False
         total_input_tokens = 0
         total_output_tokens = 0
+        total_cache_read_input_tokens = 0
+        total_cache_creation_input_tokens = 0
         try:
             async for event in tool_loop.execute_stream_with_tools(
                 session, allowed_tools=ctx.allowed_tools, **ctx.llm_kwargs
@@ -563,6 +571,10 @@ class ChatPipeline:
                         _u = event.metadata.get("usage", {})
                         total_input_tokens += int(_u.get("input_tokens", 0))
                         total_output_tokens += int(_u.get("output_tokens", 0))
+                        total_cache_read_input_tokens += int(_u.get("cache_read_input_tokens", 0))
+                        total_cache_creation_input_tokens += int(
+                            _u.get("cache_creation_input_tokens", 0)
+                        )
                     continue
                 yield event
             completed = True
@@ -574,7 +586,12 @@ class ChatPipeline:
         yield StreamEvent(
             event_type=StreamEventType.DONE,
             metadata={
-                "usage": {"input_tokens": total_input_tokens, "output_tokens": total_output_tokens}
+                "usage": {
+                    "input_tokens": total_input_tokens,
+                    "output_tokens": total_output_tokens,
+                    "cache_read_input_tokens": total_cache_read_input_tokens,
+                    "cache_creation_input_tokens": total_cache_creation_input_tokens,
+                }
             },
         )
 

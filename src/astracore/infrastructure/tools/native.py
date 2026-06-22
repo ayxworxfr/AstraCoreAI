@@ -30,6 +30,7 @@ class NativeToolAdapter(MutableToolAdapter):
         description: str,
         parameters: list[ToolParameter],
         requires_confirmation: bool = False,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Register a new tool."""
         self._tools[name] = func
@@ -38,6 +39,7 @@ class NativeToolAdapter(MutableToolAdapter):
             description=description,
             parameters=parameters,
             requires_confirmation=requires_confirmation,
+            metadata=metadata or {},
         )
 
     async def execute(

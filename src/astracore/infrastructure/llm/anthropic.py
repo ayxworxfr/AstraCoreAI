@@ -29,6 +29,7 @@ class AnthropicAdapter(LLMAdapter):
         supports_temperature: bool = True,
         use_anthropic_blocks: bool = False,
         structured_output_via_tools: bool = True,
+        timeout: Any = None,
     ):
         self.api_key = api_key
         self.default_model = default_model
@@ -38,6 +39,10 @@ class AnthropicAdapter(LLMAdapter):
         self.supports_temperature = supports_temperature
         self.use_anthropic_blocks = use_anthropic_blocks
         self.structured_output_via_tools = structured_output_via_tools
+        # ``timeout`` 接受 ``httpx.Timeout`` / float / None；None 时由 SDK 取自身默认（600s）。
+        # 用 connect/read/write/pool 分段值（见 TimeoutRule.build_llm_httpx_timeout）治
+        # stale stream：服务端长时间不下发 chunk 时主动断开重连。
+        self._timeout = timeout
         self._client: Any = None
 
     def _get_client(self) -> Any:
@@ -51,6 +56,8 @@ class AnthropicAdapter(LLMAdapter):
                     kwargs["base_url"] = self._base_url
                 if self._extra_headers:
                     kwargs["default_headers"] = self._extra_headers
+                if self._timeout is not None:
+                    kwargs["timeout"] = self._timeout
                 client = AsyncAnthropic(**kwargs)
                 # SDK 会从 ANTHROPIC_AUTH_TOKEN 读 bearer token，并与 X-Api-Key 同时发送，
                 # 导致第三方 anthropic 兼容端点（如 DeepSeek）拿错 key 后 401。
@@ -256,6 +263,12 @@ class AnthropicAdapter(LLMAdapter):
             usage={
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
+                "cache_creation_input_tokens": getattr(
+                    response.usage, "cache_creation_input_tokens", 0
+                )
+                or 0,
+                "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0)
+                or 0,
             },
         )
 
@@ -345,6 +358,8 @@ class AnthropicAdapter(LLMAdapter):
         completed_blocks: list[tuple[int, dict[str, Any]]] = []
         _input_tokens = 0
         _output_tokens = 0
+        _cache_creation_input_tokens = 0
+        _cache_read_input_tokens = 0
 
         async with client.messages.stream(**request_params) as stream:
             async for event in stream:
@@ -358,6 +373,12 @@ class AnthropicAdapter(LLMAdapter):
                         usage = getattr(msg, "usage", None)
                         if usage:
                             _input_tokens = getattr(usage, "input_tokens", 0) or 0
+                            _cache_creation_input_tokens = (
+                                getattr(usage, "cache_creation_input_tokens", 0) or 0
+                            )
+                            _cache_read_input_tokens = (
+                                getattr(usage, "cache_read_input_tokens", 0) or 0
+                            )
                 elif event.type == "message_delta":
                     usage = getattr(event, "usage", None)
                     if usage:
@@ -485,7 +506,12 @@ class AnthropicAdapter(LLMAdapter):
             event_type=StreamEventType.DONE,
             metadata={
                 self._ANTHROPIC_BLOCKS_KEY: assistant_blocks,
-                "usage": {"input_tokens": _input_tokens, "output_tokens": _output_tokens},
+                "usage": {
+                    "input_tokens": _input_tokens,
+                    "output_tokens": _output_tokens,
+                    "cache_creation_input_tokens": _cache_creation_input_tokens,
+                    "cache_read_input_tokens": _cache_read_input_tokens,
+                },
             },
         )
 

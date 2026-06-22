@@ -1,7 +1,8 @@
 """Tests for AnthropicAdapter — _convert_messages and generate_stream tool arg accumulation."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from astracore.infrastructure.llm.anthropic import AnthropicAdapter
@@ -12,6 +13,29 @@ from astracore.shared.ports.llm import StreamEventType
 @pytest.fixture
 def adapter():
     return AnthropicAdapter(api_key="test-key")
+
+
+# ---------- timeout passthrough ----------
+
+
+def test_adapter_passes_httpx_timeout_to_sdk():
+    """httpx.Timeout 应原样传入 AsyncAnthropic，治 stale stream。"""
+    timeout = httpx.Timeout(connect=5.0, read=300.0, write=30.0, pool=8.0)
+    adapter = AnthropicAdapter(api_key="k", timeout=timeout)
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value = MagicMock(auth_token=None)
+        adapter._get_client()
+        kwargs = mock_client.call_args.kwargs
+        assert kwargs["timeout"] is timeout
+
+
+def test_adapter_omits_timeout_kwarg_when_none():
+    """timeout=None 时不传 kwarg，让 SDK 用自身默认（600s）。"""
+    adapter = AnthropicAdapter(api_key="k", timeout=None)
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value = MagicMock(auth_token=None)
+        adapter._get_client()
+        assert "timeout" not in mock_client.call_args.kwargs
 
 
 # ---------- _convert_messages ----------

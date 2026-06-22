@@ -4,6 +4,7 @@ import { LogoutOutlined, MoonOutlined, RocketOutlined, SunOutlined } from '@ant-
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { useAuthStore } from '@/features/auth/store/authStore';
+import { useSkillStore } from '@/features/skills/store/skillStore';
 import { apiClient } from '@/shared/services/apiClient';
 
 const { Header, Content } = Layout;
@@ -15,14 +16,20 @@ const HEADER_USER_WIDTH = 132;
 
 export default function AppShell(): JSX.Element {
   const { theme, toggleTheme } = useSettingsStore();
+  const fetchSettings = useSkillStore((s) => s.fetchSettings);
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuthStore();
 
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [settingsReady, setSettingsReady] = useState(false);
   const keepOpenRef = useRef(false);
 
   const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0);
+
+  useEffect(() => {
+    void fetchSettings().finally(() => setSettingsReady(true));
+  }, [fetchSettings]);
 
   useEffect(() => {
     const fetchCount = () => {
@@ -177,7 +184,7 @@ export default function AppShell(): JSX.Element {
         </div>
       </Header>
       <Content style={{ flex: '1 1 0', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        <Outlet />
+        {settingsReady ? <Outlet /> : null}
       </Content>
     </Layout>
   );

@@ -137,13 +137,21 @@ class CompositeToolAdapter(MutableToolAdapter):
         description: str,
         parameters: list[ToolParameter],
         requires_confirmation: bool = False,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Delegate registration to the first NativeToolAdapter in the chain."""
         from astracore.infrastructure.tools.native import NativeToolAdapter  # noqa: PLC0415
 
         for adapter in self._adapters:
             if isinstance(adapter, NativeToolAdapter):
-                adapter.register_tool(name, func, description, parameters, requires_confirmation)
+                adapter.register_tool(
+                    name,
+                    func,
+                    description,
+                    parameters,
+                    requires_confirmation,
+                    metadata=metadata,
+                )
                 self._routing[name] = adapter
                 return
         raise NotImplementedError(

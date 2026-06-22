@@ -26,6 +26,7 @@ import type { ChatMessage, SubAgentActivity, ThinkingMode, ToolActivity } from '
 import AppScrollArea from '@/shared/components/AppScrollArea';
 import { formatAppMessageTime } from '@/shared/utils/time';
 import TokenUsageBar from './TokenUsageBar';
+import { TTSButton } from '@/features/tts/TTSButton';
 
 const SUGGESTED_PROMPTS = [
   { key: '1', label: '你能做什么？', icon: <ThunderboltOutlined /> },
@@ -264,6 +265,9 @@ function MessageActions({
             style={{ ...btnStyle, color: token.colorError }}
           />
         </Tooltip>
+        {message.role === 'assistant' && message.content && (
+          <TTSButton messageId={message.id} content={message.content} btnStyle={btnStyle} />
+        )}
       </Flex>
       <span style={{
         fontSize: 11,

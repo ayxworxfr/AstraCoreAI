@@ -14,18 +14,58 @@ from astracore.shared.policy.rules import (
 )
 
 
-def _make_retry_predicate(status_codes: list[int]) -> Any:
+def _exception_full_name(exc: BaseException) -> str:
+    """Return ``module.ClassName`` for an exception. ``httpx._exceptions.ConnectError``
+    is normalised to ``httpx.ConnectError`` so config 字符串无需关心实现细节。"""
+    cls = exc.__class__
+    module = cls.__module__
+    # 把内部子模块（_exceptions、_client 之类的下划线模块）裁掉，匹配公开 API 名
+    if module.startswith("httpx."):
+        module = "httpx"
+    elif module.startswith("anthropic."):
+        module = "anthropic"
+    elif module.startswith("openai."):
+        module = "openai"
+    return f"{module}.{cls.__name__}"
+
+
+def _matches_exception_name(exc: BaseException, allow_names: list[str]) -> bool:
+    """True 当 exc 完整类名或任一基类完整类名命中白名单。"""
+    if not allow_names:
+        return False
+    allow_set = set(allow_names)
+    for cls in type(exc).__mro__:
+        module = cls.__module__
+        if module.startswith("httpx."):
+            module = "httpx"
+        elif module.startswith("anthropic."):
+            module = "anthropic"
+        elif module.startswith("openai."):
+            module = "openai"
+        if f"{module}.{cls.__name__}" in allow_set:
+            return True
+    return False
+
+
+def _make_retry_predicate(status_codes: list[int], exception_types: list[str]) -> Any:
     """Return a tenacity retry predicate.
 
-    Retries on all exceptions unless the exception has a `status_code` attribute
-    that is NOT in the configured status_codes list.
+    判定规则：
+    - 异常带 ``status_code`` 属性：仅当 code ∈ ``status_codes`` 才重试
+    - 异常无 ``status_code``：仅当类名（含基类）∈ ``exception_types`` 才重试
+
+    这样可避免 ValueError / JSONDecodeError / KeyError 等业务错误被无脑重试。
+    流式调用的中途断开（``httpx.RemoteProtocolError``）虽在白名单内，但流式入口本身不走
+    ``apply_retry_policy``，所以重试仅发生在非流式 ``generate`` 上下文——不会丢已下发 token。
     """
 
     def should_retry(exc: BaseException) -> bool:
         code = getattr(exc, "status_code", None)
-        if code is not None and code not in status_codes:
+        if code is not None:
+            return code in status_codes
+        if not isinstance(exc, Exception):
             return False
-        return isinstance(exc, Exception)
+        return _matches_exception_name(exc, exception_types)
 
     return should_retry
 
@@ -79,7 +119,9 @@ class PolicyEngine:
         Success records a hit; any exception records a failure.
         """
         rules = self.config.retry
-        predicate = _make_retry_predicate(rules.retry_on_status_codes)
+        predicate = _make_retry_predicate(
+            rules.retry_on_status_codes, rules.retry_on_exception_types
+        )
         cb = self.circuit_breaker
 
         @retry(

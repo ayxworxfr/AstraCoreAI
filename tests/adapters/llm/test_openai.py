@@ -16,6 +16,7 @@ def adapter() -> OpenAIAdapter:
 
 
 def test_openai_adapter_passes_extra_headers_to_client(monkeypatch):
+    pytest.importorskip("openai")
     created_kwargs = {}
 
     class FakeAsyncOpenAI:
@@ -36,6 +37,39 @@ def test_openai_adapter_passes_extra_headers_to_client(monkeypatch):
         "base_url": "https://proxy.example.com/v1",
         "default_headers": {"x-proxy-route": "glm"},
     }
+
+
+def test_openai_adapter_passes_httpx_timeout_to_client(monkeypatch):
+    """httpx.Timeout 应原样传入 AsyncOpenAI，治 stale stream。"""
+    pytest.importorskip("openai")
+    import httpx as _httpx  # noqa: PLC0415
+
+    created_kwargs = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            created_kwargs.update(kwargs)
+
+    monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
+    timeout = _httpx.Timeout(connect=5.0, read=300.0, write=30.0, pool=8.0)
+    adapter = OpenAIAdapter(api_key="k", timeout=timeout)
+    adapter._get_client()
+
+    assert created_kwargs["timeout"] is timeout
+
+
+def test_openai_adapter_omits_timeout_when_none(monkeypatch):
+    pytest.importorskip("openai")
+    created_kwargs = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            created_kwargs.update(kwargs)
+
+    monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
+    adapter = OpenAIAdapter(api_key="k", timeout=None)
+    adapter._get_client()
+    assert "timeout" not in created_kwargs
 
 
 class _FakeAsyncStream:
@@ -138,7 +172,12 @@ async def test_generate_uses_responses_api_when_configured():
         instructions="Be brief.",
     )
     assert result.content == "Hi there"
-    assert result.usage == {"input_tokens": 3, "output_tokens": 4}
+    assert result.usage == {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
 
 
 @pytest.mark.asyncio

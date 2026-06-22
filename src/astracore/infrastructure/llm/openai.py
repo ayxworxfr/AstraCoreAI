@@ -25,6 +25,7 @@ class OpenAIAdapter(LLMAdapter):
         extra_headers: dict[str, str] | None = None,
         protocol: str = "openai",
         max_tokens: int = 8192,
+        timeout: Any = None,
     ):
         self.api_key = api_key
         self.default_model = default_model
@@ -32,6 +33,9 @@ class OpenAIAdapter(LLMAdapter):
         self._extra_headers = extra_headers or {}
         self.protocol = protocol
         self.max_tokens = max_tokens
+        # ``timeout`` 接受 ``httpx.Timeout`` / float / None；None 时使用 SDK 默认（600s）。
+        # 与 AnthropicAdapter 一致：connect/read/write/pool 分段值，用于截断 stale stream。
+        self._timeout = timeout
         self._client: Any = None
 
     def _get_client(self) -> Any:
@@ -45,6 +49,8 @@ class OpenAIAdapter(LLMAdapter):
                     kwargs["base_url"] = self._base_url
                 if self._extra_headers:
                     kwargs["default_headers"] = self._extra_headers
+                if self._timeout is not None:
+                    kwargs["timeout"] = self._timeout
                 self._client = AsyncOpenAI(**kwargs)
             except ImportError as e:
                 raise ImportError(
@@ -146,11 +152,34 @@ class OpenAIAdapter(LLMAdapter):
         return "".join(parts)
 
     @staticmethod
+    def _extract_cache_tokens(usage: Any) -> tuple[int, int]:
+        """Return (cache_read_input_tokens, cache_creation_input_tokens) from a usage object.
+
+        DeepSeek exposes prompt_cache_hit_tokens as a top-level field.
+        OpenAI nests cached_tokens inside prompt_tokens_details.
+        Neither provider charges for cache creation (unlike Anthropic), so cache_creation is always 0.
+        """
+        if usage is None:
+            return 0, 0
+        # DeepSeek: top-level prompt_cache_hit_tokens
+        cache_hit = getattr(usage, "prompt_cache_hit_tokens", None)
+        if cache_hit is not None:
+            return int(cache_hit), 0
+        # OpenAI: nested prompt_tokens_details.cached_tokens
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details is not None:
+            return int(getattr(details, "cached_tokens", 0) or 0), 0
+        return 0, 0
+
+    @staticmethod
     def _response_usage(response: Any) -> dict[str, int]:
         usage = getattr(response, "usage", None)
+        cache_read, cache_creation = OpenAIAdapter._extract_cache_tokens(usage)
         return {
             "input_tokens": getattr(usage, "input_tokens", 0) if usage else 0,
             "output_tokens": getattr(usage, "output_tokens", 0) if usage else 0,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_creation,
         }
 
     async def _generate_responses(
@@ -326,6 +355,9 @@ class OpenAIAdapter(LLMAdapter):
                     )
                 )
 
+        cache_read, cache_creation = self._extract_cache_tokens(
+            response.usage if response.usage else None
+        )
         return LLMResponse(
             content=content,
             tool_calls=tool_calls,
@@ -333,6 +365,8 @@ class OpenAIAdapter(LLMAdapter):
             usage={
                 "input_tokens": response.usage.prompt_tokens if response.usage else 0,
                 "output_tokens": response.usage.completion_tokens if response.usage else 0,
+                "cache_read_input_tokens": cache_read,
+                "cache_creation_input_tokens": cache_creation,
             },
         )
 
@@ -393,6 +427,8 @@ class OpenAIAdapter(LLMAdapter):
         tool_call_index_map: dict[int, str] = {}
         _input_tokens = 0
         _output_tokens = 0
+        _cache_read_input_tokens = 0
+        _cache_creation_input_tokens = 0
 
         async for chunk in stream:
             if not chunk.choices:
@@ -400,6 +436,9 @@ class OpenAIAdapter(LLMAdapter):
                 if chunk.usage:
                     _input_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
                     _output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
+                    _cache_read_input_tokens, _cache_creation_input_tokens = (
+                        self._extract_cache_tokens(chunk.usage)
+                    )
                 continue
 
             delta = chunk.choices[0].delta
@@ -481,7 +520,14 @@ class OpenAIAdapter(LLMAdapter):
 
         yield StreamEvent(
             event_type=StreamEventType.DONE,
-            metadata={"usage": {"input_tokens": _input_tokens, "output_tokens": _output_tokens}},
+            metadata={
+                "usage": {
+                    "input_tokens": _input_tokens,
+                    "output_tokens": _output_tokens,
+                    "cache_read_input_tokens": _cache_read_input_tokens,
+                    "cache_creation_input_tokens": _cache_creation_input_tokens,
+                }
+            },
         )
 
     async def count_tokens(self, messages: list[Message]) -> int:

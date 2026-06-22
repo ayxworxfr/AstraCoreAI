@@ -374,6 +374,9 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=False,
             ),
         ],
+        # 知识库片段量级一般 5-10 条 × 1-2 KB，单次 8000 字符足够；
+        # 防止极端长文档把 context 撑爆触发 LLM API 流式超时。
+        metadata={"max_output_chars": 8_000},
     )
 
     native.register_tool(
@@ -397,6 +400,9 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=False,
             ),
         ],
+        # WebSearch 单条 result 平均 500-1500 字符 × 5 条 ≈ 5 KB；
+        # 8000 字符上限避免多轮联网搜索堆叠后 context 爆炸（10 次 × 8K = 80K，可控）。
+        metadata={"max_output_chars": 8_000},
     )
 
     native.register_tool(

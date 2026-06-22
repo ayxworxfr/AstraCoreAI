@@ -136,6 +136,12 @@ class MutableToolAdapter(ToolAdapter):
         description: str,
         parameters: list[ToolParameter],
         requires_confirmation: bool = False,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Register a new tool."""
+        """Register a new tool.
+
+        ``metadata`` 用于挂载工具级别的运行时约束，常用键：
+        - ``max_output_chars``: 单次工具结果截断上限（覆盖全局 ``agent.max_tool_result_chars``）
+        - ``timeout_s``: 工具自身超时（覆盖全局 ``policy.timeout.tool_timeout_s``）
+        """
         pass

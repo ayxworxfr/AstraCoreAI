@@ -365,6 +365,7 @@ class MCPToolAdapter(ToolAdapter):
         description: str,
         parameters: list[ToolParameter],
         requires_confirmation: bool = False,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         raise NotImplementedError(
             "MCPToolAdapter does not support manual tool registration. "
