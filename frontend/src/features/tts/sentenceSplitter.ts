@@ -11,6 +11,10 @@ const MAX_CHUNK_LEN = 180;
 const PERIOD_GUARD = '\x00';
 /** Sentinel inserted at sentence boundaries before splitting. */
 const BOUNDARY_MARK = '\x01';
+/** Marks Chinese/English em-dash pauses as a short audible pause for Web Speech. */
+const DASH_PAUSE_RE = /\s*[—-]{2,}\s*/g;
+/** Consecutive uppercase letters are usually acronyms and should be read letter by letter. */
+const ACRONYM_RE = /(^|[^A-Za-z])([A-Z]{2,})(?=$|[^a-z])/g;
 
 /** Common abbreviations whose trailing periods are not sentence boundaries. */
 const ABBREV_RE =
@@ -29,6 +33,16 @@ function protectNonBoundaryPeriods(text: string): string {
       // e.g. / i.e. / et al. — protect the trailing period only
       .replace(/\b(e\.g|i\.e|et\s+al)\./gi, (m) => m.slice(0, -1) + PERIOD_GUARD)
   );
+}
+
+function spellAcronyms(text: string): string {
+  return text.replace(ACRONYM_RE, (_match, prefix: string, acronym: string) => {
+    return `${prefix}${acronym.split('').join(' ')}`;
+  });
+}
+
+function normalizeForSpeech(text: string): string {
+  return spellAcronyms(text.replace(DASH_PAUSE_RE, '，'));
 }
 
 /** Further split chunks exceeding MAX_CHUNK_LEN at soft break points (, ; : space). */
@@ -81,7 +95,7 @@ export function splitIntoSentences(text: string): string[] {
     .replace(MATH_BLOCK_RE, ' ')
     .replace(MATH_INLINE_RE, ' ');
 
-  const guarded = protectNonBoundaryPeriods(cleaned);
+  const guarded = protectNonBoundaryPeriods(normalizeForSpeech(cleaned));
 
   // Insert BOUNDARY_MARK at every sentence boundary
   const marked = guarded
