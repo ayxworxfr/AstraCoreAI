@@ -35,8 +35,9 @@ class LLMProfileConfig(BaseModel):
     """核采样概率截断。null = 不发送，使用 provider 默认值。与 temperature 二选一调整。"""
     stop_sequences: list[str] = Field(default_factory=list)
     """强终止序列，最多 4 条。OpenAI 和 Anthropic 均支持。"""
-    enable_prompt_cache: bool = False
-    """仅 Anthropic 协议生效。为 system prompt 注入 cache_control，显著降低输入 token 成本。"""
+    enable_prompt_cache: bool = True
+    """仅 Anthropic 协议生效（同时需要 capabilities.prompt_cache=True）。
+    为 system prompt 注入 cache_control，显著降低输入 token 成本。"""
 
     # ── Slice B: 推理控制 ──────────────────────────────────────────────
     thinking_mode: str | None = None

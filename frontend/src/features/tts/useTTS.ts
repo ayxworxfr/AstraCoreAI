@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useTTSStore } from './ttsStore';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
-import { splitIntoSentences } from './sentenceSplitter';
-import { resolveVoice } from './voiceRegistry';
+import { DEFAULT_VOICE_ID } from './voiceRegistry';
+import { apiClient } from '@/shared/services/apiClient';
 import type { TTSStatus } from './ttsStore';
-
-export const isSpeechSupported =
-  typeof window !== 'undefined' && 'speechSynthesis' in window;
 
 export type UseTTSReturn = {
   status: TTSStatus;
@@ -16,105 +13,116 @@ export type UseTTSReturn = {
 };
 
 /**
- * Manages Web Speech API playback for one chat message.
+ * Manages Edge TTS playback for one chat message via the backend proxy.
  *
- * Uses a ref-based speakNext pattern so that onend callbacks always call the
- * latest version of the function without stale closure issues.
+ * Fetches an audio/mpeg blob from /api/v1/tts/synthesize and plays it
+ * with an HTMLAudioElement. AbortController cancels in-flight requests
+ * when stop() is called or another message takes over.
  *
- * Only one message can play at a time — calling play() cancels any ongoing
- * speech first, which triggers the playing message's onend to notice the
- * store state change and stop re-queuing.
+ * Only one message can play at a time — calling play() on a second message
+ * updates the store's activeMessageId, which causes the first message's
+ * useEffect to abort its request and stop its audio element.
  */
 export function useTTS(messageId: string, text: string): UseTTSReturn {
   const { activeMessageId, status, setActive, clearActive } = useTTSStore();
   const isActive = activeMessageId === messageId;
   const currentStatus: TTSStatus = isActive ? status : 'idle';
 
-  const queueRef = useRef<string[]>([]);
-  const cancelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
 
-  // Stable ref: always points to the latest speakNext implementation.
-  // Using a ref avoids stale closures in utter.onend without adding
-  // speakNext itself to dependency arrays.
-  const speakNextRef = useRef<() => void>(() => {});
-  speakNextRef.current = () => {
-    if (queueRef.current.length === 0) {
-      useTTSStore.getState().clearActive();
-      return;
+  const cleanup = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      audioRef.current = null;
     }
-    const sentence = queueRef.current.shift()!;
-    const { tts } = useSettingsStore.getState();
-
-    const utter = new SpeechSynthesisUtterance(sentence);
-    utter.rate = tts.rate;
-    utter.pitch = tts.pitch;
-    const voice = resolveVoice(tts.voiceName);
-    if (voice) utter.voice = voice;
-
-    utter.onend = () => {
-      const state = useTTSStore.getState();
-      // Guard: only continue if this message is still the active one.
-      if (state.activeMessageId === messageId && state.status === 'playing') {
-        speakNextRef.current();
-      }
-    };
-    utter.onerror = () => {
-      useTTSStore.getState().clearActive();
-    };
-
-    speechSynthesis.speak(utter);
-  };
-
-  const play = useCallback(() => {
-    if (!isSpeechSupported) return;
-    // Cancel any currently playing speech across all messages.
-    speechSynthesis.cancel();
-    if (cancelTimerRef.current) {
-      clearTimeout(cancelTimerRef.current);
-      cancelTimerRef.current = null;
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
     }
-
-    const sentences = splitIntoSentences(text);
-    if (!sentences.length) return;
-
-    queueRef.current = [...sentences];
-    setActive(messageId);
-
-    // Small delay: Chrome requires cancel() to fully settle before speak().
-    cancelTimerRef.current = setTimeout(() => {
-      cancelTimerRef.current = null;
-      speakNextRef.current();
-    }, 80);
-  }, [text, messageId, setActive]);
+  }, []);
 
   const stop = useCallback(() => {
     if (!isActive) return;
-    if (cancelTimerRef.current) {
-      clearTimeout(cancelTimerRef.current);
-      cancelTimerRef.current = null;
-    }
-    speechSynthesis.cancel();
-    queueRef.current = [];
+    cleanup();
     clearActive();
-  }, [isActive, clearActive]);
+  }, [isActive, cleanup, clearActive]);
 
-  // Clear local queue when another message takes over.
+  const play = useCallback(() => {
+    cleanup();
+
+    const { tts } = useSettingsStore.getState();
+    const ab = new AbortController();
+    abortRef.current = ab;
+    setActive(messageId);
+
+    apiClient
+      .post<Blob>(
+        '/api/v1/tts/synthesize',
+        {
+          text: text.slice(0, 8000),
+          voice: tts.voiceName ?? DEFAULT_VOICE_ID,
+          rate: tts.rate,
+          pitch: tts.pitch,
+        },
+        { responseType: 'blob', signal: ab.signal },
+      )
+      .then((response) => {
+        if (ab.signal.aborted) return;
+
+        const url = URL.createObjectURL(response.data);
+        blobUrlRef.current = url;
+        const audio = new Audio(url);
+        audioRef.current = audio;
+
+        audio.onended = () => {
+          URL.revokeObjectURL(url);
+          blobUrlRef.current = null;
+          audioRef.current = null;
+          useTTSStore.getState().clearActive();
+        };
+        audio.onerror = () => {
+          URL.revokeObjectURL(url);
+          blobUrlRef.current = null;
+          audioRef.current = null;
+          useTTSStore.getState().clearActive();
+        };
+
+        audio.play().catch(() => {
+          cleanup();
+          useTTSStore.getState().clearActive();
+        });
+      })
+      .catch((err: unknown) => {
+        if (ab.signal.aborted) return;
+        console.error('[TTS] synthesize failed', err);
+        cleanup();
+        useTTSStore.getState().clearActive();
+      });
+  }, [text, messageId, setActive, cleanup]);
+
+  // When another message takes over, abort this message's request and audio.
   useEffect(() => {
     if (!isActive) {
-      queueRef.current = [];
+      cleanup();
     }
-  }, [isActive]);
+  }, [isActive, cleanup]);
 
   // Cleanup on unmount.
   useEffect(() => {
     return () => {
-      if (cancelTimerRef.current) clearTimeout(cancelTimerRef.current);
       if (useTTSStore.getState().activeMessageId === messageId) {
-        speechSynthesis.cancel();
+        cleanup();
         useTTSStore.getState().clearActive();
+      } else {
+        cleanup();
       }
     };
-  }, [messageId]);
+  }, [messageId, cleanup]);
 
-  return { status: currentStatus, play, stop, supported: isSpeechSupported };
+  return { status: currentStatus, play, stop, supported: true };
 }

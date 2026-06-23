@@ -25,6 +25,7 @@ from astracore.modules.skills import api as skills
 from astracore.modules.skills.seeds import seed_builtin_skills, seed_documents
 from astracore.modules.system import api as system
 from astracore.modules.system import health_api as health
+from astracore.modules.tts import api as tts
 from astracore.modules.users import api as users
 from astracore.shared.observability.logger import get_logger, setup_logging
 
@@ -199,6 +200,7 @@ def create_app() -> FastAPI:
     app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])
     app.include_router(settings.router, prefix="/api/v1/settings", tags=["settings"])
     app.include_router(system.router, prefix="/api/v1/system", tags=["system"])
+    app.include_router(tts.router, prefix="/api/v1/tts", tags=["tts"])
 
     if cfg.scheduling.enabled:
         from astracore.modules.scheduling import api as scheduling  # noqa: PLC0415

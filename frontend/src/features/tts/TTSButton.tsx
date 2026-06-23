@@ -3,18 +3,15 @@ import { Button, Flex, Popover, Select, Slider, Tooltip, Typography } from 'antd
 import { useTTS } from './useTTS';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { stripMarkdown } from './markdownStripper';
-import { useAvailableVoices } from './voiceRegistry';
+import { EDGE_TTS_VOICES } from './voiceRegistry';
 
 function TTSSettingsPanel() {
   const { tts, setTTS } = useSettingsStore();
-  const voices = useAvailableVoices();
 
-  const voiceOptions = voices
-    .filter((v) => v.lang.startsWith('zh') || v.lang.startsWith('en'))
-    .map((v) => ({ value: v.name, label: v.name }));
+  const voiceOptions = EDGE_TTS_VOICES.map((v) => ({ value: v.id, label: v.label }));
 
   return (
-    <Flex vertical gap={14} style={{ width: 220 }}>
+    <Flex vertical gap={14} style={{ width: 260 }}>
       <div>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           音色
@@ -22,12 +19,11 @@ function TTSSettingsPanel() {
         <Select
           style={{ width: '100%', marginTop: 4 }}
           size="small"
-          placeholder="自动选择"
+          placeholder="晓晓（默认）"
           allowClear
           value={tts.voiceName ?? undefined}
           onChange={(v) => setTTS({ voiceName: v ?? null })}
           options={voiceOptions}
-          notFoundContent="无可用语音"
         />
       </div>
       <div>

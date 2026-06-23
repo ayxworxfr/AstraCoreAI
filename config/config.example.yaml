@@ -11,7 +11,7 @@ llm:
       # 采样参数（可选）
       # top_p: 0.9              # 核采样概率截断，与 temperature 二选一；null = 使用 provider 默认值
       # stop_sequences: []      # 强终止序列，最多 4 条
-      enable_prompt_cache: true # 为 system prompt 注入 cache_control，降低 Anthropic 输入 token 成本
+      # enable_prompt_cache: true  # 默认已开启；仅支持 Anthropic 协议 + 具备 prompt_cache 能力的模型
       # 推理控制（可选）
       # thinking_mode: off      # 'off' | 'on' | 'adaptive'（adaptive 仅 Opus 4.7+ 支持）
       # thinking_budget: 8000   # thinking_mode='on' 时的 token 预算（≥1000）

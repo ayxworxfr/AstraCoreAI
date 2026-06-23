@@ -44,6 +44,14 @@ def infer_model_capabilities(
             prompt_cache=True,
         )
 
+    if normalized_model == "claude-opus-4-6":
+        return LLMCapabilities(
+            tools=True,
+            thinking=False,
+            temperature=True,
+            prompt_cache=True,
+        )
+
     if normalized_model == "claude-opus-4-7":
         return LLMCapabilities(
             tools=True,
