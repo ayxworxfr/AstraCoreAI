@@ -11,6 +11,8 @@ Both the HTTP service and the embedded SDK use this module; HTTP-specific concer
 """
 
 import asyncio
+import base64
+import dataclasses
 import json
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
@@ -22,6 +24,8 @@ from astracore.infrastructure.llm.anthropic import AnthropicAdapter
 from astracore.infrastructure.llm.openai import OpenAIAdapter
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
+from astracore.modules.attachments.domain import AttachmentCapabilityError, AttachmentRef
+from astracore.modules.attachments.ports import AttachmentStoragePort
 from astracore.modules.chat.application.compactor import HistoryCompactor
 from astracore.modules.chat.application.prompt_builder import SystemPromptBuilder
 from astracore.modules.chat.application.tool_loop import ToolLoopUseCase
@@ -93,6 +97,24 @@ def _strip_dangling_tool_calls(messages: list[Message]) -> list[Message]:
     return msgs
 
 
+def _attachment_metadata(refs: list["AttachmentRef"]) -> dict[str, Any]:
+    """Encode loaded AttachmentRef list as JSON-serialisable metadata for a user message."""
+    if not refs:
+        return {}
+    return {
+        "attachment_refs": [
+            {
+                "id": r.id,
+                "mime_type": r.mime_type,
+                "filename": r.filename,
+                "storage_key": r.storage_key,
+                "data_b64": base64.b64encode(r.data).decode("ascii") if r.data else None,
+            }
+            for r in refs
+        ]
+    }
+
+
 def _prepare_for_save(messages: list[Message]) -> list[Message]:
     """Drop SYSTEM / tool-loop-internal / synthetic messages before persisting chat history.
 
@@ -146,12 +168,13 @@ class ChatPipeline:
         self,
         config: AstraCoreConfig,
         memory: HybridMemoryAdapter,
-        rag_pipeline: RAGPipeline,
+        rag_pipeline: RAGPipeline | None,
         policy: PolicyEngine,
         tool_adapter: ToolAdapter,
         memory_engine: MemoryEngine | None = None,
         vector_adapter: "MemoryVectorAdapter | None" = None,
         hooks: HookRegistry | None = None,
+        attachment_storage: AttachmentStoragePort | None = None,
     ) -> None:
         self._config = config
         self._memory = memory
@@ -161,6 +184,7 @@ class ChatPipeline:
         self._injected_memory_engine = memory_engine
         self._vector_adapter = vector_adapter
         self._hooks = hooks
+        self._attachment_storage = attachment_storage
         self._llm_adapters: dict[str, LLMAdapter] = {}
         # All system-prompt composition is delegated to a dedicated builder so this
         # class can stay focused on orchestration (DB → context → stream).
@@ -264,6 +288,32 @@ class ChatPipeline:
         async with get_session(self._config.storage.db_url) as db:
             row = await db.get(UserSettingsRow, {"user_id": user_id, "key": key})
             return row.value if row else ""
+
+    async def _load_attachments(
+        self,
+        refs: list[AttachmentRef],
+        profile_id: str,
+        vision_capable: bool,
+    ) -> list[AttachmentRef]:
+        """Capability-check then load bytes for each AttachmentRef."""
+        if not refs:
+            return []
+        if not vision_capable:
+            raise AttachmentCapabilityError(
+                f"LLM profile '{profile_id}' does not support vision/document attachments"
+            )
+        if self._attachment_storage is None:
+            return list(refs)
+        loaded: list[AttachmentRef] = []
+        for ref in refs:
+            try:
+                data = await self._attachment_storage.load(ref.storage_key)
+            except FileNotFoundError:
+                # Placeholder for deleted attachments — adapters must handle data=None.
+                loaded.append(ref)
+                continue
+            loaded.append(dataclasses.replace(ref, data=data))
+        return loaded
 
     # ------------------------------------------------------------------
     # Prompt composition helpers
@@ -404,6 +454,11 @@ class ChatPipeline:
             excluded.add("web_search")
         allowed_tools = all_tools - excluded
 
+        # 6. Load attachment bytes (capability guard + storage read)
+        attachment_refs = await self._load_attachments(
+            opts.attachments, profile.id, profile.capabilities.vision
+        )
+
         return ChatContext(
             session_id=session_id,
             user_id=user_id,
@@ -417,6 +472,7 @@ class ChatPipeline:
             tool_adapter=effective_adapter,
             allowed_tools=allowed_tools,
             turn_context=turn_context,
+            attachment_refs=attachment_refs,
         )
 
     # ------------------------------------------------------------------
@@ -469,7 +525,13 @@ class ChatPipeline:
                 initial.append(Message(role=MessageRole.SYSTEM, content=effective_prompt))
             initial.extend(stored)
             session.restore_messages(initial)
-            session.add_message(Message(role=MessageRole.USER, content=ctx.message))
+            session.add_message(
+                Message(
+                    role=MessageRole.USER,
+                    content=ctx.message,
+                    metadata=_attachment_metadata(ctx.attachment_refs),
+                )
+            )
             if self._config.debug.log_prompts:
                 # system is embedded in messages; pass None to avoid double-printing
                 _print_prompt_debug(None, session.get_messages(), ctx.session_id)
@@ -478,7 +540,13 @@ class ChatPipeline:
         else:
             # normal mode: system is prepended only at the LLM call site.
             session.restore_messages(stored)
-            session.add_message(Message(role=MessageRole.USER, content=ctx.message))
+            session.add_message(
+                Message(
+                    role=MessageRole.USER,
+                    content=ctx.message,
+                    metadata=_attachment_metadata(ctx.attachment_refs),
+                )
+            )
             if self._config.debug.log_prompts:
                 _print_prompt_debug(effective_prompt, session.get_messages(), ctx.session_id)
             async for event in self._stream_normal(ctx, session, effective_prompt):

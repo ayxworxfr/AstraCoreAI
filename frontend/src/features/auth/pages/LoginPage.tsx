@@ -36,14 +36,14 @@ export default function LoginPage(): JSX.Element {
 
           <Form<LoginForm>
             layout="vertical"
-            initialValues={{ username: 'admin', password: 'admin123' }}
+            autoComplete="off"
             onFinish={(v) => { void handleSubmit(v); }}
           >
             <Form.Item name="username" label="用户名" rules={[{ required: true }]}>
-              <Input autoComplete="username" />
+              <Input autoComplete="off" />
             </Form.Item>
             <Form.Item name="password" label="密码" rules={[{ required: true }]}>
-              <Input.Password autoComplete="current-password" />
+              <Input.Password autoComplete="new-password" />
             </Form.Item>
 
             {error && (

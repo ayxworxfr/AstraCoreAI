@@ -1,11 +1,15 @@
 """Tests for AnthropicAdapter — _convert_messages and generate_stream tool arg accumulation."""
 
+import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
-from astracore.infrastructure.llm.anthropic import AnthropicAdapter
+from astracore.infrastructure.llm.anthropic import (
+    AnthropicAdapter,
+    _build_anthropic_attachment_blocks,
+)
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
 from astracore.shared.ports.llm import StreamEventType
 
@@ -329,6 +333,88 @@ async def test_generate_stream_always_ends_with_done_event(adapter):
         events.append(ev)
 
     assert events[-1].event_type == StreamEventType.DONE
+
+
+# ---------- _convert_messages — multimodal attachment blocks ----------
+
+
+def _make_attachment_ref(mime_type: str, data: bytes) -> dict:
+    return {
+        "id": "att-1",
+        "mime_type": mime_type,
+        "filename": "test",
+        "storage_key": "user/test",
+        "data_b64": base64.b64encode(data).decode("ascii"),
+    }
+
+
+def test_convert_messages_image_attachment_produces_image_block(adapter):
+    """USER message with PNG attachment_ref → image content block."""
+    png_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 10
+    ref = _make_attachment_ref("image/png", png_data)
+    msg = Message(
+        role=MessageRole.USER,
+        content="describe this",
+        metadata={"attachment_refs": [ref]},
+    )
+    result = adapter._convert_messages([msg])
+    assert len(result) == 1
+    assert result[0]["role"] == "user"
+    blocks = result[0]["content"]
+    assert isinstance(blocks, list)
+    text_block = next(b for b in blocks if b["type"] == "text")
+    assert text_block["text"] == "describe this"
+    image_block = next(b for b in blocks if b["type"] == "image")
+    assert image_block["source"]["type"] == "base64"
+    assert image_block["source"]["media_type"] == "image/png"
+    assert image_block["source"]["data"] == base64.b64encode(png_data).decode("ascii")
+
+
+def test_convert_messages_pdf_attachment_produces_document_block(adapter):
+    """USER message with PDF attachment_ref → document content block."""
+    pdf_data = b"%PDF-1.4\n" + b"\x00" * 20
+    ref = _make_attachment_ref("application/pdf", pdf_data)
+    msg = Message(
+        role=MessageRole.USER,
+        content="summarize",
+        metadata={"attachment_refs": [ref]},
+    )
+    result = adapter._convert_messages([msg])
+    blocks = result[0]["content"]
+    doc_block = next(b for b in blocks if b["type"] == "document")
+    assert doc_block["source"]["media_type"] == "application/pdf"
+    assert doc_block["source"]["data"] == base64.b64encode(pdf_data).decode("ascii")
+
+
+def test_convert_messages_skips_attachment_ref_without_data(adapter):
+    """A ref with data_b64=None is silently skipped (file not loaded)."""
+    msg = Message(
+        role=MessageRole.USER,
+        content="hi",
+        metadata={"attachment_refs": [{"id": "x", "mime_type": "image/png", "data_b64": None}]},
+    )
+    result = adapter._convert_messages([msg])
+    blocks = result[0]["content"]
+    # Only the text block should remain; no image block for the missing data
+    image_blocks = [b for b in blocks if b["type"] == "image"]
+    assert image_blocks == []
+
+
+def test_convert_messages_no_attachments_keeps_string_content(adapter):
+    """Plain user message (no attachment_refs) → content is still a string."""
+    msg = Message(role=MessageRole.USER, content="hello")
+    result = adapter._convert_messages([msg])
+    assert result[0]["content"] == "hello"
+
+
+def test_build_anthropic_attachment_blocks_empty_text_omits_text_block():
+    """If text is empty string, no text block is emitted."""
+    png_data = b"\x89PNG" + b"\x00" * 4
+    ref = _make_attachment_ref("image/png", png_data)
+    blocks = _build_anthropic_attachment_blocks("", [ref])
+    text_blocks = [b for b in blocks if b["type"] == "text"]
+    assert text_blocks == []
+    assert len(blocks) == 1
 
 
 async def test_generate_stream_handles_multiple_tool_blocks(adapter):

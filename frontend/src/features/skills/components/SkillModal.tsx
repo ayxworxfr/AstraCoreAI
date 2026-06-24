@@ -79,7 +79,12 @@ export default function SkillModal({ open, skill, readOnly, onClose, onSave }: P
               <Select options={CATEGORY_OPTIONS} placeholder="选择分类（可选）" allowClear />
             </Form.Item>
             <Form.Item name="description" label="描述">
-              <Input placeholder="简短说明这个技能的用途和适用场景" maxLength={200} />
+              <Input.TextArea
+                placeholder="简短说明这个技能的用途和适用场景"
+                autoSize={{ minRows: 2, maxRows: 5 }}
+                maxLength={500}
+                showCount
+              />
             </Form.Item>
             <Form.Item
               name="instructions"

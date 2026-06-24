@@ -49,6 +49,9 @@ report.json
 config.local.yaml
 config/config.local.yaml
 
+# Runtime data (SQLite DB, uploaded attachments)
+data/
+
 # ChromaDB
 chroma_db/
 *.chroma

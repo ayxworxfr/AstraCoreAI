@@ -14,6 +14,36 @@ from astracore.shared.utils.json_utils import repair_json
 logger = get_logger(__name__)
 
 
+def _build_anthropic_attachment_blocks(
+    text: str,
+    attachment_refs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build Anthropic content block list for a user message that carries attachments."""
+    blocks: list[dict[str, Any]] = []
+    if text:
+        blocks.append({"type": "text", "text": text})
+    for ref in attachment_refs:
+        data_b64 = ref.get("data_b64")
+        if not data_b64:
+            continue
+        mime = ref.get("mime_type", "")
+        if mime == "application/pdf":
+            blocks.append(
+                {
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": data_b64},
+                }
+            )
+        else:
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": mime, "data": data_b64},
+                }
+            )
+    return blocks
+
+
 class AnthropicAdapter(LLMAdapter):
     _ANTHROPIC_BLOCKS_KEY = "anthropic_content_blocks"
 
@@ -152,7 +182,12 @@ class AnthropicAdapter(LLMAdapter):
                 converted.append({"role": "assistant", "content": blocks})
                 continue
 
-            converted.append({"role": msg.role.value, "content": msg.content})
+            attachment_refs = msg.metadata.get("attachment_refs")
+            if msg.role == MessageRole.USER and attachment_refs:
+                blocks = _build_anthropic_attachment_blocks(msg.content, attachment_refs)
+                converted.append({"role": "user", "content": blocks})
+            else:
+                converted.append({"role": msg.role.value, "content": msg.content})
 
         return converted
 

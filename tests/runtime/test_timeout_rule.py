@@ -55,9 +55,9 @@ def test_build_llm_httpx_timeout_overall_override_replaces_fallback():
 
 
 def test_build_llm_httpx_timeout_default_values():
-    """默认 read=300s（治 stale stream），其它分段保留合理默认。"""
+    """默认 read=600s（治 stale stream），其它分段保留合理默认。"""
     t = TimeoutRule().build_llm_httpx_timeout()
-    assert t.read == 300.0  # 长流式生成核心防线
+    assert t.read == 600.0  # 长流式生成核心防线
     assert t.connect == 10.0
     assert t.write == 60.0
     assert t.pool == 10.0

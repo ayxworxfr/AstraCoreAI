@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 if TYPE_CHECKING:
+    from astracore.modules.attachments.domain import AttachmentRef
     from astracore.modules.tools.ports.tool import ToolAdapter
     from astracore.sdk.config import LLMProfileConfig
 
@@ -85,3 +86,7 @@ class ChatContext:
     """Tier-2 动态会话上下文，由 ``MemoryEngine.build_turn_context()`` 生成；
     注入为 role=assistant 的合成消息对（桥接 user:[记忆同步] + assistant:[快照]），
     不持久化到会话历史。空字符串表示无相关 session/project 记忆。"""
+
+    attachment_refs: list[AttachmentRef] = field(default_factory=list, compare=False, hash=False)
+    """本轮已加载字节的附件列表，由 pipeline.prepare() 从存储中读取后注入。
+    LLM 适配器从此字段读取 bytes 构建 image/document content blocks。"""

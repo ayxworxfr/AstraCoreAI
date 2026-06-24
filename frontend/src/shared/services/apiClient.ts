@@ -1,4 +1,4 @@
-import axios, { type AxiosError } from 'axios';
+import axios, { AxiosHeaders, type AxiosError } from 'axios';
 import type { ApiErrorResponse } from '@/shared/types/api';
 
 export const apiClient = axios.create({
@@ -8,6 +8,15 @@ export const apiClient = axios.create({
 });
 
 apiClient.interceptors.request.use((config) => {
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    if (config.headers instanceof AxiosHeaders) {
+      config.headers.delete('Content-Type');
+    } else if (config.headers) {
+      delete (config.headers as Record<string, unknown>)['Content-Type'];
+      delete (config.headers as Record<string, unknown>)['content-type'];
+    }
+  }
+
   try {
     const raw = localStorage.getItem('auth-storage');
     const token: string | null = raw ? (JSON.parse(raw) as { state?: { token?: string } }).state?.token ?? null : null;

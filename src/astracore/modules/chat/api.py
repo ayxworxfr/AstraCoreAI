@@ -14,11 +14,13 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm.attributes import flag_modified as _flag_modified
 from sse_starlette.sse import EventSourceResponse
 
-from astracore.infrastructure.db.models import ChatRunRow, ChatSessionRow, UserRow
+from astracore.infrastructure.attachments.local_fs import LocalFSAttachmentStorage
+from astracore.infrastructure.db.models import AttachmentRow, ChatRunRow, ChatSessionRow, UserRow
 from astracore.infrastructure.db.session import get_session
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
 from astracore.infrastructure.memory.vector import MemoryVectorAdapter
+from astracore.modules.attachments.domain import AttachmentCapabilityError, AttachmentRef
 from astracore.modules.auth.dependencies import get_current_user
 from astracore.modules.chat.application.run_executor import (
     execute_run_loop,
@@ -134,8 +136,10 @@ def _get_memory_adapter() -> HybridMemoryAdapter:
 
 
 @lru_cache(maxsize=1)
-def _get_vector_adapter() -> MemoryVectorAdapter:
+def _get_vector_adapter() -> MemoryVectorAdapter | None:
     cfg = _get_settings()
+    if not cfg.storage.vector.enabled:
+        return None
     return MemoryVectorAdapter(
         persist_directory=cfg.storage.vector.persist_directory,
         embedding_model=cfg.storage.vector.embedding_model,
@@ -143,12 +147,20 @@ def _get_vector_adapter() -> MemoryVectorAdapter:
 
 
 @lru_cache(maxsize=1)
+def _get_attachment_storage() -> LocalFSAttachmentStorage:
+    from pathlib import Path  # noqa: PLC0415
+
+    return LocalFSAttachmentStorage(base_path=Path("data/attachments"))
+
+
+@lru_cache(maxsize=1)
 def _get_chat_pipeline() -> ChatPipeline:
     cfg = _get_settings()
+    rag_pipeline = rag_api._get_rag_pipeline() if cfg.storage.vector.enabled else None
     return ChatPipeline(
         config=cfg,
         memory=_get_memory_adapter(),
-        rag_pipeline=rag_api._get_rag_pipeline(),
+        rag_pipeline=rag_pipeline,
         policy=PolicyEngine(
             config=_EnginePolicyConfig(
                 retry=cfg.policy.retry,
@@ -158,7 +170,41 @@ def _get_chat_pipeline() -> ChatPipeline:
         ),
         tool_adapter=build_tool_adapter(db_url=cfg.storage.db_url),
         vector_adapter=_get_vector_adapter(),
+        attachment_storage=_get_attachment_storage(),
     )
+
+
+async def _resolve_attachment_refs(
+    attachment_ids: list[str], user_id: str, db_url: str
+) -> list[AttachmentRef]:
+    """Load AttachmentRow records from DB and build AttachmentRef list (without bytes).
+
+    Pipeline.prepare() will load the bytes via AttachmentStoragePort.
+    """
+    if not attachment_ids:
+        return []
+    refs: list[AttachmentRef] = []
+    async with get_session(db_url) as db:
+        result = await db.execute(select(AttachmentRow).where(AttachmentRow.id.in_(attachment_ids)))
+        rows = result.scalars().all()
+
+    row_map = {r.id: r for r in rows}
+    for aid in attachment_ids:
+        row = row_map.get(aid)
+        if row is None:
+            continue
+        if row.user_id != user_id:
+            raise HTTPException(status_code=403, detail=f"无权访问附件 {aid}")
+        refs.append(
+            AttachmentRef(
+                id=row.id,
+                mime_type=row.mime_type,
+                filename=row.filename,
+                size_bytes=row.size_bytes,
+                storage_key=row.storage_key,
+            )
+        )
+    return refs
 
 
 def _resolve_tool_adapter(http_request: Request) -> ToolAdapter:
@@ -191,6 +237,7 @@ class MessageItem(BaseModel):
     id: str = ""
     role: str
     content: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
     thinking_blocks: list[str] = Field(default_factory=list)
     tool_activity: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str = ""
@@ -219,6 +266,7 @@ class ChatRequest(BaseModel):
     verbosity: str | None = None
     enable_rag: bool = False
     enable_web: bool = False
+    attachment_ids: list[str] = Field(default_factory=list)
 
     def to_options(self) -> ChatOptions:
         return ChatOptions(
@@ -284,13 +332,49 @@ def _run_row_to_state(row: ChatRunRow) -> ChatRunStateResponse:
     )
 
 
-def _run_row_to_messages(row: ChatRunRow) -> list[MessageItem]:
+def _attachment_metadata_from_run(
+    row: ChatRunRow,
+    attachment_rows: dict[str, AttachmentRow],
+) -> dict[str, Any]:
+    attachment_ids = _attachment_ids_from_run(row)
+    if not isinstance(attachment_ids, list) or not attachment_ids:
+        return {}
+
+    refs: list[dict[str, Any]] = []
+    for raw_id in attachment_ids:
+        attachment_id = str(raw_id)
+        attachment = attachment_rows.get(attachment_id)
+        if attachment is None:
+            continue
+        refs.append(
+            {
+                "id": attachment.id,
+                "mime_type": attachment.mime_type,
+                "filename": attachment.filename,
+                "size_bytes": attachment.size_bytes,
+            }
+        )
+    return {"attachment_refs": refs} if refs else {}
+
+
+def _attachment_ids_from_run(row: ChatRunRow) -> list[str]:
+    raw_ids = row.request.get("attachment_ids", [])
+    if not isinstance(raw_ids, list):
+        return []
+    return [str(attachment_id) for attachment_id in raw_ids]
+
+
+def _run_row_to_messages(
+    row: ChatRunRow,
+    attachment_rows: dict[str, AttachmentRow] | None = None,
+) -> list[MessageItem]:
     """Convert a persisted chat run into UI-visible chat messages."""
     messages = [
         MessageItem(
             id=row.id,
             role=MessageRole.USER.value,
             content=row.user_message,
+            metadata=_attachment_metadata_from_run(row, attachment_rows or {}),
             created_at=_utc_iso(row.created_at),
         )
     ]
@@ -460,14 +544,25 @@ async def _run_chat_in_background(
     user_id: str = "default",
 ) -> None:
     try:
+        cfg = _get_settings()
+        attachment_refs = await _resolve_attachment_refs(
+            request.attachment_ids, user_id, cfg.storage.db_url
+        )
+        opts = request.to_options().apply(attachments=attachment_refs)
         ctx = await _get_chat_pipeline().prepare(
             message=request.message,
             session_id=session_id,
-            options=request.to_options(),
+            options=opts,
             tool_adapter=tool_adapter,
             user_id=user_id,
         )
         await _execute_run(run_id=run_id, ctx=ctx, user_id=user_id)
+    except AttachmentCapabilityError as e:
+        row = await _update_run_row(run_id, status="error", error=str(e))
+        if row:
+            _broadcast_snapshot(run_id, row)
+        _broadcast_run_event(run_id, "error", {"message": str(e)})
+        return
     except asyncio.CancelledError:
         row = await _update_run_row(run_id, status="cancelled", error="用户已停止生成")
         if row:
@@ -545,7 +640,20 @@ async def get_session_messages(
     current_user: UserRow = Depends(get_current_user),
 ) -> SessionMessagesResponse:
     runs = await _load_done_runs(session_id)
-    messages = [message for run in runs for message in _run_row_to_messages(run)]
+    attachment_ids = {
+        str(attachment_id) for run in runs for attachment_id in _attachment_ids_from_run(run)
+    }
+    attachment_rows: dict[str, AttachmentRow] = {}
+    if attachment_ids:
+        async with get_session(_get_settings().storage.db_url) as db:
+            result = await db.execute(
+                select(AttachmentRow).where(
+                    AttachmentRow.id.in_(attachment_ids),
+                    AttachmentRow.user_id == current_user.id,
+                )
+            )
+            attachment_rows = {row.id: row for row in result.scalars().all()}
+    messages = [message for run in runs for message in _run_row_to_messages(run, attachment_rows)]
     return _paginate_messages(messages, limit=limit, offset=offset)
 
 
@@ -703,10 +811,15 @@ async def chat(
     session_id = request.session_id or uuid4()
     row = await _create_run_row(request, session_id, user_id=current_user.id)
     try:
+        cfg = _get_settings()
+        attachment_refs = await _resolve_attachment_refs(
+            request.attachment_ids, current_user.id, cfg.storage.db_url
+        )
+        opts = request.to_options().apply(attachments=attachment_refs)
         ctx = await _get_chat_pipeline().prepare(
             message=request.message,
             session_id=session_id,
-            options=request.to_options(),
+            options=opts,
             tool_adapter=_resolve_tool_adapter(http_request),
             user_id=current_user.id,
         )
@@ -739,6 +852,9 @@ async def chat(
             model_profile=ctx.profile.id,
             model=ctx.profile.model,
         )
+    except AttachmentCapabilityError as e:
+        await _update_run_row(row.id, status="error", error=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         await _update_run_row(row.id, status="error", error=str(e))
         raise HTTPException(status_code=500, detail=str(e)) from e

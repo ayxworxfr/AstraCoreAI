@@ -24,8 +24,10 @@ def _get_db_url() -> str:
 
 
 @lru_cache(maxsize=1)
-def _get_vector_adapter() -> MemoryVectorAdapter:
+def _get_vector_adapter() -> MemoryVectorAdapter | None:
     cfg = AstraCoreConfig()
+    if not cfg.storage.vector.enabled:
+        return None
     return MemoryVectorAdapter(
         persist_directory=cfg.storage.vector.persist_directory,
         embedding_model=cfg.storage.vector.embedding_model,

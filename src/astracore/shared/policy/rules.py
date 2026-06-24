@@ -47,7 +47,7 @@ class TimeoutRule(BaseModel):
     llm_connect_s: float | None = Field(default=10.0, ge=0)
     """LLM HTTP 连接建立超时（秒）。null = 使用 ``llm_timeout_s``。"""
 
-    llm_read_s: float | None = Field(default=300.0, ge=0)
+    llm_read_s: float | None = Field(default=600.0, ge=0)
     """LLM 流式 chunk 间最长间隔（秒）。治 stale stream：服务端长时间不下发新 chunk
     时主动断开。null = 使用 ``llm_timeout_s``。"""
 

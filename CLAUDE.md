@@ -25,7 +25,7 @@ cd frontend && npm run build        # Type-check + build
 cd frontend && npm run typecheck    # Type-check only
 ```
 
-The test suite has 190 passing tests. Run `make check` before every commit.
+The test suite has 196 passing tests. Run `make check` before every commit.
 
 ## Architecture
 
@@ -140,3 +140,15 @@ Skills are YAML-frontmatter + Markdown files in `src/astracore/modules/skills/bu
 ### Adding New Built-in Tools
 
 Register in `src/astracore/modules/tools/builtin.py` → `build_tool_adapter()`. Tools with a `_context` parameter receive session/user context automatically (includes `session_id`, `user_id`, `llm_adapter`, `hitl_callback`). Add `requires_confirmation=True` to pause for user approval before execution.
+
+### API and SDK Parity
+
+Every backend feature must be delivered through both surfaces — designing for one and skipping the other is a bug.
+
+**Layer order**: Module → HTTP API → SDK (business logic never lives in routers or `sdk/client.py`).
+
+- **Module layer** (`modules/<feature>/`): domain model + application service. Both surfaces call the same service methods.
+- **HTTP API** (`app/routers/`): FastAPI router with Pydantic request/response schemas. New `ChatOptions` fields (`modules/chat/domain/chat_options.py`) automatically surface via the existing chat endpoints — add per-turn options there, not as ad-hoc route params.
+- **SDK** (`sdk/client.py`): matching method on `AstraCoreClient` or a sub-client facade (`client.memory`, `client.projects`, `client.workflow`). SDK methods accept Python objects; they delegate to the same module-level services as HTTP handlers. When HITL isn't available (SDK context), pass `hitl_callback=None` — the pipeline handles it gracefully.
+
+When a feature group grows large, add a dedicated facade class (e.g. `MemoryClient`, `ProjectClient`) as a property on `AstraCoreClient`. Thin wrapper only — no re-implemented logic.

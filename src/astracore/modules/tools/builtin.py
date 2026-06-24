@@ -385,6 +385,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         description=(
             "在互联网上搜索实时信息。当需要查询最新新闻、当前事件、"
             "实时数据或训练数据截止日期之后的信息时使用。"
+            "在进行网络搜索的时候检查当前年份是否正确。"
         ),
         parameters=[
             ToolParameter(

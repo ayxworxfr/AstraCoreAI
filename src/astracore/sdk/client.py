@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import mimetypes
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
-from astracore.infrastructure.db.models import SkillRow
+from astracore.infrastructure.attachments.local_fs import LocalFSAttachmentStorage
+from astracore.infrastructure.db.models import AttachmentRow, SkillRow
 from astracore.infrastructure.db.session import get_session, init_db
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
@@ -20,6 +23,8 @@ from astracore.infrastructure.retrieval.chroma import ChromaRetrieverAdapter
 from astracore.infrastructure.workflow.native import NativeWorkflowOrchestrator
 from astracore.modules.agent.domain import AgentTask
 from astracore.modules.agent.ports.workflow import WorkflowState
+from astracore.modules.attachments.domain import AttachmentRef
+from astracore.modules.attachments.ports import AttachmentStoragePort
 from astracore.modules.chat.domain.chat_context import ChatContext
 from astracore.modules.chat.domain.chat_options import ChatOptions
 from astracore.modules.chat.pipeline import ChatPipeline
@@ -137,41 +142,69 @@ class Conversation:
             return self._defaults
         return dataclasses.replace(self._defaults, **overrides)
 
-    async def send(self, message: str, **overrides: Any) -> ChatResult:
+    async def send(
+        self,
+        message: str,
+        *,
+        attachments: list[Path | AttachmentRef] | None = None,
+        **overrides: Any,
+    ) -> ChatResult:
         """Send a message and return the complete response.
 
-        Keyword arguments are ``ChatOptions`` field names that override the
+        ``attachments`` accepts :class:`pathlib.Path` objects (auto-uploaded) or
+        pre-uploaded :class:`AttachmentRef` objects.
+        Other keyword arguments are ``ChatOptions`` field names that override the
         conversation defaults for this turn only.
         """
         await self._ensure_project_binding()
-        return await self._client.chat(
-            message,
-            session_id=self._session_id,
-            options=self._effective_options(**overrides),
-        )
+        refs = await self._client.attachments._resolve(attachments or [])
+        opts = self._effective_options(**overrides)
+        if refs:
+            opts = dataclasses.replace(opts, attachments=refs)
+        return await self._client.chat(message, session_id=self._session_id, options=opts)
 
-    async def stream(self, message: str, **overrides: Any) -> AsyncIterator[str]:
+    async def stream(
+        self,
+        message: str,
+        *,
+        attachments: list[Path | AttachmentRef] | None = None,
+        **overrides: Any,
+    ) -> AsyncIterator[str]:
         """Stream text chunks from a chat response.
 
         Yields only text content — tool calls, thinking blocks, and skill-match events
         are filtered out. Use :meth:`stream_events` when raw event access is needed.
         """
         await self._ensure_project_binding()
+        refs = await self._client.attachments._resolve(attachments or [])
+        opts = self._effective_options(**overrides)
+        if refs:
+            opts = dataclasses.replace(opts, attachments=refs)
         async for event in self._client.chat_stream(
             message,
             session_id=self._session_id,
-            options=self._effective_options(**overrides),
+            options=opts,
         ):
             if event.event_type == StreamEventType.TEXT_DELTA and event.content:
                 yield event.content
 
-    async def stream_events(self, message: str, **overrides: Any) -> AsyncIterator[StreamEvent]:
+    async def stream_events(
+        self,
+        message: str,
+        *,
+        attachments: list[Path | AttachmentRef] | None = None,
+        **overrides: Any,
+    ) -> AsyncIterator[StreamEvent]:
         """Stream all raw :class:`StreamEvent` objects for this turn."""
         await self._ensure_project_binding()
+        refs = await self._client.attachments._resolve(attachments or [])
+        opts = self._effective_options(**overrides)
+        if refs:
+            opts = dataclasses.replace(opts, attachments=refs)
         async for event in self._client.chat_stream(
             message,
             session_id=self._session_id,
-            options=self._effective_options(**overrides),
+            options=opts,
         ):
             yield event
 
@@ -212,9 +245,13 @@ class AstraCoreClient:
 
         # Lightweight: just stores the DB URL, no network connection until queries run
         cfg = self.config
-        self._vector_adapter = MemoryVectorAdapter(
-            persist_directory=cfg.storage.vector.persist_directory,
-            embedding_model=cfg.storage.vector.embedding_model,
+        self._vector_adapter: MemoryVectorAdapter | None = (
+            MemoryVectorAdapter(
+                persist_directory=cfg.storage.vector.persist_directory,
+                embedding_model=cfg.storage.vector.embedding_model,
+            )
+            if cfg.storage.vector.enabled
+            else None
         )
         self._memory_engine = MemoryEngine(
             SQLMemoryStore(cfg.storage.db_url),
@@ -225,10 +262,12 @@ class AstraCoreClient:
 
         # Heavy fields — declared for type checkers, assigned in _start()
         self._memory: HybridMemoryAdapter
-        self._rag_pipeline: RAGPipeline
+        self._rag_pipeline: RAGPipeline | None
         self._user_adapter: MutableToolAdapter
         self._tool_adapter: MutableToolAdapter
         self._pipeline: ChatPipeline
+        self._attachment_storage: AttachmentStoragePort
+        self.attachments: AttachmentClient
 
     # ------------------------------------------------------------------
     # Async context manager lifecycle
@@ -249,11 +288,15 @@ class AstraCoreClient:
             redis_url=cfg.storage.redis_url,
             db_url=cfg.storage.db_url,
         )
-        self._rag_pipeline = RAGPipeline(
-            retriever=ChromaRetrieverAdapter(
-                collection_name=cfg.storage.vector.collection_name,
-                persist_directory=cfg.storage.vector.persist_directory,
+        self._rag_pipeline = (
+            RAGPipeline(
+                retriever=ChromaRetrieverAdapter(
+                    collection_name=cfg.storage.vector.collection_name,
+                    persist_directory=cfg.storage.vector.persist_directory,
+                )
             )
+            if cfg.storage.vector.enabled
+            else None
         )
 
         from astracore.infrastructure.tools.composite import CompositeToolAdapter  # noqa: PLC0415
@@ -292,6 +335,11 @@ class AstraCoreClient:
                 logger.warning("MCP 适配器启动失败，回退到内置工具")
                 self._mcp_adapter = None
 
+        self._attachment_storage = LocalFSAttachmentStorage(base_path=Path("data/attachments"))
+        self.attachments = AttachmentClient(
+            storage=self._attachment_storage,
+            db_url=cfg.storage.db_url,
+        )
         self._initialized = True
 
     async def _stop(self) -> None:
@@ -318,6 +366,7 @@ class AstraCoreClient:
             memory_engine=self._memory_engine,
             vector_adapter=self._vector_adapter,
             hooks=self._hooks,
+            attachment_storage=getattr(self, "_attachment_storage", None),
         )
 
     def _require_initialized(self) -> None:
@@ -492,6 +541,8 @@ class AstraCoreClient:
     ) -> bool:
         """Index a document for RAG retrieval."""
         self._require_initialized()
+        if self._rag_pipeline is None:
+            raise RuntimeError("RAG is disabled (vector.enabled=false in config)")
         return await self._rag_pipeline.index_document(
             document_id=document_id,
             text=text,
@@ -501,6 +552,8 @@ class AstraCoreClient:
     async def retrieve(self, query: str, top_k: int = 5) -> list[Any]:
         """Retrieve relevant chunks from the knowledge base."""
         self._require_initialized()
+        if self._rag_pipeline is None:
+            raise RuntimeError("RAG is disabled (vector.enabled=false in config)")
         return await self._rag_pipeline.retrieve_with_citations(query=query, top_k=top_k)
 
     # ------------------------------------------------------------------
@@ -595,6 +648,111 @@ class AstraCoreClient:
             logger.warning("结构化记忆提取被取消，session_id=%s", ctx.session_id)
         except Exception:
             logger.warning("结构化记忆提取失败，session_id=%s", ctx.session_id)
+
+
+# ------------------------------------------------------------------
+# AttachmentClient
+# ------------------------------------------------------------------
+
+_MIME_FROM_EXT: dict[str, str] = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".pdf": "application/pdf",
+}
+
+
+class AttachmentClient:
+    """SDK facade for attachment upload/delete.
+
+    Obtain via :attr:`AstraCoreClient.attachments` — do not instantiate directly.
+    """
+
+    def __init__(self, storage: AttachmentStoragePort, db_url: str) -> None:
+        self._storage = storage
+        self._db_url = db_url
+
+    async def upload(
+        self,
+        source: Path | bytes,
+        *,
+        filename: str | None = None,
+        mime_type: str | None = None,
+        user_id: str = "sdk",
+    ) -> AttachmentRef:
+        """Upload a file and return an :class:`AttachmentRef`.
+
+        ``source`` may be a :class:`pathlib.Path` (file is read automatically) or
+        raw ``bytes``.  ``filename`` and ``mime_type`` are inferred when omitted.
+        """
+        if isinstance(source, Path):
+            data = source.read_bytes()
+            filename = filename or source.name
+            if mime_type is None:
+                mime_type = _MIME_FROM_EXT.get(source.suffix.lower()) or (
+                    mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+                )
+        else:
+            data = source
+            filename = filename or "upload"
+            mime_type = mime_type or "application/octet-stream"
+
+        ext = mime_type.split("/")[-1].replace("jpeg", "jpg")
+        storage_key = await self._storage.save(data, ext, user_id)
+        attachment_id = str(uuid4())
+
+        async with get_session(self._db_url) as db:
+            db.add(
+                AttachmentRow(
+                    id=attachment_id,
+                    user_id=user_id,
+                    filename=filename,
+                    mime_type=mime_type,
+                    size_bytes=len(data),
+                    storage_key=storage_key,
+                )
+            )
+            await db.commit()
+
+        return AttachmentRef(
+            id=attachment_id,
+            mime_type=mime_type,
+            filename=filename,
+            size_bytes=len(data),
+            storage_key=storage_key,
+            data=data,
+        )
+
+    async def delete(self, attachment_id: str) -> None:
+        """Delete an attachment by id (removes DB record and file)."""
+        from sqlalchemy import delete  # noqa: PLC0415
+
+        from astracore.infrastructure.db.models import AttachmentRow as _Row  # noqa: PLC0415
+
+        async with get_session(self._db_url) as db:
+            from sqlalchemy import select  # noqa: PLC0415
+
+            result = await db.execute(select(_Row).where(_Row.id == attachment_id))
+            row = result.scalar_one_or_none()
+            if row is None:
+                return
+            storage_key = row.storage_key
+            await db.execute(delete(_Row).where(_Row.id == attachment_id))
+            await db.commit()
+
+        await self._storage.delete(storage_key)
+
+    async def _resolve(self, items: list[Path | AttachmentRef]) -> list[AttachmentRef]:
+        """Auto-upload Path objects; pass AttachmentRef objects through unchanged."""
+        refs: list[AttachmentRef] = []
+        for item in items:
+            if isinstance(item, Path):
+                refs.append(await self.upload(item))
+            else:
+                refs.append(item)
+        return refs
 
 
 # ------------------------------------------------------------------

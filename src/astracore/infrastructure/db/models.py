@@ -362,6 +362,27 @@ class ScheduledTaskRow(Base):
     __table_args__ = (Index("ix_scheduled_tasks_user_status", "user_id", "status"),)
 
 
+class AttachmentRow(Base):
+    """Uploaded file attachment metadata."""
+
+    __tablename__ = "attachments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Unique path within the storage backend (e.g. "<user_id>/<sha256>.<ext>")
+    storage_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    __table_args__ = (Index("ix_attachments_user_created", "user_id", "created_at"),)
+
+
 class UserRow(Base):
     """Application user account."""
 

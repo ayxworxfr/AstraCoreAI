@@ -1,0 +1,1 @@
+"""Attachment storage infrastructure adapters."""

@@ -61,6 +61,9 @@ openai = [
 anthropic = [
     "anthropic>=0.31.1",
 ]
+pdf = [
+    "pypdf>=4.0",
+]
 vector = [
     "chromadb>=0.5.3",
     "sentence-transformers>=3.0.1",
@@ -75,7 +78,7 @@ Repository = "https://github.com/ayxworxfr/AstraCoreAI"
 packages = ["src/astracore"]
 
 [tool.hatch.envs.default]
-features = ["vector", "openai", "anthropic"]
+features = ["vector", "openai", "anthropic", "pdf"]
 dependencies = [
     "pytest",
     "pytest-asyncio",

@@ -81,6 +81,7 @@ export type ChatRequest = {
   enable_rag?: boolean;
   use_tools?: boolean;
   enable_web?: boolean;
+  attachment_ids?: string[];
 };
 
 export type ChatResponse = {

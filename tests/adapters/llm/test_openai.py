@@ -1,11 +1,13 @@
 """Tests for OpenAIAdapter protocol variants."""
 
+import base64
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from astracore.infrastructure.llm.openai import OpenAIAdapter
+from astracore.infrastructure.llm.openai import OpenAIAdapter, _build_openai_user_content
+from astracore.modules.attachments.domain import AttachmentProcessingError
 from astracore.modules.chat.domain.message import Message, MessageRole
 from astracore.shared.ports.llm import StreamEventType
 
@@ -211,3 +213,70 @@ async def test_generate_stream_uses_responses_api_when_configured():
         " there",
     ]
     assert events[-1].event_type == StreamEventType.DONE
+
+
+# ---------- multimodal attachment blocks ----------
+
+
+def _make_ref(mime_type: str, data: bytes, filename: str = "file") -> dict:
+    return {
+        "id": "att-1",
+        "mime_type": mime_type,
+        "filename": filename,
+        "storage_key": "u/k",
+        "data_b64": base64.b64encode(data).decode("ascii"),
+    }
+
+
+def test_build_openai_user_content_image_produces_image_url_block():
+    """PNG attachment → image_url content block."""
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 10
+    ref = _make_ref("image/png", png)
+    result = _build_openai_user_content("describe", [ref])
+    assert isinstance(result, list)
+    text_block = next(b for b in result if b["type"] == "text")
+    assert text_block["text"] == "describe"
+    img_block = next(b for b in result if b["type"] == "image_url")
+    expected_url = f"data:image/png;base64,{base64.b64encode(png).decode()}"
+    assert img_block["image_url"]["url"] == expected_url
+
+
+def test_build_openai_user_content_no_images_returns_string():
+    """No image refs → plain string (unchanged)."""
+    result = _build_openai_user_content("hello", [])
+    assert result == "hello"
+
+
+def test_convert_messages_image_attachment_injects_image_url(adapter):
+    """USER message with PNG attachment_ref → image_url in converted content."""
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 10
+    msg = Message(
+        role=MessageRole.USER,
+        content="what is this?",
+        metadata={"attachment_refs": [_make_ref("image/png", png)]},
+    )
+    result = adapter._convert_messages([msg])
+    content = result[0]["content"]
+    assert isinstance(content, list)
+    img_block = next(b for b in content if b["type"] == "image_url")
+    assert img_block["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_convert_messages_no_attachments_keeps_string_content(adapter):
+    """Plain user message (no attachment_refs) → content stays string."""
+    msg = Message(role=MessageRole.USER, content="hello")
+    result = adapter._convert_messages([msg])
+    assert result[0]["content"] == "hello"
+
+
+def test_build_openai_user_content_pdf_error_propagates(monkeypatch):
+    """AttachmentProcessingError from _extract_pdf_text must propagate out of _build_openai_user_content."""
+    import astracore.infrastructure.llm.openai as openai_mod  # noqa: PLC0415
+
+    def always_raise(data_b64: str, filename: str) -> str:
+        raise AttachmentProcessingError(f"PDF '{filename}' 已加密，无法提取文本")
+
+    monkeypatch.setattr(openai_mod, "_extract_pdf_text", always_raise)
+    ref = _make_ref("application/pdf", b"%PDF-1.4\n", "secret.pdf")
+    with pytest.raises(AttachmentProcessingError, match="已加密"):
+        _build_openai_user_content("summarize", [ref])

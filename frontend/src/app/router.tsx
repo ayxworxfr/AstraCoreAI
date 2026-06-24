@@ -10,7 +10,6 @@ import SystemPage from '@/features/system/pages/SystemPage';
 import LoginPage from '@/features/auth/pages/LoginPage';
 import { useAuthStore } from '@/features/auth/store/authStore';
 
-const RAG_ENABLED = import.meta.env.VITE_FEATURE_RAG !== 'false';
 const SCHEDULING_ENABLED = import.meta.env.VITE_FEATURE_SCHEDULING !== 'false';
 
 function ProtectedRoute(): JSX.Element {
@@ -32,7 +31,7 @@ export const router = createBrowserRouter([
           { path: 'chat', element: <ChatPage /> },
           { path: 'memory', element: <MemoryPage /> },
           { path: 'memory/approvals', element: <PendingApprovalsPage /> },
-          ...(RAG_ENABLED ? [{ path: 'rag', element: <RagPage /> }] : []),
+          { path: 'rag', element: <RagPage /> },
           { path: 'skills', element: <SkillsPage /> },
           ...(SCHEDULING_ENABLED ? [{ path: 'scheduled-tasks', element: <SchedulingPage /> }] : []),
           { path: 'system', element: <SystemPage /> },

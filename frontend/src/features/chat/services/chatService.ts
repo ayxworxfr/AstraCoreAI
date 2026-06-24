@@ -6,6 +6,7 @@ export type SessionMessagesResponse = {
     id: string;
     role: 'user' | 'assistant';
     content: string;
+    metadata?: Record<string, unknown>;
     thinking_blocks: string[];
     tool_activity: ChatRunState['tool_activity'];
     created_at: string;

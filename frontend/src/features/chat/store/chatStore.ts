@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { normalizeError } from '@/shared/services/apiClient';
 import type { ConversationUpdate } from '@/features/chat/services/chatService';
+import type { AttachmentPreview } from '@/features/attachments/types';
 import {
   cancelChatRun,
   createChatRun,
@@ -67,6 +68,23 @@ function normalizeToolActivity(items: ChatRunState['tool_activity']): ToolActivi
   }));
 }
 
+function normalizeAttachments(metadata?: Record<string, unknown>): AttachmentPreview[] | undefined {
+  const refs = metadata?.attachment_refs;
+  if (!Array.isArray(refs)) return undefined;
+
+  const attachments = refs.flatMap((item): AttachmentPreview[] => {
+    if (!item || typeof item !== 'object') return [];
+    const record = item as Record<string, unknown>;
+    const id = typeof record.id === 'string' ? record.id : '';
+    const filename = typeof record.filename === 'string' ? record.filename : '附件';
+    const mimeType = typeof record.mime_type === 'string' ? record.mime_type : '';
+    const sizeBytes = typeof record.size_bytes === 'number' ? record.size_bytes : 0;
+    return id ? [{ id, filename, mimeType, sizeBytes }] : [];
+  });
+
+  return attachments.length ? attachments : undefined;
+}
+
 type SessionMessageItem = Awaited<ReturnType<typeof fetchSessionMessages>>['messages'][number];
 
 function toChatMessage(convId: string, index: number, item: SessionMessageItem): ChatMessage {
@@ -82,6 +100,7 @@ function toChatMessage(convId: string, index: number, item: SessionMessageItem):
     toolActivity: toolActivity.length ? toolActivity : undefined,
     status: 'done',
     createdAt: item.created_at || new Date().toISOString(),
+    attachments: normalizeAttachments(item.metadata),
     inputTokens: item.input_tokens ?? undefined,
     outputTokens: item.output_tokens ?? undefined,
     model: item.model ?? undefined,
@@ -117,6 +136,8 @@ type ChatStore = {
   /** 每个 conversation 当前阻塞等待用户输入的问题（HITL ask_user） */
   pendingQuestionByConversation: Record<string, PendingQuestion | null>;
   sessionError: string | null;   // 当前会话错误，不持久化，刷新自动清除
+  /** 待发送的附件列表（上传成功后暂存，随下一条消息一起发送） */
+  pendingAttachments: AttachmentPreview[];
 
   // Actions
   initConversations: () => Promise<void>;
@@ -133,6 +154,9 @@ type ChatStore = {
   setEnableWeb: (value: boolean) => void;
   setActiveModelId: (id: string | null) => void;
   setSessionError: (msg: string | null) => void;
+  addAttachment: (att: AttachmentPreview) => void;
+  removeAttachment: (id: string) => void;
+  clearAttachments: () => void;
   deleteMessage: (conversationId: string, messageId: string) => void;
   sendMessage: (prompt: string) => Promise<void>;
   cancelStream: (conversationId: string) => void;
@@ -167,6 +191,7 @@ export const useChatStore = create<ChatStore>()(
       latestUsageByConversation: {},
       pendingQuestionByConversation: {},
       sessionError: null,
+      pendingAttachments: [],
 
       initConversations: async () => {
         try {
@@ -342,6 +367,10 @@ export const useChatStore = create<ChatStore>()(
       },
 
       setSessionError: (msg) => set({ sessionError: msg }),
+
+      addAttachment: (att) => set((s) => ({ pendingAttachments: [...s.pendingAttachments, att] })),
+      removeAttachment: (id) => set((s) => ({ pendingAttachments: s.pendingAttachments.filter((a) => a.id !== id) })),
+      clearAttachments: () => set({ pendingAttachments: [] }),
 
       deleteMessage: (conversationId, messageId) => {
         const allMsgs = get().messagesByConversation[conversationId] ?? [];
@@ -767,8 +796,9 @@ export const useChatStore = create<ChatStore>()(
       sendMessage: async (prompt) => {
         const {
           activeConversationId, useStream, thinkingMode, enableRag, enableTools, enableWeb,
-          activeModelId, conversations,
+          activeModelId, conversations, pendingAttachments,
         } = get();
+        const attachmentIds = pendingAttachments.map((a) => a.id);
         const trimmed = prompt.trim();
         const hasStreaming = (get().messagesByConversation[activeConversationId] ?? []).some(
           (m) => m.status === 'streaming',
@@ -785,6 +815,7 @@ export const useChatStore = create<ChatStore>()(
           content: trimmed,
           status: 'done',
           createdAt: nowIso(),
+          attachments: pendingAttachments.length ? [...pendingAttachments] : undefined,
         };
         const assistantId = uuid();
         const msgThinkingMode = thinkingMode !== 'off' ? 'deep' : 'normal';
@@ -856,6 +887,7 @@ export const useChatStore = create<ChatStore>()(
             const getUpdatedBlocks = () => (thinkingBlocks.length ? [...thinkingBlocks] : undefined);
 
             const { thinkingMode } = get();
+            set({ pendingAttachments: [] });
             const run = await createChatRun({
               message: trimmed,
               session_id: activeConversationId,
@@ -864,6 +896,7 @@ export const useChatStore = create<ChatStore>()(
               enable_rag: enableRag,
               use_tools: enableTools || enableWeb,
               enable_web: enableWeb,
+              attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
             });
 
             if (get().subscribedRunIds[run.run_id]) {
@@ -1101,11 +1134,13 @@ export const useChatStore = create<ChatStore>()(
               controller.signal,
             );
           } else {
+            set({ pendingAttachments: [] });
             const res = await sendChatMessage({
               message: trimmed,
               session_id: activeConversationId,
               model_profile: activeModelId ?? undefined,
               enable_rag: enableRag,
+              attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
             });
             updateAssistant({ content: res.message || ASSISTANT_FALLBACK_TEXT.empty, status: 'done' });
           }

@@ -69,7 +69,7 @@ class SystemPromptBuilder:
     def __init__(
         self,
         config: AstraCoreConfig,
-        rag_pipeline: RAGPipeline,
+        rag_pipeline: RAGPipeline | None,
         memory_engine: MemoryEngine | None = None,
     ) -> None:
         self._config = config
@@ -209,6 +209,8 @@ class SystemPromptBuilder:
 
     async def _knowledge_layer(self, query: str, user_id: str) -> str:
         """RAG retrieval — untrusted source; payload wrapped with <external_data>."""
+        if self._rag_pipeline is None:
+            return ""
         try:
             top_k = int(await self._get_setting("rag_top_k", user_id) or "4")
             chunks = await self._rag_pipeline.retrieve_with_citations(query=query, top_k=top_k)

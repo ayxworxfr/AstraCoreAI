@@ -14,6 +14,7 @@ from starlette.responses import FileResponse
 from starlette.types import Scope
 
 from astracore.app.middleware.logging import RequestLoggingMiddleware
+from astracore.modules.attachments import api as attachments
 from astracore.modules.auth import api as auth
 from astracore.modules.chat import api as chat
 from astracore.modules.chat import conversations_api as conversations
@@ -201,6 +202,7 @@ def create_app() -> FastAPI:
     app.include_router(settings.router, prefix="/api/v1/settings", tags=["settings"])
     app.include_router(system.router, prefix="/api/v1/system", tags=["system"])
     app.include_router(tts.router, prefix="/api/v1/tts", tags=["tts"])
+    app.include_router(attachments.router, prefix="/api/v1/attachments", tags=["attachments"])
 
     if cfg.scheduling.enabled:
         from astracore.modules.scheduling import api as scheduling  # noqa: PLC0415

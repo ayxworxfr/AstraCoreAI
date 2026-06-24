@@ -5,11 +5,11 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { useAuthStore } from '@/features/auth/store/authStore';
 import { useSkillStore } from '@/features/skills/store/skillStore';
+import { useSystemStore } from '@/features/system/store/systemStore';
 import { apiClient } from '@/shared/services/apiClient';
 
 const { Header, Content } = Layout;
 
-const RAG_ENABLED = import.meta.env.VITE_FEATURE_RAG !== 'false';
 const SCHEDULING_ENABLED = import.meta.env.VITE_FEATURE_SCHEDULING !== 'false';
 const HEADER_BRAND_WIDTH = 180;
 const HEADER_USER_WIDTH = 132;
@@ -17,9 +17,12 @@ const HEADER_USER_WIDTH = 132;
 export default function AppShell(): JSX.Element {
   const { theme, toggleTheme } = useSettingsStore();
   const fetchSettings = useSkillStore((s) => s.fetchSettings);
+  const { systemInfo, fetchSystemInfo } = useSystemStore();
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuthStore();
+
+  const ragEnabled = systemInfo?.rag_enabled ?? true;
 
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
@@ -29,7 +32,8 @@ export default function AppShell(): JSX.Element {
 
   useEffect(() => {
     void fetchSettings().finally(() => setSettingsReady(true));
-  }, [fetchSettings]);
+    void fetchSystemInfo();
+  }, [fetchSettings, fetchSystemInfo]);
 
   useEffect(() => {
     const fetchCount = () => {
@@ -56,7 +60,7 @@ export default function AppShell(): JSX.Element {
         </NavLink>
       ),
     },
-    ...(RAG_ENABLED ? [{ key: '/rag', label: <NavLink to="/rag">RAG</NavLink> }] : []),
+    ...(ragEnabled ? [{ key: '/rag', label: <NavLink to="/rag">RAG</NavLink> }] : []),
     ...(SCHEDULING_ENABLED ? [{ key: '/scheduled-tasks', label: <NavLink to="/scheduled-tasks">任务</NavLink> }] : []),
     { key: '/system', label: <NavLink to="/system">系统</NavLink> },
   ];

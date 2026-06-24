@@ -2,13 +2,17 @@
 
 from datetime import UTC, datetime
 from functools import lru_cache
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from astracore.infrastructure.attachments.local_fs import LocalFSAttachmentStorage
 from astracore.infrastructure.db.models import (
+    AttachmentRow,
     ChatRunRow,
     ChatSessionRow,
     ConversationProjectBindingRow,
@@ -31,12 +35,19 @@ def _get_db_url() -> str:
 
 
 @lru_cache(maxsize=1)
-def _get_vector_adapter() -> MemoryVectorAdapter:
+def _get_vector_adapter() -> MemoryVectorAdapter | None:
     cfg = AstraCoreConfig()
+    if not cfg.storage.vector.enabled:
+        return None
     return MemoryVectorAdapter(
         persist_directory=cfg.storage.vector.persist_directory,
         embedding_model=cfg.storage.vector.embedding_model,
     )
+
+
+@lru_cache(maxsize=1)
+def _get_attachment_storage() -> LocalFSAttachmentStorage:
+    return LocalFSAttachmentStorage(base_path=Path("data/attachments"))
 
 
 def _row_to_item(row: ConversationRow) -> "ConversationItem":
@@ -75,6 +86,41 @@ class PatchConversationRequest(BaseModel):
     model_id: str | None = None
     last_message_preview: str | None = None
     message_count: int | None = None
+
+
+def _attachment_ids_from_run(row: ChatRunRow) -> list[str]:
+    raw_ids = row.request.get("attachment_ids", [])
+    if not isinstance(raw_ids, list):
+        return []
+    return [str(attachment_id) for attachment_id in raw_ids]
+
+
+async def _delete_run_attachments(
+    db: AsyncSession,
+    runs: list[ChatRunRow],
+    user_id: str,
+) -> set[str]:
+    """Delete attachment DB rows referenced by runs and return their storage keys."""
+    attachment_ids = {
+        attachment_id for run in runs for attachment_id in _attachment_ids_from_run(run)
+    }
+    if not attachment_ids:
+        return set()
+
+    attachment_result = await db.execute(
+        select(AttachmentRow).where(
+            AttachmentRow.id.in_(attachment_ids),
+            AttachmentRow.user_id == user_id,
+        )
+    )
+    attachment_rows = list(attachment_result.scalars().all())
+    deleting_ids = {row.id for row in attachment_rows}
+    if not deleting_ids:
+        return set()
+
+    storage_keys = {row.storage_key for row in attachment_rows}
+    await db.execute(delete(AttachmentRow).where(AttachmentRow.id.in_(deleting_ids)))
+    return storage_keys
 
 
 @router.get("/", response_model=list[ConversationItem])
@@ -168,7 +214,13 @@ async def delete_conversation(
         user_id=current_user.id,
         vector_adapter=_get_vector_adapter(),
     ).delete_conversation_memories(conversation_id)
+
+    storage_keys_to_delete: set[str] = set()
     async with get_session(_get_db_url()) as db:
+        runs_result = await db.execute(select(ChatRunRow).where(ChatRunRow.session_id == cid))
+        runs: list[ChatRunRow] = list(runs_result.scalars().all())
+        storage_keys_to_delete = await _delete_run_attachments(db, runs, current_user.id)
+
         row = await db.get(ConversationRow, cid)
         if row is not None:
             await db.delete(row)
@@ -180,3 +232,7 @@ async def delete_conversation(
             await db.delete(binding_row)
         await db.execute(delete(ChatRunRow).where(ChatRunRow.session_id == cid))
         await db.commit()
+
+    storage = _get_attachment_storage()
+    for storage_key in storage_keys_to_delete:
+        await storage.delete(storage_key)

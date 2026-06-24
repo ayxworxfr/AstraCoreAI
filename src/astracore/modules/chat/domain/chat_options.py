@@ -13,7 +13,10 @@ per-turn overrides on top of per-conversation defaults without touching unset fi
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from astracore.modules.attachments.domain import AttachmentRef
 
 
 @dataclasses.dataclass
@@ -58,6 +61,8 @@ class ChatOptions:
     verbosity: str | None = None
     enable_rag: bool = False
     enable_web: bool = False
+    attachments: list[AttachmentRef] = dataclasses.field(default_factory=list)
+    """Attachment references to include in this turn. Pipeline loads bytes before LLM call."""
 
     def apply(self, **overrides: Any) -> ChatOptions:
         """Return a new ``ChatOptions`` with the given fields replaced.

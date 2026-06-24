@@ -21,6 +21,7 @@ class LLMCapabilitiesInfo(BaseModel):
     thinking: bool
     temperature: bool
     anthropic_blocks: bool
+    vision: bool
 
 
 class LLMProfileInfo(BaseModel):
@@ -48,6 +49,7 @@ class SystemInfoResponse(BaseModel):
     llm: LLMInfo
     tavily_configured: bool
     mcp_servers: list[MCPServerInfo]
+    rag_enabled: bool
 
 
 @router.get("/", response_model=SystemInfoResponse)
@@ -70,6 +72,7 @@ async def get_system_info() -> SystemInfoResponse:
                         thinking=profile.capabilities.thinking,
                         temperature=profile.capabilities.temperature,
                         anthropic_blocks=profile.capabilities.anthropic_blocks,
+                        vision=profile.capabilities.vision,
                     ),
                 )
                 for profile in cfg.llm.profiles
@@ -77,4 +80,5 @@ async def get_system_info() -> SystemInfoResponse:
         ),
         tavily_configured=bool(os.getenv("TAVILY_API_KEY", "").strip()),
         mcp_servers=[MCPServerInfo(name=entry.name, type=entry.type) for entry in cfg.mcp.servers],
+        rag_enabled=cfg.storage.vector.enabled,
     )

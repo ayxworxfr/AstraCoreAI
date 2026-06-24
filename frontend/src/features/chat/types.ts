@@ -1,3 +1,5 @@
+import type { AttachmentPreview } from '@/features/attachments/types';
+
 export type ConversationMeta = {
   id: string;           // UUID，同时作为后端 session_id
   title: string;
@@ -57,4 +59,6 @@ export type ChatMessage = {
   outputTokens?: number;
   /** 实际使用的模型 ID（仅 assistant 消息有值，持久化到 DB） */
   model?: string;
+  /** 用户本轮随消息发送的附件，用于历史回看和图片预览 */
+  attachments?: AttachmentPreview[];
 };

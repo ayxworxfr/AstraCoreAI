@@ -14,10 +14,12 @@ export type SystemInfo = {
         thinking: boolean;
         temperature: boolean;
         anthropic_blocks: boolean;
+        vision: boolean;
       };
     }>;
   };
   tavily_configured: boolean;
+  rag_enabled: boolean;
   mcp_servers: Array<{
     name: string;
     type: string;

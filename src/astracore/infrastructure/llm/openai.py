@@ -1,17 +1,90 @@
 """OpenAI 兼容 API 适配器（OpenAI、DeepSeek 等）。"""
 
+import base64
+import io
 import json
 from collections.abc import AsyncIterator
 from typing import Any
 
 from pydantic import BaseModel
 
+from astracore.modules.attachments.domain import AttachmentProcessingError
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
 from astracore.shared.utils.json_utils import repair_json
 
 _logger = get_logger(__name__)
+
+
+def _extract_pdf_text(data_b64: str, filename: str) -> str:
+    """Extract plain text from a base64-encoded PDF via pypdf.
+
+    Raises AttachmentProcessingError when the PDF is encrypted or contains no
+    extractable text (e.g. scanned image-only PDFs).
+    """
+    try:
+        from pypdf import PdfReader  # noqa: PLC0415
+    except ImportError as exc:
+        raise AttachmentProcessingError("pypdf not installed; cannot extract PDF text") from exc
+
+    pdf_bytes = base64.b64decode(data_b64)
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    if reader.is_encrypted:
+        raise AttachmentProcessingError(f"PDF '{filename}' 已加密，无法提取文本")
+
+    pages: list[str] = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        pages.append(text)
+
+    full_text = "\n".join(pages).strip()
+    if not full_text:
+        raise AttachmentProcessingError(f"PDF '{filename}' 无可提取文本（可能为扫描件）")
+    return full_text
+
+
+def _build_openai_user_content(
+    text: str,
+    attachment_refs: list[dict[str, Any]],
+) -> str | list[dict[str, Any]]:
+    """Build OpenAI content for a user message that carries attachments.
+
+    Images → image_url blocks (base64 data URI).
+    PDFs → extracted text prepended to the message text.
+    Returns a plain string when no visual blocks exist, list otherwise.
+    """
+    pdf_segments: list[str] = []
+    image_blocks: list[dict[str, Any]] = []
+
+    for ref in attachment_refs:
+        data_b64 = ref.get("data_b64")
+        if not data_b64:
+            continue
+        mime = ref.get("mime_type", "")
+        filename = ref.get("filename", "document")
+
+        if mime == "application/pdf":
+            extracted = _extract_pdf_text(data_b64, filename)
+            pdf_segments.append(f"[PDF: {filename}]\n{extracted}\n---")
+        else:
+            image_blocks.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{data_b64}"},
+                }
+            )
+
+    combined_text = "\n\n".join(pdf_segments + ([text] if text else []))
+
+    if not image_blocks:
+        return combined_text
+
+    blocks: list[dict[str, Any]] = []
+    if combined_text:
+        blocks.append({"type": "text", "text": combined_text})
+    blocks.extend(image_blocks)
+    return blocks
 
 
 class OpenAIAdapter(LLMAdapter):
@@ -100,9 +173,17 @@ class OpenAIAdapter(LLMAdapter):
                     )
                 continue
 
+            attachment_refs = (
+                msg.metadata.get("attachment_refs") if msg.role == MessageRole.USER else None
+            )
+            content: Any = (
+                _build_openai_user_content(msg.content, attachment_refs)
+                if attachment_refs
+                else msg.content
+            )
             message_dict: dict[str, Any] = {
                 "role": msg.role.value,
-                "content": msg.content,
+                "content": content,
             }
 
             if msg.has_tool_calls():
@@ -421,6 +502,13 @@ class OpenAIAdapter(LLMAdapter):
         if tools:
             request_params["tools"] = tools
 
+        # GLM thinking mode: passed via extra_body when thinking_mode is active.
+        # GLM streaming returns reasoning content as delta.reasoning_content.
+        thinking_mode: str | None = kwargs.get("thinking_mode")
+        glm_thinking = thinking_mode and thinking_mode != "off" and "glm" in (model or "").lower()
+        if glm_thinking:
+            request_params["extra_body"] = {"thinking": {"enabled": True}}
+
         stream = await client.chat.completions.create(**request_params)
 
         tool_call_buffer: dict[str, dict[str, Any]] = {}
@@ -442,6 +530,11 @@ class OpenAIAdapter(LLMAdapter):
                 continue
 
             delta = chunk.choices[0].delta
+
+            # GLM thinking: reasoning_content arrives before the final answer content.
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield StreamEvent(event_type=StreamEventType.THINKING_DELTA, content=reasoning)
 
             if delta.content:
                 yield StreamEvent(

@@ -17,6 +17,10 @@ class LLMCapabilities(BaseModel):
     """Anthropic prompt caching via cache_control blocks."""
     reasoning_effort_capable: bool = False
     """GPT-5 / o-series: supports reasoning_effort and verbosity parameters."""
+    vision: bool = False
+    """Supports image attachments (image_url or Anthropic image blocks)."""
+    documents: bool = False
+    """Supports native PDF document blocks (Anthropic only)."""
 
 
 _DEFAULT_CAPABILITIES = LLMCapabilities()
@@ -42,6 +46,8 @@ def infer_model_capabilities(
             anthropic_blocks=False,
             structured_output_via_tools=False,  # thinking 模式不支持 tool_choice
             prompt_cache=True,
+            vision=True,
+            documents=True,
         )
 
     if normalized_model == "claude-opus-4-6":
@@ -50,6 +56,8 @@ def infer_model_capabilities(
             thinking=False,
             temperature=True,
             prompt_cache=True,
+            vision=True,
+            documents=True,
         )
 
     if normalized_model == "claude-opus-4-7":
@@ -60,6 +68,8 @@ def infer_model_capabilities(
             temperature=False,
             anthropic_blocks=False,
             prompt_cache=True,
+            vision=True,
+            documents=True,
         )
 
     if normalized_model in ("gpt-5", "gpt-5.5") or (
@@ -71,6 +81,20 @@ def infer_model_capabilities(
             temperature=True,
             anthropic_blocks=False,
             reasoning_effort_capable=True,
+            vision=True,
+            documents=False,
+        )
+
+    if normalized_model in ("glm-5.1", "glm-5", "glm-5-plus") or normalized_model.startswith(
+        "glm-5"
+    ):
+        return LLMCapabilities(
+            tools=True,
+            thinking=True,
+            temperature=True,
+            anthropic_blocks=False,
+            structured_output_via_tools=False,  # GLM thinking 模式与 tool_choice 不兼容
+            vision=False,
         )
 
     if normalized_model == "deepseek-v4-flash":
