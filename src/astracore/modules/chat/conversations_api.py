@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from astracore.infrastructure.attachments.local_fs import LocalFSAttachmentStorage
@@ -100,7 +100,7 @@ async def _delete_run_attachments(
     runs: list[ChatRunRow],
     user_id: str,
 ) -> set[str]:
-    """Delete attachment DB rows referenced by runs and return their storage keys."""
+    """Delete attachment DB rows referenced by runs and return unreferenced storage keys."""
     attachment_ids = {
         attachment_id for run in runs for attachment_id in _attachment_ids_from_run(run)
     }
@@ -120,7 +120,17 @@ async def _delete_run_attachments(
 
     storage_keys = {row.storage_key for row in attachment_rows}
     await db.execute(delete(AttachmentRow).where(AttachmentRow.id.in_(deleting_ids)))
-    return storage_keys
+
+    unreferenced_keys: set[str] = set()
+    for storage_key in storage_keys:
+        remaining = await db.scalar(
+            select(func.count())
+            .select_from(AttachmentRow)
+            .where(AttachmentRow.storage_key == storage_key)
+        )
+        if (remaining or 0) == 0:
+            unreferenced_keys.add(storage_key)
+    return unreferenced_keys
 
 
 @router.get("/", response_model=list[ConversationItem])

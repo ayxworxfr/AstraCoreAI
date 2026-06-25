@@ -372,8 +372,9 @@ class AttachmentRow(Base):
     filename: Mapped[str] = mapped_column(String(256), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
-    # Unique path within the storage backend (e.g. "<user_id>/<sha256>.<ext>")
-    storage_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    # Content-addressed path in the storage backend. Multiple attachment rows may
+    # point to the same file when a user uploads identical bytes more than once.
+    storage_key: Mapped[str] = mapped_column(String(512), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

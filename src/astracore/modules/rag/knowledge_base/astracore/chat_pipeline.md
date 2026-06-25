@@ -15,10 +15,11 @@ AstraCoreAI 的对话流程分为两个严格分离的阶段：
 
 `ChatPipeline.prepare()` 完成所有数据库查询和参数决策，返回不可变的 `ChatContext`：
 
-- 加载用户设置（温度、Token 预算、上下文长度）
+- 加载用户设置（Token 预算、上下文长度）
 - 加载并路由技能（Skill），决策系统提示内容
 - 决策模式：`normal`（直接 LLM）或 `tool_loop`（工具循环）
 - 加载 LLM Profile 和工具列表
+- **加载附件字节**：`ChatOptions.attachments` 中每个 `AttachmentRef` 对应的图片/PDF 文件在此阶段读取，能力检查（`caps.vision`）也在此完成
 
 ### stream 阶段（执行）
 

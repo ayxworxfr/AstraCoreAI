@@ -25,7 +25,7 @@ cd frontend && npm run build        # Type-check + build
 cd frontend && npm run typecheck    # Type-check only
 ```
 
-The test suite has 196 passing tests. Run `make check` before every commit.
+The test suite has 240 passing tests. Run `make check` before every commit.
 
 ## Architecture
 
@@ -60,22 +60,24 @@ src/astracore/
 │   ├── scheduling/   # APScheduler-backed cron/interval/date task scheduling
 │   ├── projects/     # Project CRUD and conversation bindings
 │   ├── settings/     # Per-user settings (ai_name, owner_name, global_instruction)
-│   ├── system/       # Health / system info endpoints
+│   ├── system/       # Health / system info + model controls (_build_controls)
+│   ├── tts/          # Text-to-speech synthesis endpoint
 │   └── users/        # User CRUD (admin operations)
 ├── infrastructure/   # External adapters (never imported by modules directly)
 │   ├── llm/          # AnthropicAdapter, OpenAIAdapter
+│   ├── attachments/  # LocalFSAttachmentStorage (image/PDF)
 │   ├── memory/       # SQLMemoryStore, HybridMemoryAdapter, MemoryVectorAdapter (Chroma)
 │   ├── retrieval/    # ChromaDB retrieval adapter
 │   ├── tools/        # NativeToolAdapter, MCPToolAdapter, ParallelAgentTool
 │   ├── tokenizer/    # Token estimation utilities
 │   └── workflow/     # NativeWorkflowOrchestrator (Kahn DAG + asyncio.gather)
 ├── shared/           # Cross-cutting: ports (interfaces), policy, observability
-│   ├── ports/        # LLMAdapter, ToolAdapter, MemoryAdapter (abstract)
+│   ├── ports/        # LLMAdapter, ToolAdapter, MemoryAdapter, AttachmentStoragePort (abstract)
 │   ├── policy/       # PolicyEngine (tenacity retry + asyncio timeout), CircuitBreaker
 │   ├── security/     # SecurityValidator (XSS, length), external_data (wrap_external)
 │   └── observability/# HookRegistry (before/after_llm/tool), Tracer
 ├── app/              # FastAPI factory, routers, SSE endpoints
-└── sdk/              # AstraCoreClient, public API surface
+└── sdk/              # AstraCoreClient, AttachmentClient, public API surface
 ```
 
 ### Key Patterns
@@ -111,6 +113,12 @@ The injection_guard in the system prompt instructs the LLM to treat tagged conte
 
 **Scheduled Tasks** (`modules/scheduling/`): APScheduler drives `cron`, `interval`, and one-shot `date` triggers. Each task stores a prompt; when fired, it runs through `ChatPipeline` and the resulting `conversation_id` is written back to the task row. The service layer (`task_service.py`) syncs every create/update/delete/pause/resume with the in-process APScheduler instance. Batch delete uses `DELETE WHERE id IN (...)` + `.returning()` to collect deleted IDs before removing the corresponding APScheduler jobs.
 
+**Attachments** (`modules/chat/domain/chat_options.py` → `attachments: list[AttachmentRef]`): Images and PDFs are uploaded via `POST /api/v1/attachments` and stored by `LocalFSAttachmentStorage` (path: `data/attachments/<user_id>/<sha256>.<ext>`). `ChatPipeline.prepare()` loads each attachment's bytes; the adapter layer converts them to provider-specific content blocks (Anthropic native image/document blocks, OpenAI `image_url`, pypdf text extraction for PDFs on non-native APIs). The SDK `AttachmentClient` and `Conversation.send(attachments=[...])` accept `Path` objects or `AttachmentRef` IDs.
+
+**Model Controls** (`modules/system/api.py` → `_build_controls(profile)`): The `/system` endpoint returns a `controls: list[ModelControl]` per profile. Four `kind` values — `thinking`, `reasoning_effort`, `temperature`, `top_p` — are generated purely from `LLMCapabilities` flags. Adding a new model requires only `infer_model_capabilities()` — no UI code changes. The `reasoning_effort_protocol` field (`"responses"` / `"extra_body"` / `None`) drives both adapter routing (openai.py extra_body vs Responses API) and control generation.
+
+**LLM Capability Flags** (`sdk/model_capabilities.py` → `infer_model_capabilities()`): Single source of truth for per-model behavior. Key flags: `thinking` (supports extended thinking), `adaptive_thinking_only` (Opus 4.7+ — no `budget_tokens`, always adaptive), `temperature` (some models reject it), `top_k` (Anthropic native only), `vision` / `documents` (multi-modal), `anthropic_blocks` (third-party Anthropic-compatible endpoints), `reasoning_effort_protocol`.
+
 **Active Skill Enforcement**: `_detect_active_skill()` scans recent messages for `load_skill` calls (via `metadata["skill_loaded"]` after save, or live `tool_calls` in-session). If found, appends a mandatory reload instruction to the system prompt.
 
 **Backend Run + SSE Subscribe**: Each generation creates a `ChatRunRow`. The asyncio Task runs independently; the `/stream` SSE endpoint subscribes to an in-process event store. Browser reconnect → same `run_id`, no data loss. **Known limitation**: `_ACTIVE_RUNS` is in-process; breaks with multiple gunicorn workers.
@@ -129,9 +137,11 @@ LLM profiles are referenced by string ID (`claude-sonnet`, etc.). Never pass raw
 
 ### Frontend
 
-`frontend/src/` uses React 18 + Vite + Zustand + Ant Design. Feature-based structure mirrors backend modules (`features/chat/`, `features/memory/`, `features/skills/`, etc.). State management: Zustand stores per feature. HTTP: axios with JWT Bearer token. Streaming: EventSource SSE.
+`frontend/src/` uses React 18 + Vite + Zustand + Ant Design. Feature-based structure mirrors backend modules (`features/chat/`, `features/memory/`, `features/skills/`, `features/attachments/`, etc.). State management: Zustand stores per feature. HTTP: axios with JWT Bearer token. Streaming: EventSource SSE.
 
 Authentication state lives in `features/auth/`. All API calls attach `Authorization: Bearer <token>` via an axios interceptor. The frontend detects 401 responses and redirects to login.
+
+The chat input toolbar dynamically renders controls from the active profile's `controls` list: `ThinkingModeSelector` when `kind == "thinking"`, `ReasoningEffortSelector` when `kind == "reasoning_effort"`, and a collapsible advanced panel for `temperature`/`top_p`. Attachment upload is shown only when `profile.capabilities.vision == true`.
 
 ### Skills System
 
@@ -149,6 +159,6 @@ Every backend feature must be delivered through both surfaces — designing for 
 
 - **Module layer** (`modules/<feature>/`): domain model + application service. Both surfaces call the same service methods.
 - **HTTP API** (`app/routers/`): FastAPI router with Pydantic request/response schemas. New `ChatOptions` fields (`modules/chat/domain/chat_options.py`) automatically surface via the existing chat endpoints — add per-turn options there, not as ad-hoc route params.
-- **SDK** (`sdk/client.py`): matching method on `AstraCoreClient` or a sub-client facade (`client.memory`, `client.projects`, `client.workflow`). SDK methods accept Python objects; they delegate to the same module-level services as HTTP handlers. When HITL isn't available (SDK context), pass `hitl_callback=None` — the pipeline handles it gracefully.
+- **SDK** (`sdk/client.py`): matching method on `AstraCoreClient` or a sub-client facade (`client.memory`, `client.projects`, `client.workflow`, `client.attachments`). SDK methods accept Python objects; they delegate to the same module-level services as HTTP handlers. When HITL isn't available (SDK context), pass `hitl_callback=None` — the pipeline handles it gracefully.
 
-When a feature group grows large, add a dedicated facade class (e.g. `MemoryClient`, `ProjectClient`) as a property on `AstraCoreClient`. Thin wrapper only — no re-implemented logic.
+When a feature group grows large, add a dedicated facade class (e.g. `MemoryClient`, `ProjectClient`, `AttachmentClient`) as a property on `AstraCoreClient`. Thin wrapper only — no re-implemented logic.

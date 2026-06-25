@@ -32,6 +32,11 @@ class ChatOptions:
         LLM profile ID to use.  ``None`` falls back to the configured default.
     temperature:
         Sampling temperature override.  ``None`` defers to DB setting then profile.
+    top_p:
+        Nucleus sampling override.  ``None`` defers to DB setting then profile.
+    top_k:
+        Top-K sampling override (Anthropic only).  ``None`` means not sent to the API.
+        Disabled automatically when thinking mode is active.
     use_tools:
         Enable the tool-loop for this turn.
     thinking_mode:
@@ -54,6 +59,8 @@ class ChatOptions:
 
     model_profile: str | None = None
     temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
     use_tools: bool = False
     thinking_mode: str | None = None
     thinking_budget: int = 8000

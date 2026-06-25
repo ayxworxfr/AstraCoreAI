@@ -2,7 +2,7 @@
 title: AstraCoreAI 框架介绍
 category: astracore
 tags: [AstraCoreAI, 框架, Clean Architecture, FastAPI, Ports-Adapters]
-related: [astracore/chat_pipeline, astracore/skill_system, astracore/tool_system, astracore/memory_system]
+related: [astracore/chat_pipeline, astracore/skill_system, astracore/tool_system, astracore/memory_system, astracore/attachment_system, astracore/model_controls]
 ---
 
 # AstraCoreAI 框架介绍
@@ -11,17 +11,20 @@ related: [astracore/chat_pipeline, astracore/skill_system, astracore/tool_system
 
 ## 核心能力
 
-- **多 LLM 支持**：Anthropic Claude、OpenAI GPT，通过统一 `LLMAdapter` 接口切换，无需修改业务代码
+- **多 LLM 支持**：Anthropic Claude、OpenAI Chat Completions（DeepSeek / GLM）、OpenAI Responses API（GPT-5），通过统一 `LLMAdapter` 接口切换，无需修改业务代码
 - **工具调用（Tool Use）**：支持原生 Python 工具和 MCP 协议工具，多轮自动执行
 - **技能系统（Skills）**：Claude 可按需加载的专业能力包（Agent Skills 标准），三层 System Prompt + Claude 自主路由，无需服务端路由引擎
 - **知识库检索（RAG）**：ChromaDB 向量存储，语义检索自动注入对话上下文
-- **记忆系统（Memory）**：三层记忆架构，LLM 自动抽取并持久化关键信息
+- **记忆系统（Memory）**：分层记忆架构，LLM 自动抽取并持久化关键信息
+- **附件（Attachments）**：图片和 PDF 附件在对话中使用；Anthropic 发原生 vision/document block，OpenAI 发 image_url，PDF 通过 pypdf 文本提取回退
+- **多模型控件**：`/system` 接口每个 profile 返回 `controls` 描述符列表，前端按 `kind` 动态渲染，切换模型自动适配（thinking / reasoning_effort / temperature / top_p）
 - **并行多 Agent**：主 Agent 可分解任务并发调度多个子 Agent，实时流式进度
 - **流式输出（SSE）**：全链路实时流式输出，思考块（Extended Thinking）实时可见
 - **认证与授权**：JWT Bearer Token，注册/登录/鉴权；admin/user 双角色，首个注册用户自动成为管理员
 - **HITL（人机协作）**：工具执行审批、记忆晋升审批、ask_user 主动询问，超时后自动继续，前端通过 QuestionCard 展示等待确认
 - **Prompt 注入防御**：外部数据（RAG 召回内容、Tier-2 记忆、工具结果）统一用 `<external_data trust="untrusted">` 标签包裹，System Prompt 顶部含显式注入声明，防止不可信数据劫持指令
 - **上下文压缩**：Token 级自动压缩（`HistoryCompactor`），触发阈值为 context_window 的 50%，由 LLM 生成摘要并经 MemoryEngine 持久化；压缩失败时自动回退到尾部裁剪
+- **文字转语音（TTS）**：`POST /api/v1/tts` 合成语音
 
 ## 架构分层
 
@@ -36,7 +39,12 @@ ToolLoopUseCase（多轮工具执行）
        │
 LLMAdapter ──── ToolAdapter ──── MemoryAdapter ──── RetrieverAdapter
 (Anthropic/     (Native/MCP/     (Redis+SQLite)      (ChromaDB)
- OpenAI)         Parallel)
+ OpenAI/         Parallel)
+ DeepSeek/GLM/
+ GPT-5)
+       │
+AttachmentStoragePort
+(LocalFS 图片/PDF)
 ```
 
 ## 双形态

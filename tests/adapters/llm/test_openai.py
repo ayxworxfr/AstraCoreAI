@@ -166,11 +166,11 @@ async def test_generate_uses_responses_api_when_configured():
         max_tokens=64,
     )
 
+    # Responses API (GPT-5 / o-series) does not accept temperature; assert it is absent.
     mock_client.responses.create.assert_called_once_with(
         model="gpt-5.5",
         input=[{"role": "user", "content": "hi"}],
         max_output_tokens=64,
-        temperature=0.7,
         instructions="Be brief.",
     )
     assert result.content == "Hi there"
@@ -202,11 +202,11 @@ async def test_generate_stream_uses_responses_api_when_configured():
     ):
         events.append(event)
 
+    # Responses API (GPT-5 / o-series) does not accept temperature; assert it is absent.
     mock_client.responses.stream.assert_called_once_with(
         model="gpt-5.5",
         input=[{"role": "user", "content": "hi"}],
         max_output_tokens=64,
-        temperature=0.7,
     )
     assert [e.content for e in events if e.event_type == StreamEventType.TEXT_DELTA] == [
         "Hi",

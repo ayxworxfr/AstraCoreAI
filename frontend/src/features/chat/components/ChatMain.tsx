@@ -47,10 +47,19 @@ export default function ChatMain(): JSX.Element {
     // SimpleBar 和 Markdown 高亮会在提交后继续更新高度，延后一帧再对齐真实底部锚点。
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
-        bottomAnchorRef.current?.scrollIntoView({ block: 'end', behavior: scrollBehavior });
+        const el = scrollContainerRef.current;
+        if (el) {
+          el.scrollTo({ top: el.scrollHeight, behavior: scrollBehavior });
+        } else {
+          bottomAnchorRef.current?.scrollIntoView({ block: 'end', behavior: scrollBehavior });
+        }
       });
     });
   }, []);
+
+  const handleScrollToBottom = useCallback(() => {
+    scrollToBottom('smooth');
+  }, [scrollToBottom]);
 
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -168,7 +177,7 @@ export default function ChatMain(): JSX.Element {
         onMsgEnter={onMsgEnter}
         onMsgLeave={onMsgLeave}
         showScrollBtn={showScrollBtn}
-        onScrollToBottom={scrollToBottom}
+        onScrollToBottom={handleScrollToBottom}
         onScroll={handleScroll}
         onSendMessage={handleSendMessage}
       />

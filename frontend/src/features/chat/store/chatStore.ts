@@ -121,6 +121,14 @@ type ChatStore = {
   isLoadingMoreMessages: boolean;
   useStream: boolean;
   thinkingMode: 'off' | 'on' | 'adaptive';
+  /** Per-turn reasoning effort override; null = use profile default */
+  reasoningEffort: string | null;
+  /** Per-turn temperature override; null = not set, defers to settings/profile */
+  temperature: number | null;
+  /** Per-turn top-p override; null = not set, defers to settings/profile */
+  topP: number | null;
+  /** Per-turn top-k override; null = not set (Anthropic only, disabled during thinking) */
+  topK: number | null;
   enableRag: boolean;
   enableTools: boolean;
   enableWeb: boolean;
@@ -149,6 +157,10 @@ type ChatStore = {
   togglePin: (id: string) => void;
   setUseStream: (value: boolean) => void;
   setThinkingMode: (mode: 'off' | 'on' | 'adaptive') => void;
+  setReasoningEffort: (effort: string | null) => void;
+  setTemperature: (value: number | null) => void;
+  setTopP: (value: number | null) => void;
+  setTopK: (value: number | null) => void;
   setEnableRag: (value: boolean) => void;
   setEnableTools: (value: boolean) => void;
   setEnableWeb: (value: boolean) => void;
@@ -181,6 +193,10 @@ export const useChatStore = create<ChatStore>()(
       isLoadingMoreMessages: false,
       useStream: true,
       thinkingMode: 'off',
+      reasoningEffort: null,
+      temperature: null,
+      topP: null,
+      topK: null,
       enableRag: false,
       enableTools: false,
       enableWeb: false,
@@ -351,6 +367,22 @@ export const useChatStore = create<ChatStore>()(
 
       setUseStream: (value) => set({ useStream: value }),
       setThinkingMode: (mode) => set({ thinkingMode: mode }),
+      setReasoningEffort: (effort) => set({ reasoningEffort: effort }),
+      setTemperature: (value) => set((s) => ({
+        temperature: value,
+        topP: value === null ? s.topP : null,
+        topK: value === null ? s.topK : null,
+      })),
+      setTopP: (value) => set((s) => ({
+        temperature: value === null ? s.temperature : null,
+        topP: value,
+        topK: value === null ? s.topK : null,
+      })),
+      setTopK: (value) => set((s) => ({
+        temperature: value === null ? s.temperature : null,
+        topP: value === null ? s.topP : null,
+        topK: value,
+      })),
       setEnableRag: (value) => set({ enableRag: value }),
       setEnableTools: (value) => set({ enableTools: value }),
       setEnableWeb: (value) => set({ enableWeb: value }),
@@ -359,6 +391,10 @@ export const useChatStore = create<ChatStore>()(
         const { activeConversationId } = get();
         set((s) => ({
           activeModelId: id,
+          // sampling overrides are profile-specific; reset when profile changes
+          temperature: null,
+          topP: null,
+          topK: null,
           conversations: s.conversations.map((c) =>
             c.id === activeConversationId ? { ...c, modelId: id } : c,
           ),
@@ -886,13 +922,17 @@ export const useChatStore = create<ChatStore>()(
             const thinkingBlocks: string[] = [];
             const getUpdatedBlocks = () => (thinkingBlocks.length ? [...thinkingBlocks] : undefined);
 
-            const { thinkingMode } = get();
+            const { thinkingMode, reasoningEffort, temperature, topP, topK } = get();
             set({ pendingAttachments: [] });
             const run = await createChatRun({
               message: trimmed,
               session_id: activeConversationId,
               model_profile: activeModelId ?? undefined,
               thinking_mode: thinkingMode !== 'off' ? thinkingMode : undefined,
+              reasoning_effort: reasoningEffort ?? undefined,
+              temperature: temperature ?? undefined,
+              top_p: topP ?? undefined,
+              top_k: topK ?? undefined,
               enable_rag: enableRag,
               use_tools: enableTools || enableWeb,
               enable_web: enableWeb,

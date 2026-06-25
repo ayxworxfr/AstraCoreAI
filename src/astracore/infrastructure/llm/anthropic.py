@@ -224,6 +224,7 @@ class AnthropicAdapter(LLMAdapter):
 
         enable_prompt_cache: bool = kwargs.get("enable_prompt_cache", False)
         top_p: float | None = kwargs.get("top_p", None)
+        top_k: int | None = kwargs.get("top_k", None)
         stop_sequences: list[str] = kwargs.get("stop_sequences", [])
 
         request_params: dict[str, Any] = {
@@ -231,8 +232,8 @@ class AnthropicAdapter(LLMAdapter):
             "messages": converted_messages,
             "max_tokens": max_tokens,
         }
-        # temperature 和 top_p 互斥，设了 top_p 就不发 temperature
-        if self.supports_temperature and top_p is None:
+        # 采样参数互斥：top_p > top_k > temperature
+        if self.supports_temperature and top_p is None and top_k is None:
             request_params["temperature"] = temperature
 
         if enable_prompt_cache and system:
@@ -244,6 +245,8 @@ class AnthropicAdapter(LLMAdapter):
 
         if top_p is not None:
             request_params["top_p"] = top_p
+        elif top_k is not None:
+            request_params["top_k"] = top_k
         if stop_sequences:
             request_params["stop_sequences"] = stop_sequences
 
@@ -330,6 +333,7 @@ class AnthropicAdapter(LLMAdapter):
         thinking_budget: int = kwargs.get("thinking_budget", 8000)
         enable_prompt_cache: bool = kwargs.get("enable_prompt_cache", False)
         top_p: float | None = kwargs.get("top_p", None)
+        top_k: int | None = kwargs.get("top_k", None)
         stop_sequences: list[str] = kwargs.get("stop_sequences", [])
 
         client = self._get_client()
@@ -347,14 +351,18 @@ class AnthropicAdapter(LLMAdapter):
         # Anthropic: thinking 模式下 top_p 必须 ≥ 0.95 或不发送
         if thinking_mode in ("on", "adaptive") and top_p is not None and top_p < 0.95:
             top_p = None
+        # top_k is not available during thinking mode (Anthropic restriction)
+        if thinking_mode in ("on", "adaptive"):
+            top_k = None
 
         if self.supports_temperature:
             if thinking_mode == "on":
-                # Extended Thinking 要求 temperature=1，且不能与 top_p 同时发送
+                # Extended Thinking 要求 temperature=1，且不能与其它采样参数同时发送
                 request_params["temperature"] = 1.0
                 top_p = None
-            elif top_p is None:
-                # top_p 已设置时跳过 temperature，两者互斥
+                top_k = None
+            elif top_p is None and top_k is None:
+                # 采样参数互斥：top_p > top_k > temperature
                 request_params["temperature"] = temperature
 
         if enable_prompt_cache and system:
@@ -366,6 +374,8 @@ class AnthropicAdapter(LLMAdapter):
 
         if top_p is not None:
             request_params["top_p"] = top_p
+        elif top_k is not None:
+            request_params["top_k"] = top_k
         if stop_sequences:
             request_params["stop_sequences"] = stop_sequences
 

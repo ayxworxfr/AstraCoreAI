@@ -17,15 +17,21 @@ export function ThinkingModeSelector({
   value,
   disabled,
   onChange,
+  modes,
 }: {
   value: ThinkingPreference;
   disabled: boolean;
   onChange: (value: ThinkingPreference) => void;
+  /** Available modes from controls descriptor; defaults to all three modes */
+  modes?: string[];
 }) {
   const { token } = theme.useToken();
   const active = value !== 'off';
-  const selected = THINKING_MODE_OPTIONS.find((option) => option.value === value);
-  const menuItems: MenuProps['items'] = THINKING_MODE_OPTIONS.map((option) => ({
+  const options = modes
+    ? THINKING_MODE_OPTIONS.filter((o) => modes.includes(o.value))
+    : THINKING_MODE_OPTIONS;
+  const selected = options.find((option) => option.value === value) ?? options[0];
+  const menuItems: MenuProps['items'] = options.map((option) => ({
     key: option.value,
     label: (
       <Flex vertical gap={2}>
@@ -46,6 +52,7 @@ export function ThinkingModeSelector({
           onClick: ({ key }) => onChange(key as ThinkingPreference),
         }}
       >
+
         <Button
           aria-label="选择思考模式"
           size="small"

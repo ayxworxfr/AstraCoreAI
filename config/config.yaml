@@ -1,5 +1,5 @@
 llm:
-  default_profile: deepseek-chat
+  default_profile: deepseek-v4-flash
   profiles:
     - id: claude-sonnet
       label: Claude Sonnet
@@ -29,7 +29,7 @@ llm:
       enable_prompt_cache: true # 为 system prompt 注入 cache_control，降低 Anthropic 输入 token 成本
       # thinking_mode: adaptive # Opus 4.7+ 支持 adaptive 自适应思考
 
-    - id: deepseek-chat
+    - id: deepseek-v4-flash
       label: DeepSeek Chat
       protocol: anthropic
       base_url: https://api.deepseek.com/anthropic
@@ -52,6 +52,16 @@ llm:
       api_key_env: ANTHROPIC_PROXY_API_KEY
       model: glm-5.1
       max_tokens: 16384
+
+    - id: gpt-5-5
+      label: GPT-5.5
+      protocol: responses
+      base_url: https://llm-proxy.oa.com/azure
+      api_key_env: ANTHROPIC_PROXY_API_KEY
+      model: gpt-5.5
+      max_tokens: 16384
+      capabilities:
+        vision: true
 
 # policy 全局默认
 policy:

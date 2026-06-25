@@ -1,12 +1,12 @@
 # AstraCoreAI
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
-![Tests](https://img.shields.io/badge/Tests-190%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-240%20passed-brightgreen)
 ![License](https://img.shields.io/badge/License-PolyForm%20NC-orange)
 
 > Enterprise-grade Python AI agent framework built with Clean Architecture and Ports & Adapters.
 
-AstraCoreAI provides production-ready infrastructure for LLM applications: on-demand Skills, tiered memory, Human-in-the-Loop approvals, native and MCP tools, scheduled tasks, parallel agents, DAG workflows, observability, security hardening, and evaluation utilities. The same business logic runs through the Python SDK or as a standalone FastAPI service.
+AstraCoreAI provides production-ready infrastructure for LLM applications: on-demand Skills, tiered memory, Human-in-the-Loop approvals, native and MCP tools, scheduled tasks, parallel agents, DAG workflows, multi-modal attachments, observability, security hardening, and evaluation utilities. The same business logic runs through the Python SDK or as a standalone FastAPI service.
 
 [中文 README](./README.zh-CN.md)
 
@@ -81,13 +81,38 @@ Tasks can be paused, resumed, executed immediately, filtered, and inspected from
 - XSS and input-length checks through `SecurityValidator`
 - Sensitive-field redaction in relevant paths
 
+### Attachments
+
+AstraCoreAI supports image and PDF attachments in conversations:
+
+- Images are sent as native vision blocks (Anthropic) or `image_url` (OpenAI-compatible)
+- PDFs are converted to text by pypdf and injected as content when native document blocks are not available
+- Upload via `POST /api/v1/attachments`; reference by ID in `ChatOptions.attachments`
+- The SDK `Conversation.send(attachments=[...])` accepts local `Path` objects or `AttachmentRef` IDs
+- Upload is gated by `profile.capabilities.vision` — the frontend disables the button when the model does not support vision
+
+### Model Controls
+
+Each LLM profile exposes a `controls` list on the `/system` endpoint. The frontend renders controls dynamically based on `kind`:
+
+| `kind` | Where | Shown when |
+|--------|-------|------------|
+| `thinking` | Main toolbar | `caps.thinking == True` |
+| `reasoning_effort` | Main toolbar | `caps.reasoning_effort_protocol != None` |
+| `temperature` | Advanced panel | `caps.temperature == True` |
+| `top_p` | Advanced panel | `caps.temperature == True` |
+| `top_k` | Advanced panel | `caps.top_k == True` (Anthropic native) |
+
+Adding a new model only requires updating `infer_model_capabilities()` — no frontend code changes needed.
+
 ### Additional Features
 
 - **HistoryCompactor**: summarizes old conversation history and persists the summary as session memory
 - **RAG**: ChromaDB-backed retrieval with idempotent upsert and citations
+- **TTS**: text-to-speech synthesis endpoint
 - **Evaluation Framework**: LLM-as-judge, tool-call matching, and CLI execution through `python -m astracore.eval`
 - **Structured Output**: `LLMAdapter.generate(response_format=MyModel)` for Pydantic-enforced outputs
-- **LLM Profiles**: switch between Anthropic, OpenAI-compatible providers, Responses API providers, DeepSeek, GLM, and custom endpoints by profile ID
+- **LLM Profiles**: switch between Anthropic Claude, OpenAI-compatible providers (DeepSeek, GLM), OpenAI Responses API (GPT-5), and custom endpoints by profile ID
 
 ---
 
@@ -123,8 +148,9 @@ flowchart TD
     RP --> LLMPort
 
     subgraph Infrastructure
-        INF_LLM["Anthropic · OpenAI-compatible\nDeepSeek / GLM / Responses API"]
+        INF_LLM["Anthropic · OpenAI-compatible\nDeepSeek / GLM / GPT-5 Responses API"]
         INF_MEM["SQLite · ChromaDB\nRedis optional"]
+        INF_ATT["LocalFS Attachments\nimage / PDF"]
     end
 
     LLMPort & ToolPort --> INF_LLM
@@ -235,12 +261,12 @@ To add a built-in skill, create a directory containing a valid `SKILL.md`, optio
 | `load_skill` | Native | Load a skill package on demand |
 | `get_skill_reference` | Native | Load a referenced skill document |
 | `run_skill_script` | Native | Execute a script bundled with a skill |
-| `save_memory` | Native | Save structured memory |
-| `recall_memory` | Native | Search structured memory |
-| `compact_memory` | Native | Compact session memories |
-| `ask_user` | Native | Ask the user a HITL question |
-| `spawn_agents` | Native | Launch parallel worker agents when enabled |
-| `filesystem` | MCP | Controlled file operations |
+| `save_memory` | Native | Save a structured memory item |
+| `recall_memory` | Native | Semantic search over memory |
+| `compact_memory` | Native | Compact session memories into summaries |
+| `ask_user` | Native | Ask the user a HITL question inline |
+| `spawn_agents` | Native | Launch 2–5 parallel worker agents |
+| `filesystem` | MCP | Controlled file operations (10 tools) |
 | `shell` | MCP | Controlled shell command execution |
 
 ---
@@ -249,12 +275,14 @@ To add a built-in skill, create a directory containing a valid `SKILL.md`, optio
 
 | Page | Features |
 |------|----------|
-| Chat | SSE streaming, conversation management, tool activity, HITL approvals |
+| Chat | SSE streaming, conversation management, tool activity, HITL approvals, image/PDF attachments, model controls toolbar |
 | Memory | CRUD, batch delete, scope filters, promotion approval queue |
 | Scheduling | cron / interval / date tasks, pause, resume, run now, search, batch delete |
 | Skills | Skill CRUD and `SKILL.md` editing |
 | Knowledge Base | Document upload and retrieval debugging |
-| Settings | User profile, assistant identity, global instructions, provider settings |
+| Settings | User profile, assistant identity, global instructions |
+| System | LLM profile capabilities, MCP servers, RAG status |
+| TTS | Text-to-speech synthesis |
 
 ---
 
@@ -334,7 +362,7 @@ mcp:
       timeout: 30
 ```
 
-See `config/config.example.yaml` for the full template. Use it when configuring DeepSeek, GPT Responses API, prompt cache, thinking/reasoning controls, profile-level timeout/retry overrides, or custom MCP processes.
+See `config/config.example.yaml` for the full template. Use it when configuring DeepSeek, GLM, GPT Responses API, thinking/reasoning controls, attachment storage path, profile-level timeout/retry overrides, or custom MCP processes.
 
 | MCP Type | Required Fields | Description |
 |----------|-----------------|-------------|
@@ -454,6 +482,10 @@ async with AstraCoreClient(hooks=registry) as client:
 - [x] Core LLM, tool, memory, RAG, Skill, multi-agent, DAG, hook, eval, and JWT authentication loop
 - [x] Scheduled tasks
 - [x] HITL tool approval and memory promotion flow
+- [x] Image and PDF attachment support (vision + document blocks)
+- [x] Dynamic model controls descriptor (`controls` list per profile)
+- [x] Multi-provider LLM support: Anthropic, OpenAI Responses API (GPT-5), OpenAI Chat Completions (DeepSeek, GLM), custom endpoints
+- [x] TTS synthesis
 - [ ] Rate limiting
 - [ ] Redis-backed multi-worker run state
 - [ ] OpenTelemetry-compatible tracing, SLOs, and metrics

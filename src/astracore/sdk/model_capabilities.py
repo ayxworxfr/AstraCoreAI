@@ -1,5 +1,7 @@
 """Built-in LLM model capability registry."""
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -15,8 +17,14 @@ class LLMCapabilities(BaseModel):
     structured_output_via_tools: bool = True
     prompt_cache: bool = False
     """Anthropic prompt caching via cache_control blocks."""
-    reasoning_effort_capable: bool = False
-    """GPT-5 / o-series: supports reasoning_effort and verbosity parameters."""
+    reasoning_effort_protocol: Literal["responses", "extra_body"] | None = None
+    """How reasoning_effort is sent to the provider.
+    'responses' = OpenAI Responses API (GPT-5), sends reasoning.effort.
+    'extra_body' = Chat Completions extra_body (DeepSeek, GLM-5.2+).
+    None = not supported.
+    """
+    top_k: bool = False
+    """Supports top_k sampling parameter (Anthropic native models only)."""
     vision: bool = False
     """Supports image attachments (image_url or Anthropic image blocks)."""
     documents: bool = False
@@ -43,6 +51,7 @@ def infer_model_capabilities(
             thinking=True,
             adaptive_thinking_only=False,
             temperature=True,
+            top_k=True,  # thinking 关闭时可用；anthropic.py 在 thinking 开启时自动忽略
             anthropic_blocks=False,
             structured_output_via_tools=False,  # thinking 模式不支持 tool_choice
             prompt_cache=True,
@@ -53,19 +62,25 @@ def infer_model_capabilities(
     if normalized_model == "claude-opus-4-6":
         return LLMCapabilities(
             tools=True,
-            thinking=False,
+            thinking=True,
+            adaptive_thinking_only=False,
             temperature=True,
+            top_k=True,
+            anthropic_blocks=False,
+            structured_output_via_tools=False,
             prompt_cache=True,
             vision=True,
             documents=True,
         )
 
     if normalized_model == "claude-opus-4-7":
+        # 始终处于 adaptive thinking 模式，top_k 在 thinking 下不可用，故不暴露。
         return LLMCapabilities(
             tools=True,
             thinking=True,
             adaptive_thinking_only=True,  # Opus 4.7+ 只支持 adaptive，不接受 budget_tokens
             temperature=False,
+            top_k=False,
             anthropic_blocks=False,
             prompt_cache=True,
             vision=True,
@@ -78,11 +93,22 @@ def infer_model_capabilities(
         return LLMCapabilities(
             tools=True,
             thinking=False,
-            temperature=True,
+            temperature=False,
             anthropic_blocks=False,
-            reasoning_effort_capable=True,
+            reasoning_effort_protocol="responses",
             vision=True,
             documents=False,
+        )
+
+    if normalized_model.startswith("glm-5.2"):
+        return LLMCapabilities(
+            tools=True,
+            thinking=True,
+            temperature=True,
+            anthropic_blocks=False,
+            structured_output_via_tools=False,  # GLM thinking 模式与 tool_choice 不兼容
+            reasoning_effort_protocol="extra_body",
+            vision=False,
         )
 
     if normalized_model in ("glm-5.1", "glm-5", "glm-5-plus") or normalized_model.startswith(
@@ -97,7 +123,7 @@ def infer_model_capabilities(
             vision=False,
         )
 
-    if normalized_model == "deepseek-v4-flash":
+    if normalized_model.startswith("deepseek-v4"):
         uses_anthropic_protocol = (
             normalized_protocol == "anthropic" or "/anthropic" in normalized_base_url
         )
@@ -109,11 +135,16 @@ def infer_model_capabilities(
                 anthropic_blocks=True,
                 structured_output_via_tools=False,  # thinking 模式不支持 tool_choice
             )
+        # OpenAI 协议：DeepSeek-V4 系列（flash/pro/…）支持 thinking.type=enabled（via extra_body）。
+        # reasoning_effort（high/max）需配合 thinking 开启才生效。
+        # 无自适应模式（adaptive）。
         return LLMCapabilities(
             tools=True,
-            thinking=False,
+            thinking=True,
             temperature=True,
             anthropic_blocks=False,
+            structured_output_via_tools=False,  # thinking 模式不支持 tool_choice
+            reasoning_effort_protocol="extra_body",
         )
 
     # 第三方 Anthropic 兼容端点（如 DeepSeek via api.deepseek.com/anthropic）

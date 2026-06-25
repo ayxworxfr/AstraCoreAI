@@ -12,7 +12,6 @@ import {
   InputNumber,
   Modal,
   Select,
-  Slider,
   Space,
   Switch,
   Table,
@@ -346,7 +345,7 @@ function RuntimeParamsTab(): JSX.Element {
   const { settings, fetchSettings, saveSettings } = useSkillStore();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [form] = Form.useForm<Pick<UserSettings, 'temperature' | 'top_p' | 'stop_sequences' | 'rag_top_k' | 'context_max_messages' | 'timezone' | 'thinking_collapse_mode'>>();
+  const [form] = Form.useForm<Pick<UserSettings, 'stop_sequences' | 'rag_top_k' | 'context_max_messages' | 'timezone' | 'thinking_collapse_mode'>>();
 
   useEffect(() => {
     void fetchSettings();
@@ -354,8 +353,6 @@ function RuntimeParamsTab(): JSX.Element {
 
   useEffect(() => {
     form.setFieldsValue({
-      temperature: settings.temperature,
-      top_p: settings.top_p,
       stop_sequences: settings.stop_sequences,
       rag_top_k: settings.rag_top_k,
       context_max_messages: settings.context_max_messages,
@@ -388,53 +385,6 @@ function RuntimeParamsTab(): JSX.Element {
 
         <Form form={form} style={{ marginTop: 16 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
-          {/* Temperature */}
-          <Card
-            size="small"
-            style={{ gridColumn: '1 / -1', borderRadius: 14, boxShadow: '0 1px 2px rgba(15, 23, 42, 0.04)' }}
-            styles={{ body: { padding: 16 } }}
-          >
-            <Flex align="flex-start" justify="space-between" gap={18} style={{ marginBottom: 12 }}>
-              <div>
-                <Typography.Text strong style={{ fontSize: 14 }}>
-                  Temperature
-                </Typography.Text>
-                <Typography.Text
-                  type="secondary"
-                  style={{ display: 'block', fontSize: 12, marginTop: 3, lineHeight: 1.6 }}
-                >
-                  控制输出随机性。值越高越有创意，值越低越稳定精确。推荐范围 0.3 ~ 1.0。
-                </Typography.Text>
-              </div>
-              <Form.Item noStyle shouldUpdate={(p, c) => p.temperature !== c.temperature}>
-                {({ getFieldValue, setFieldValue }) => (
-                  <InputNumber
-                    min={0}
-                    max={2}
-                    step={0.05}
-                    style={{ width: 96 }}
-                    value={(getFieldValue('temperature') as number) ?? 0.7}
-                    onChange={(v) => setFieldValue('temperature', v ?? 0.7)}
-                  />
-                )}
-              </Form.Item>
-            </Flex>
-            <Form.Item name="temperature" noStyle rules={[{ required: true }]}>
-              <Slider min={0} max={2} step={0.05} />
-            </Form.Item>
-          </Card>
-
-          {/* top_p */}
-          <ParamCard
-            title="Top-p 核采样"
-            description="与 Temperature 二选一使用。值越小输出越集中（0.9 = 只从概率最高的 90% token 中采样）。留空则使用 provider 默认值。"
-            style={DIVIDER_STYLE}
-          >
-            <Form.Item name="top_p" noStyle>
-              <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} placeholder="默认" />
-            </Form.Item>
-          </ParamCard>
-
           {/* stop_sequences */}
           <ParamCard
             title="终止序列"
@@ -511,24 +461,6 @@ function RuntimeParamsTab(): JSX.Element {
         styles={{ header: { fontSize: 13, fontWeight: 600 }, body: { padding: 16 } }}
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '18px 20px' }}>
-          <ReferenceSection
-            title="Temperature"
-            items={[
-              { label: '精确问答 / 代码', range: '0.1 ~ 0.4' },
-              { label: '通用对话', range: '0.5 ~ 0.8' },
-              { label: '创意写作', range: '0.9 ~ 1.2' },
-            ]}
-          />
-
-          <ReferenceSection
-            title="Top-p 核采样"
-            items={[
-              { label: '稳定输出', range: '0.7 ~ 0.85' },
-              { label: '通用默认', range: '0.9 ~ 0.95' },
-              { label: '开放创作', range: '0.95 ~ 1.0' },
-            ]}
-          />
-
           <ReferenceSection
             title="终止序列"
             items={[

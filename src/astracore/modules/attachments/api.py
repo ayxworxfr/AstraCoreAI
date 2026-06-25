@@ -10,7 +10,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from astracore.infrastructure.attachments.local_fs import LocalFSAttachmentStorage
 from astracore.infrastructure.db.models import AttachmentRow, UserRow
@@ -181,17 +181,24 @@ async def delete_attachment(
     storage: LocalFSAttachmentStorage = Depends(_get_storage),
 ) -> None:
     """Delete an attachment.  Only the owning user may delete it."""
+    should_delete_file = False
     async with get_session(db_url) as db:
         result = await db.execute(select(AttachmentRow).where(AttachmentRow.id == attachment_id))
         row = result.scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="附件不存在")
+        if row.user_id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除该附件")
 
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="附件不存在")
-    if row.user_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除该附件")
-
-    await storage.delete(row.storage_key)
-
-    async with get_session(db_url) as db:
+        storage_key = row.storage_key
         await db.execute(delete(AttachmentRow).where(AttachmentRow.id == attachment_id))
+        remaining = await db.scalar(
+            select(func.count())
+            .select_from(AttachmentRow)
+            .where(AttachmentRow.storage_key == storage_key)
+        )
+        should_delete_file = (remaining or 0) == 0
         await db.commit()
+
+    if should_delete_file:
+        await storage.delete(storage_key)

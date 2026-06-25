@@ -41,6 +41,15 @@ def _load_cases(path: str) -> list[Any]:
     return cases
 
 
+def _build_eval_config() -> Any:
+    from astracore.sdk.config import AstraCoreConfig
+
+    config = AstraCoreConfig()
+    vector = config.storage.vector.model_copy(update={"enabled": False})
+    storage = config.storage.model_copy(update={"vector": vector})
+    return config.model_copy(update={"storage": storage})
+
+
 async def _main(args: argparse.Namespace) -> int:
     from astracore.eval.runner import EvalRunner
     from astracore.sdk import AstraCoreClient
@@ -48,7 +57,7 @@ async def _main(args: argparse.Namespace) -> int:
     cases = _load_cases(args.cases)
     print(f"Loaded {len(cases)} eval case(s) from {args.cases}")
 
-    async with AstraCoreClient() as client:
+    async with AstraCoreClient(config=_build_eval_config()) as client:
         runner = EvalRunner(
             client,
             judge_profile=args.judge_profile,

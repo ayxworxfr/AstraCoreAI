@@ -17,8 +17,6 @@ router = APIRouter()
 
 _SETTINGS_KEYS = {
     "global_instruction",
-    "temperature",
-    "top_p",
     "stop_sequences",
     "rag_top_k",
     "context_max_messages",
@@ -30,11 +28,8 @@ _SETTINGS_KEYS = {
 
 _SETTINGS_DEFAULTS: dict[str, str] = {
     "global_instruction": "",
-    "temperature": "0.7",
-    "top_p": "",
     "stop_sequences": "",
     "rag_top_k": "4",
-    "context_max_messages": "20",
     "ai_name": "小卡",
     "owner_name": "",
     "timezone": "Asia/Shanghai",
@@ -47,13 +42,29 @@ def _db_url() -> str:
     return AstraCoreConfig().storage.db_url
 
 
+@lru_cache(maxsize=1)
+def _default_context_max_messages() -> str:
+    return str(AstraCoreConfig().policy.compaction.default_max_messages)
+
+
+@lru_cache(maxsize=1)
+def _default_timezone() -> str:
+    return AstraCoreConfig().scheduling.default_timezone
+
+
+def _setting_default(key: str) -> str:
+    if key == "context_max_messages":
+        return _default_context_max_messages()
+    if key == "timezone":
+        return _default_timezone()
+    return _SETTINGS_DEFAULTS[key]
+
+
 class UserSettingsResponse(BaseModel):
     global_instruction: str = ""
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    top_p: float | None = None
     stop_sequences: list[str] = Field(default_factory=list)
     rag_top_k: int = Field(default=4, ge=1, le=20)
-    context_max_messages: int = Field(default=20, ge=4, le=200)
+    context_max_messages: int = Field(default=10, ge=4, le=200)
     ai_name: str = "小卡"
     owner_name: str = ""
     timezone: str = "Asia/Shanghai"
@@ -62,8 +73,6 @@ class UserSettingsResponse(BaseModel):
 
 class UserSettingsUpdate(BaseModel):
     global_instruction: str | None = None
-    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
     stop_sequences: list[str] | None = Field(default=None, max_length=4)
     rag_top_k: int | None = Field(default=None, ge=1, le=20)
     context_max_messages: int | None = Field(default=None, ge=4, le=200)
@@ -81,9 +90,9 @@ async def _load_settings_map(db_url: str, user_id: str) -> dict[str, str]:
 
 def _build_response(data: dict[str, str]) -> UserSettingsResponse:
     def _get(key: str) -> str:
-        return data.get(key, _SETTINGS_DEFAULTS[key])
+        value = data.get(key)
+        return value if value not in (None, "") else _setting_default(key)
 
-    raw_top_p = _get("top_p")
     raw_stop = _get("stop_sequences")
     try:
         stop_seqs: list[str] = json.loads(raw_stop) if raw_stop else []
@@ -94,8 +103,6 @@ def _build_response(data: dict[str, str]) -> UserSettingsResponse:
 
     return UserSettingsResponse(
         global_instruction=_get("global_instruction"),
-        temperature=float(_get("temperature")),
-        top_p=float(raw_top_p) if raw_top_p else None,
         stop_sequences=stop_seqs,
         rag_top_k=int(_get("rag_top_k")),
         context_max_messages=int(_get("context_max_messages")),

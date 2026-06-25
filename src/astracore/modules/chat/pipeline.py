@@ -336,14 +336,6 @@ class ChatPipeline:
             logger.exception("Tier-2 记忆上下文构建失败，跳过")
             return ""
 
-    async def _resolve_temperature(
-        self, temperature: float | None, profile: LLMProfileConfig, user_id: str = "default"
-    ) -> float:
-        if temperature is not None:
-            return temperature
-        saved = await self._get_setting("temperature", user_id)
-        return float(saved) if saved else profile.temperature
-
     # ------------------------------------------------------------------
     # prepare: all decisions resolved once, returned as frozen ChatContext
     # ------------------------------------------------------------------
@@ -380,8 +372,11 @@ class ChatPipeline:
         turn_context = await self._build_turn_context(session_id, message, user_id)
 
         # 2. Resolve temperature and context window size
-        resolved_temp = await self._resolve_temperature(opts.temperature, profile, user_id)
-        context_max = int(await self._get_setting("context_max_messages", user_id) or "20")
+        resolved_temp = opts.temperature if opts.temperature is not None else profile.temperature
+        context_max = int(
+            await self._get_setting("context_max_messages", user_id)
+            or str(self._config.policy.compaction.default_max_messages)
+        )
 
         # 3. Build LLM kwargs
         llm_kwargs: dict[str, Any] = {}
@@ -401,20 +396,26 @@ class ChatPipeline:
                 llm_kwargs["thinking_mode"] = "on"
                 llm_kwargs["thinking_budget"] = opts.thinking_budget
 
-        # Slice B: GPT-5 reasoning_effort and verbosity — opts > profile defaults
-        if profile.capabilities.reasoning_effort_capable:
+        # Slice B: reasoning_effort and verbosity — opts > profile defaults
+        # Both protocols receive reasoning_effort; openai.py routes extra_body vs responses.
+        # verbosity is Responses API only (GPT-5); extra_body providers do not support it.
+        if profile.capabilities.reasoning_effort_protocol:
             resolved_effort = opts.reasoning_effort or profile.reasoning_effort
             if resolved_effort:
                 llm_kwargs["reasoning_effort"] = resolved_effort
-            resolved_verbosity = opts.verbosity or profile.verbosity
-            if resolved_verbosity:
-                llm_kwargs["verbosity"] = resolved_verbosity
+            if profile.capabilities.reasoning_effort_protocol == "responses":
+                resolved_verbosity = opts.verbosity or profile.verbosity
+                if resolved_verbosity:
+                    llm_kwargs["verbosity"] = resolved_verbosity
 
-        # Slice A: sampling params — user settings override profile defaults
-        saved_top_p = await self._get_setting("top_p", user_id)
-        effective_top_p: float | None = float(saved_top_p) if saved_top_p else profile.top_p
-        if effective_top_p is not None:
+        # Slice A: sampling params — mutually exclusive.
+        # Priority: explicit top_p > explicit top_k > temperature/profile default.
+        # Adapters also guard this, but resolving here keeps SDK/HTTP behavior predictable.
+        effective_top_p = opts.top_p if opts.top_p is not None else profile.top_p
+        if profile.capabilities.temperature and effective_top_p is not None:
             llm_kwargs["top_p"] = effective_top_p
+        elif profile.capabilities.top_k and opts.top_k is not None:
+            llm_kwargs["top_k"] = opts.top_k
 
         saved_stop = await self._get_setting("stop_sequences", user_id)
         if saved_stop:

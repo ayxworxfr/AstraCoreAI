@@ -137,6 +137,7 @@ def test_chat_options_fields():
     expected = {
         "model_profile",
         "temperature",
+        "top_p",
         "use_tools",
         "thinking_mode",
         "thinking_budget",

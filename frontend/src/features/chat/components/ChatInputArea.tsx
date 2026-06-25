@@ -7,17 +7,28 @@ import {
   GlobalOutlined,
   PaperClipOutlined,
   PictureOutlined,
+  QuestionCircleOutlined,
+  RobotOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
-import { Button, Flex, Tooltip, Typography, theme } from 'antd';
+import { Button, Flex, Popover, Slider, Tooltip, Typography, theme } from 'antd';
 import { useChatStore } from '@/features/chat/store/chatStore';
 import { useSystemStore } from '@/features/system/store/systemStore';
+import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { useAttachmentUpload } from '@/features/chat/hooks/useAttachmentUpload';
 import { ThinkingModeSelector } from './ThinkingBlock';
+import { ReasoningEffortSelector } from './ReasoningEffortSelector';
 import ModelSelector from './ModelSelector';
 import TokenUsageBar from './TokenUsageBar';
 import { formatBytes } from '@/shared/utils/format';
 import type { AttachmentPreview } from '@/features/attachments/types';
+import type {
+  TemperatureControl,
+  ThinkingControl,
+  ReasoningEffortControl,
+  TopPControl,
+  TopKControl,
+} from '@/features/system/types';
 
 function AttachmentChip({
   att,
@@ -69,9 +80,201 @@ function AttachmentChip({
   );
 }
 
+const PARAM_HELP: Record<'temperature' | 'top_p' | 'top_k', { title: string; text: string; tip: string }> = {
+  temperature: {
+    title: 'Temperature 是什么？',
+    text: '控制回答的随机性。值越低越稳定、越按常规回答；值越高越发散、更有创意，但也更容易跑偏。',
+    tip: '建议：日常问答/代码 0.2-0.7；创意写作 0.8-1.2。调整它会清空 Top-P 和 Top-K。',
+  },
+  top_p: {
+    title: 'Top-P 是什么？',
+    text: '控制模型只从累计概率最高的一批词里选择。值越低越保守，值越高选择范围越大。',
+    tip: '建议：一般保持 0.9-1.0。调整它会清空 Temperature 和 Top-K。',
+  },
+  top_k: {
+    title: 'Top-K 是什么？',
+    text: '限制每一步只从概率最高的 K 个候选词里选。K 越小越保守，K 越大越开放。',
+    tip: '建议：不确定就用默认值；想更稳定可降低，想更开放可提高。调整它会清空 Temperature 和 Top-P。',
+  },
+};
+
+function ParamLabel({ kind, label }: { kind: keyof typeof PARAM_HELP; label: string }) {
+  const help = PARAM_HELP[kind];
+  return (
+    <Flex align="center" gap={4} style={{ width: 92, flexShrink: 0 }}>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {label}
+      </Typography.Text>
+      <Tooltip
+        title={(
+          <Flex vertical gap={4}>
+            <Typography.Text style={{ color: 'inherit', fontSize: 12, fontWeight: 600 }}>{help.title}</Typography.Text>
+            <Typography.Text style={{ color: 'inherit', fontSize: 12 }}>{help.text}</Typography.Text>
+            <Typography.Text style={{ color: 'inherit', fontSize: 12 }}>{help.tip}</Typography.Text>
+          </Flex>
+        )}
+      >
+        <QuestionCircleOutlined style={{ fontSize: 12, color: '#8c8c8c' }} />
+      </Tooltip>
+    </Flex>
+  );
+}
+
+function SamplingRow({
+  active,
+  children,
+}: {
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  const { token } = theme.useToken();
+  return (
+    <Flex
+      align="center"
+      gap={10}
+      style={{
+        padding: '5px 6px',
+        margin: '0 -6px',
+        borderRadius: 10,
+        borderLeft: `3px solid ${active ? '#60a5fa' : 'rgba(148, 163, 184, 0.42)'}`,
+        background: active ? 'rgba(59, 130, 246, 0.08)' : 'rgba(148, 163, 184, 0.08)',
+        transition: 'background 0.16s ease, border-color 0.16s ease',
+      }}
+    >
+      {children}
+      <span
+        style={{
+          width: 42,
+          textAlign: 'center',
+          flexShrink: 0,
+          fontSize: 11,
+          lineHeight: '18px',
+          borderRadius: 999,
+          color: active ? '#1d4ed8' : token.colorTextSecondary,
+          background: active ? '#e0efff' : 'rgba(148, 163, 184, 0.14)',
+          border: `1px solid ${active ? '#bfdbfe' : 'rgba(148, 163, 184, 0.24)'}`,
+        }}
+      >
+        {active ? '生效' : '待用'}
+      </span>
+    </Flex>
+  );
+}
+
+function AdvancedPanel({
+  temperatureControl,
+  topPControl,
+  topKControl,
+  temperature,
+  topP,
+  topK,
+  onTemperatureChange,
+  onTopPChange,
+  onTopKChange,
+  disabled,
+}: {
+  temperatureControl: TemperatureControl | undefined;
+  topPControl: TopPControl | undefined;
+  topKControl: TopKControl | undefined;
+  temperature: number | null;
+  topP: number | null;
+  topK: number | null;
+  onTemperatureChange: (v: number | null) => void;
+  onTopPChange: (v: number | null) => void;
+  onTopKChange: (v: number | null) => void;
+  disabled: boolean;
+}) {
+  const { token } = theme.useToken();
+  const tempValue = temperature ?? temperatureControl?.profile_default ?? 0.7;
+  // 当用户未手动设置时，fallback 到 profile_default；profile 也未配置则用 1.0（各厂商默认值）
+  const topPValue = topP ?? topPControl?.profile_default ?? 1.0;
+  const topKValue = topK ?? (topKControl ? 50 : 0);
+  const activeSampling: 'temperature' | 'top_p' | 'top_k' =
+    topP !== null ? 'top_p' : topK !== null ? 'top_k' : 'temperature';
+
+  return (
+    <Flex
+      vertical
+      gap={12}
+      style={{
+        width: 480,
+        padding: '4px 2px',
+      }}
+    >
+      <Flex vertical gap={2}>
+        <Typography.Text strong style={{ fontSize: 13 }}>高级生成参数</Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          采样参数三选一：当前标记为「生效」的参数会发送给模型。
+        </Typography.Text>
+      </Flex>
+
+      {temperatureControl && (
+        <SamplingRow active={activeSampling === 'temperature'}>
+          <ParamLabel kind="temperature" label="Temperature" />
+          <Slider
+            disabled={disabled}
+            min={temperatureControl.min}
+            max={temperatureControl.max}
+            step={temperatureControl.step}
+            value={tempValue}
+            onChange={onTemperatureChange}
+            style={{ flex: 1 }}
+            tooltip={{ formatter: (v) => v?.toFixed(2) }}
+          />
+          <Typography.Text style={{ fontSize: 12, width: 36, textAlign: 'right', flexShrink: 0 }}>
+            {tempValue.toFixed(2)}
+          </Typography.Text>
+        </SamplingRow>
+      )}
+
+      {topPControl && (
+        <SamplingRow active={activeSampling === 'top_p'}>
+          <ParamLabel kind="top_p" label="Top-P" />
+          <Slider
+            disabled={disabled}
+            min={topPControl.min}
+            max={topPControl.max}
+            step={topPControl.step}
+            value={topPValue}
+            onChange={onTopPChange}
+            style={{ flex: 1 }}
+            tooltip={{ formatter: (v) => v?.toFixed(2) }}
+          />
+          <Typography.Text style={{ fontSize: 12, width: 36, textAlign: 'right', flexShrink: 0 }}>
+            {topPValue.toFixed(2)}
+          </Typography.Text>
+        </SamplingRow>
+      )}
+      {topKControl && (
+        <SamplingRow active={activeSampling === 'top_k'}>
+          <ParamLabel kind="top_k" label="Top-K" />
+          <Slider
+            disabled={disabled}
+            min={topKControl.min}
+            max={topKControl.max}
+            step={topKControl.step}
+            value={topKValue}
+            onChange={onTopKChange}
+            style={{ flex: 1 }}
+            tooltip={{ formatter: (v) => String(v) }}
+          />
+          <Typography.Text style={{ fontSize: 12, width: 36, textAlign: 'right', flexShrink: 0 }}>
+            {topKValue}
+          </Typography.Text>
+        </SamplingRow>
+      )}
+      <Typography.Text type="secondary" style={{ fontSize: 11, color: token.colorTextTertiary }}>
+        小提示：代码、事实问答偏低随机性；头脑风暴、写作可适当提高随机性。不确定就保持默认。
+      </Typography.Text>
+    </Flex>
+  );
+}
+
 export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string) => void }) {
   const { token } = theme.useToken();
+  const appTheme = useSettingsStore((s) => s.theme);
   const [inputValue, setInputValue] = useState('');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const {
@@ -80,12 +283,20 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
     messagesByConversation,
     pendingQuestionByConversation,
     thinkingMode,
+    reasoningEffort,
+    temperature,
+    topP,
+    topK,
     enableRag,
     enableTools,
     enableWeb,
     latestUsageByConversation,
     pendingAttachments,
     setThinkingMode,
+    setReasoningEffort,
+    setTemperature,
+    setTopP,
+    setTopK,
     setEnableRag,
     setEnableTools,
     setEnableWeb,
@@ -106,6 +317,15 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
   const activeProfile = llmInfo?.profiles.find((p) => p.id === (activeModelId ?? defaultProfile));
   const visionCapable = activeProfile?.capabilities.vision ?? true;
   const baseAttachmentDisabled = toolbarDisabled || !visionCapable;
+
+  // Derive control descriptors from active profile
+  const controls = activeProfile?.controls ?? [];
+  const thinkingControl = controls.find((c) => c.kind === 'thinking') as ThinkingControl | undefined;
+  const reasoningControl = controls.find((c) => c.kind === 'reasoning_effort') as ReasoningEffortControl | undefined;
+  const temperatureControl = controls.find((c) => c.kind === 'temperature') as TemperatureControl | undefined;
+  const topPControl = controls.find((c) => c.kind === 'top_p') as TopPControl | undefined;
+  const topKControl = controls.find((c) => c.kind === 'top_k') as TopKControl | undefined;
+  const hasAdvanced = !!(temperatureControl ?? topPControl ?? topKControl);
 
   const {
     previewUrls,
@@ -153,6 +373,7 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
   };
 
   const isAttachmentButtonDisabled = baseAttachmentDisabled || uploadingCount > 0;
+  const isDark = appTheme === 'dark';
 
   return (
     <div
@@ -190,11 +411,67 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
 
         {/* 工具栏独立一行，不占 Sender 内部空间 */}
         <Flex align="center" gap={6} style={{ marginBottom: 8, flexWrap: 'wrap' }}>
-          <ThinkingModeSelector
-            value={thinkingMode}
-            disabled={toolbarDisabled}
-            onChange={setThinkingMode}
-          />
+          {thinkingControl && (
+            <ThinkingModeSelector
+              value={thinkingMode}
+              disabled={toolbarDisabled}
+              onChange={setThinkingMode}
+              modes={thinkingControl.modes}
+            />
+          )}
+
+          {reasoningControl && (
+            <ReasoningEffortSelector
+              value={reasoningEffort}
+              levels={reasoningControl.levels}
+              defaultValue={reasoningControl.default}
+              disabled={toolbarDisabled}
+              onChange={setReasoningEffort}
+            />
+          )}
+
+          {hasAdvanced && (
+            <Popover
+              trigger="click"
+              placement="topLeft"
+              open={advancedOpen}
+              onOpenChange={(open) => setAdvancedOpen(open)}
+              overlayInnerStyle={{ borderRadius: 14, padding: 14 }}
+              content={(
+                <AdvancedPanel
+                  temperatureControl={temperatureControl}
+                  topPControl={topPControl}
+                  topKControl={topKControl}
+                  temperature={temperature}
+                  topP={topP}
+                  topK={topK}
+                  onTemperatureChange={setTemperature}
+                  onTopPChange={setTopP}
+                  onTopKChange={setTopK}
+                  disabled={toolbarDisabled}
+                />
+              )}
+            >
+              <Button
+                size="small"
+                type={advancedOpen ? 'primary' : 'default'}
+                ghost={advancedOpen}
+                disabled={toolbarDisabled}
+                style={{
+                  borderRadius: 20,
+                  fontSize: 12,
+                  height: 26,
+                  padding: '0 10px',
+                  ...(advancedOpen
+                    ? { borderColor: '#6366f1', color: '#6366f1', background: '#eef2ff' }
+                    : { color: token.colorTextSecondary }),
+                }}
+                icon={<RobotOutlined />}
+              >
+                高级
+              </Button>
+            </Popover>
+          )}
 
           {ragEnabled && (
             <Tooltip title={enableRag ? '关闭知识库检索' : '开启知识库检索（RAG）'}>
@@ -258,8 +535,6 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
             </Button>
           </Tooltip>
 
-          <ModelSelector disabled={toolbarDisabled} />
-
           <Tooltip title={!visionCapable ? '当前模型不支持图片/文档附件' : '上传图片或 PDF'}>
             <Button
               size="small"
@@ -272,28 +547,39 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
                 fontSize: 12,
                 height: 26,
                 padding: '0 12px',
-                borderColor: isAttachmentButtonActive ? '#2f80ed' : 'rgba(47, 84, 235, 0.18)',
+                borderColor: isAttachmentButtonDisabled
+                  ? (isDark ? 'rgba(148, 163, 184, 0.36)' : token.colorBorderSecondary)
+                  : isAttachmentButtonActive
+                    ? '#2f80ed'
+                    : (isDark ? 'rgba(96, 165, 250, 0.30)' : 'rgba(47, 84, 235, 0.18)'),
                 color: isAttachmentButtonDisabled
-                  ? token.colorTextDisabled
+                  ? (isDark ? 'rgba(226, 232, 240, 0.62)' : token.colorTextDisabled)
                   : isAttachmentButtonActive
                     ? '#1d4ed8'
                     : token.colorTextSecondary,
                 background: isAttachmentButtonDisabled
-                  ? token.colorBgContainerDisabled
+                  ? (isDark ? 'rgba(30, 41, 59, 0.72)' : token.colorBgContainerDisabled)
                   : isAttachmentButtonActive
-                    ? 'linear-gradient(135deg, #eef6ff 0%, #f7fbff 100%)'
-                    : 'linear-gradient(135deg, rgba(245, 248, 255, 0.95) 0%, rgba(250, 252, 255, 0.9) 100%)',
+                    ? (isDark
+                        ? 'linear-gradient(135deg, rgba(29, 78, 216, 0.30) 0%, rgba(15, 23, 42, 0.86) 100%)'
+                        : 'linear-gradient(135deg, #eef6ff 0%, #f7fbff 100%)')
+                    : (isDark
+                        ? 'linear-gradient(135deg, rgba(15, 23, 42, 0.88) 0%, rgba(30, 41, 59, 0.72) 100%)'
+                        : 'linear-gradient(135deg, rgba(245, 248, 255, 0.95) 0%, rgba(250, 252, 255, 0.9) 100%)'),
                 boxShadow: isAttachmentButtonDisabled
-                  ? 'none'
+                  ? (isDark ? 'inset 0 1px 0 rgba(255, 255, 255, 0.05)' : 'none')
                   : isAttachmentButtonActive
                     ? '0 4px 12px rgba(47, 128, 237, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.9)'
-                    : 'inset 0 1px 0 rgba(255, 255, 255, 0.9)',
+                    : (isDark ? 'inset 0 1px 0 rgba(255, 255, 255, 0.06)' : 'inset 0 1px 0 rgba(255, 255, 255, 0.9)'),
               }}
               icon={<PaperClipOutlined />}
             >
               {pendingAttachments.length > 0 ? `附件 ${pendingAttachments.length}` : '附件'}
             </Button>
           </Tooltip>
+
+          <ModelSelector disabled={toolbarDisabled} />
+
           <input
             ref={fileInputRef}
             type="file"

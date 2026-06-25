@@ -390,6 +390,8 @@ class AstraCoreClient:
         project_source: str = "sdk",
         model_profile: str | None = None,
         temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
         use_tools: bool = False,
         thinking_mode: str | None = None,
         thinking_budget: int = 8000,
@@ -421,6 +423,8 @@ class AstraCoreClient:
             options=ChatOptions(
                 model_profile=model_profile,
                 temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
                 use_tools=use_tools,
                 thinking_mode=thinking_mode,
                 thinking_budget=thinking_budget,
@@ -443,6 +447,8 @@ class AstraCoreClient:
         options: ChatOptions | None = None,
         model_profile: str | None = None,
         temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
         use_tools: bool = False,
         thinking_mode: str | None = None,
         thinking_budget: int = 8000,
@@ -465,6 +471,8 @@ class AstraCoreClient:
             or ChatOptions(
                 model_profile=model_profile,
                 temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
                 use_tools=use_tools,
                 thinking_mode=thinking_mode,
                 thinking_budget=thinking_budget,
@@ -489,6 +497,8 @@ class AstraCoreClient:
         options: ChatOptions | None = None,
         model_profile: str | None = None,
         temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
         use_tools: bool = False,
         thinking_mode: str | None = None,
         thinking_budget: int = 8000,
@@ -511,6 +521,8 @@ class AstraCoreClient:
             or ChatOptions(
                 model_profile=model_profile,
                 temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
                 use_tools=use_tools,
                 thinking_mode=thinking_mode,
                 thinking_budget=thinking_budget,
@@ -727,10 +739,11 @@ class AttachmentClient:
 
     async def delete(self, attachment_id: str) -> None:
         """Delete an attachment by id (removes DB record and file)."""
-        from sqlalchemy import delete  # noqa: PLC0415
+        from sqlalchemy import delete, func  # noqa: PLC0415
 
         from astracore.infrastructure.db.models import AttachmentRow as _Row  # noqa: PLC0415
 
+        should_delete_file = False
         async with get_session(self._db_url) as db:
             from sqlalchemy import select  # noqa: PLC0415
 
@@ -740,9 +753,14 @@ class AttachmentClient:
                 return
             storage_key = row.storage_key
             await db.execute(delete(_Row).where(_Row.id == attachment_id))
+            remaining = await db.scalar(
+                select(func.count()).select_from(_Row).where(_Row.storage_key == storage_key)
+            )
+            should_delete_file = (remaining or 0) == 0
             await db.commit()
 
-        await self._storage.delete(storage_key)
+        if should_delete_file:
+            await self._storage.delete(storage_key)
 
     async def _resolve(self, items: list[Path | AttachmentRef]) -> list[AttachmentRef]:
         """Auto-upload Path objects; pass AttachmentRef objects through unchanged."""

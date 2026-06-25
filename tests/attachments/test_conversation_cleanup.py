@@ -101,3 +101,38 @@ async def test_delete_conversation_removes_referenced_attachment_record_and_file
     assert not file_path.parent.exists()
     async with get_session(db_url) as db:
         assert await db.get(AttachmentRow, attachment_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_keeps_shared_attachment_file(env):
+    db_url, storage, _user, app = env
+    first_conversation_id = str(uuid4())
+    second_conversation_id = str(uuid4())
+    first_attachment_id = str(uuid4())
+    second_attachment_id = str(uuid4())
+    storage_key = "user-a/shared.png"
+    file_path = storage._base / storage_key
+    file_path.parent.mkdir(parents=True)
+    file_path.write_bytes(b"image")
+
+    await _seed_conversation_attachment(
+        db_url,
+        first_conversation_id,
+        first_attachment_id,
+        storage_key,
+    )
+    await _seed_conversation_attachment(
+        db_url,
+        second_conversation_id,
+        second_attachment_id,
+        storage_key,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.delete(f"/api/v1/conversations/{first_conversation_id}")
+
+    assert resp.status_code == 204
+    assert file_path.exists()
+    async with get_session(db_url) as db:
+        assert await db.get(AttachmentRow, first_attachment_id) is None
+        assert await db.get(AttachmentRow, second_attachment_id) is not None

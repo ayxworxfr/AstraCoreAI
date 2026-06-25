@@ -175,7 +175,7 @@ policy:
     trigger_ratio: 0.5                         # 估算 token 超过 window*ratio 时压缩
     compact_batch_ratio: 0.6                   # 单次压缩最旧 60% 消息
     chars_per_token: 0.6                       # 字符到 token 的近似换算（中英混合）
-    default_max_messages: 20                   # user_settings.context_max_messages 兜底
+    default_max_messages: 10                   # user_settings.context_max_messages 兜底
 ```
 
 字段说明：

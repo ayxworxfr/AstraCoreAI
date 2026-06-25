@@ -20,6 +20,7 @@ AstraCoreAI 支持两类工具：原生 Python 工具和 MCP 协议工具，通�
 | `load_skill(skill_id)` | 加载 Skill 的完整 instructions、引用列表和脚本列表 |
 | `get_skill_reference(skill_id, file)` | 读取 Skill references/ 目录下的参考文档内容 |
 | `run_skill_script(skill_id, script, args)` | 在 Skill scripts/ 目录内安全执行脚本（防路径穿越，30s 超时） |
+| `ask_user(question, options?)` | 主动向用户提问并等待回复（HITL inline question） |
 | `spawn_agents(tasks)` | 并行启动 2-5 个子 Agent 执行子任务 |
 | `recall_memory(query)` | 语义检索记忆库，返回相关记忆条目 |
 | `save_memory(subject, content, type, scope)` | 手动创建一条记忆（LLM 直接写入，不经自动抽取） |

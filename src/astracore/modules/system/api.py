@@ -2,11 +2,12 @@
 
 import os
 from functools import lru_cache
+from typing import Annotated, Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from astracore.sdk.config import AstraCoreConfig
+from astracore.sdk.config import AstraCoreConfig, LLMProfileConfig
 
 router = APIRouter()
 
@@ -16,12 +17,121 @@ def _get_config() -> AstraCoreConfig:
     return AstraCoreConfig()
 
 
+# ------------------------------------------------------------------
+# ModelControl — discriminated union, 4 kinds
+# ------------------------------------------------------------------
+
+
+class ThinkingControl(BaseModel):
+    kind: Literal["thinking"] = "thinking"
+    modes: list[str]
+    default: str
+
+
+class ReasoningEffortControl(BaseModel):
+    kind: Literal["reasoning_effort"] = "reasoning_effort"
+    levels: list[str]
+    default: str
+
+
+class TemperatureControl(BaseModel):
+    kind: Literal["temperature"] = "temperature"
+    min: float
+    max: float
+    step: float
+    profile_default: float
+
+
+class TopPControl(BaseModel):
+    kind: Literal["top_p"] = "top_p"
+    min: float
+    max: float
+    step: float
+    profile_default: float | None
+
+
+class TopKControl(BaseModel):
+    kind: Literal["top_k"] = "top_k"
+    min: int
+    max: int
+    step: int
+
+
+ModelControl = Annotated[
+    ThinkingControl | ReasoningEffortControl | TemperatureControl | TopPControl | TopKControl,
+    Field(discriminator="kind"),
+]
+
+
+def _build_controls(profile: LLMProfileConfig) -> list[ModelControl]:
+    """Build per-turn UI control descriptors from a resolved LLM profile.
+
+    Adding a new model only requires updating infer_model_capabilities(); this
+    function derives controls purely from capability flags and the model name.
+    """
+    caps = profile.capabilities
+    controls: list[ModelControl] = []
+
+    # ── Thinking（主工具栏）────────────────────────────────────────────────
+    if caps.adaptive_thinking_only:
+        controls.append(ThinkingControl(modes=["off", "adaptive"], default="off"))
+    elif caps.thinking:
+        model_lower = profile.model.lower()
+        # GLM / DeepSeek 的 thinking API 是二值开关（type=enabled），无自适应模式。
+        # Anthropic Claude 支持三档：off / on（budget_tokens）/ adaptive（Opus 4.7 以下）。
+        if "glm" in model_lower or "deepseek" in model_lower:
+            controls.append(ThinkingControl(modes=["off", "on"], default="off"))
+        else:
+            controls.append(ThinkingControl(modes=["off", "on", "adaptive"], default="off"))
+
+    # ── Reasoning effort（主工具栏）────────────────────────────────────────
+    # levels encode per-provider options; kind stays unified so frontend never
+    # needs to know the provider brand.
+    if caps.reasoning_effort_protocol == "responses":
+        controls.append(
+            ReasoningEffortControl(levels=["minimal", "low", "medium", "high"], default="medium")
+        )
+    elif caps.reasoning_effort_protocol == "extra_body":
+        model = profile.model.lower()
+        if "deepseek" in model:
+            controls.append(ReasoningEffortControl(levels=["high", "max"], default="high"))
+        elif "glm" in model:
+            controls.append(
+                ReasoningEffortControl(
+                    levels=["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+                    default="max",
+                )
+            )
+
+    # ── 采样参数（高级设置面板，默认折叠）─────────────────────────────────
+    if caps.temperature:
+        max_temp = 1.0 if profile.protocol == "anthropic" else 2.0
+        controls.append(
+            TemperatureControl(
+                min=0.0, max=max_temp, step=0.01, profile_default=profile.temperature
+            )
+        )
+        controls.append(TopPControl(min=0.0, max=1.0, step=0.01, profile_default=profile.top_p))
+
+    if caps.top_k:
+        controls.append(TopKControl(min=1, max=500, step=1))
+
+    return controls
+
+
+# ------------------------------------------------------------------
+# API response models
+# ------------------------------------------------------------------
+
+
 class LLMCapabilitiesInfo(BaseModel):
     tools: bool
     thinking: bool
     temperature: bool
+    top_k: bool
     anthropic_blocks: bool
     vision: bool
+    reasoning_effort_protocol: Literal["responses", "extra_body"] | None
 
 
 class LLMProfileInfo(BaseModel):
@@ -33,6 +143,7 @@ class LLMProfileInfo(BaseModel):
     api_key_configured: bool
     max_tokens: int
     capabilities: LLMCapabilitiesInfo
+    controls: list[ModelControl]
 
 
 class LLMInfo(BaseModel):
@@ -71,9 +182,12 @@ async def get_system_info() -> SystemInfoResponse:
                         tools=profile.capabilities.tools,
                         thinking=profile.capabilities.thinking,
                         temperature=profile.capabilities.temperature,
+                        top_k=profile.capabilities.top_k,
                         anthropic_blocks=profile.capabilities.anthropic_blocks,
                         vision=profile.capabilities.vision,
+                        reasoning_effort_protocol=profile.capabilities.reasoning_effort_protocol,
                     ),
+                    controls=_build_controls(profile),
                 )
                 for profile in cfg.llm.profiles
             ],

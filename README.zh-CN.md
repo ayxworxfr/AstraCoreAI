@@ -1,12 +1,12 @@
 # AstraCoreAI
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
-![Tests](https://img.shields.io/badge/Tests-190%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-240%20passed-brightgreen)
 ![License](https://img.shields.io/badge/License-PolyForm%20NC-orange)
 
 > 企业级 Python AI Agent 框架，基于 Clean Architecture + Ports & Adapters。
 
-AstraCoreAI 为 LLM 应用提供完整的生产级基础设施：按需加载的 Skill 系统、两级记忆注入、HITL 审批流、并行多 Agent 与 DAG 工作流，以及覆盖可观测性、安全与评估的完整工具链。同一套业务逻辑可通过 Python SDK 嵌入，或以 FastAPI 服务独立部署。
+AstraCoreAI 为 LLM 应用提供完整的生产级基础设施：按需加载的 Skill 系统、两级记忆注入、HITL 审批流、多模态附件、并行多 Agent 与 DAG 工作流，以及覆盖可观测性、安全与评估的完整工具链。同一套业务逻辑可通过 Python SDK 嵌入，或以 FastAPI 服务独立部署。
 
 ---
 
@@ -67,13 +67,38 @@ Claude 通过 `load_skill` 工具按需加载专业能力包（SKILL.md 格式�
 - JWT 认证：register / login，admin / user 双角色，首个用户自动为管理员
 - SecurityValidator：XSS 检测、输入长度限制、敏感字段脱敏
 
+### 附件（Attachments）
+
+支持图片和 PDF 文件在对话中使用：
+
+- **图片**：Anthropic 原生 vision block，OpenAI-compatible 走 `image_url`
+- **PDF**：Anthropic 原生 document block，其余协议由 pypdf 提取文本注入
+- 通过 `POST /api/v1/attachments` 上传，用 ID 引用（`ChatOptions.attachments`）
+- SDK：`Conversation.send(attachments=[Path("file.png")])` 接受本地路径或 `AttachmentRef`
+- 前端上传按钮由 `profile.capabilities.vision` 门控，不支持 vision 的 profile 不显示上传入口
+
+### 模型控件描述符
+
+`/system` 接口每个 profile 新增 `controls` 列表，前端按 `kind` 动态渲染，无需硬编码模型信息：
+
+| `kind` | 位置 | 显示条件 |
+|--------|------|---------|
+| `thinking` | 主工具栏 | `caps.thinking == True` |
+| `reasoning_effort` | 主工具栏 | `caps.reasoning_effort_protocol != None` |
+| `temperature` | 高级设置折叠面板 | `caps.temperature == True` |
+| `top_p` | 高级设置折叠面板 | `caps.temperature == True` |
+| `top_k` | 高级设置折叠面板 | `caps.top_k == True`（Anthropic 原生）|
+
+新增模型只需在 `infer_model_capabilities()` 中加一条规则，前端自动适配。
+
 ### 其他能力
 
 - **HistoryCompactor**：context_window 50% 触发，LLM 摘要 + MemoryEngine 持久化
 - **RAG**：ChromaDB 向量检索，幂等 upsert，引用支持
+- **TTS**：文本转语音合成
 - **Eval 框架**：EvalRunner，LLM-as-judge，工具精确匹配，CLI（`python -m astracore.eval`）
 - **Structured Output**：`LLMAdapter.generate(response_format=MyModel)` 强制结构化输出
-- **多 LLM Profile**：Anthropic Claude、OpenAI 兼容（DeepSeek / GLM），通过 profile ID 切换
+- **多 LLM Profile**：Anthropic Claude、OpenAI Chat Completions（DeepSeek / GLM）、OpenAI Responses API（GPT-5）、自定义端点，通过 profile ID 切换
 
 ---
 
@@ -109,8 +134,9 @@ flowchart TD
     RP --> LLMPort
 
     subgraph 基础设施层
-        INF_LLM["Anthropic · OpenAI\nDeepSeek / GLM"]
+        INF_LLM["Anthropic · OpenAI\nDeepSeek / GLM / GPT-5"]
         INF_MEM["SQLite · ChromaDB\nRedis（可选）"]
+        INF_ATT["本地文件系统附件\n图片 / PDF"]
     end
 
     LLMPort & ToolPort --> INF_LLM
@@ -199,23 +225,28 @@ Skill 文件位于 `src/astracore/modules/skills/builtin/`，Claude 通过 `load
 
 | 工具 | 类型 | 说明 |
 |------|------|------|
-| `filesystem` MCP | MCP | read / write / edit / search 等 10 个文件操作工具 |
-| `shell` MCP | MCP | 受控命令执行，需配置 `allow_dirs` |
 | `load_skill` | Native | 按需加载 Skill 能力包 |
 | `get_skill_reference` | Native | 按需拉取 Skill 参考文档 |
 | `run_skill_script` | Native | 执行 Skill 附带的脚本 |
+| `save_memory` | Native | 保存结构化记忆条目 |
+| `recall_memory` | Native | 语义检索记忆 |
+| `compact_memory` | Native | 压缩会话记忆为摘要 |
+| `ask_user` | Native | HITL 主动内联询问用户 |
 | `spawn_agents` | Native | 启动并行子 Agent（2–5 个） |
-| `ask_user` | Native | HITL 主动询问用户 |
+| `filesystem` | MCP | read / write / edit / search 等 10 个文件操作工具 |
+| `shell` | MCP | 受控命令执行，需配置 `allow_dirs` |
 
 ### 前端功能页面
 
 | 页面 | 功能 |
 |------|------|
-| 聊天（Chat） | SSE 流式对话、会话管理、工具调用展示、HITL 审批 |
-| 记忆（Memory） | 记忆增删查改、多选批量删除、作用域筛选 |
+| 聊天（Chat） | SSE 流式对话、会话管理、工具调用展示、HITL 审批、图片/PDF 附件上传、模型控件工具栏 |
+| 记忆（Memory） | 记忆增删查改、多选批量删除、作用域筛选、审批队列 |
 | 计划任务（Scheduling） | 创建 cron/interval/date 任务、暂停/恢复/立即执行、批量删除、名称/状态搜索 |
 | 技能（Skills） | Skill CRUD、SKILL.md 编辑 |
 | 知识库（RAG） | 文档上传、向量检索调试 |
+| 系统（System） | LLM profile 能力展示、MCP servers、RAG 状态 |
+| 语音（TTS） | 文本转语音合成 |
 
 ---
 
@@ -394,6 +425,10 @@ async with AstraCoreClient(hooks=registry) as client:
 
 - [x] M1–M5+：核心闭环（LLM / 工具 / 记忆 / RAG / Skill / 多 Agent / DAG / Hook / Eval / JWT 认证）
 - [x] M6 认证：JWT auth 完成
+- [x] 图片 + PDF 附件支持（vision + document blocks，跨协议适配）
+- [x] 模型控件描述符（每个 profile 自动生成 controls 列表，前端动态渲染）
+- [x] 多供应商完整支持：Anthropic Claude、DeepSeek、GLM、OpenAI Responses API（GPT-5）
+- [x] TTS 文本转语音
 - [ ] M6 剩余：限流、多 worker Redis 状态共享
 - [ ] M7：OpenTelemetry 标准 tracing、SLO / 指标
 - [ ] M8：发布工程化（版本策略、回滚预案、运维文档）

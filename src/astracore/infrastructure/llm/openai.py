@@ -203,17 +203,52 @@ class OpenAIAdapter(LLMAdapter):
 
         return converted
 
-    def _responses_input(self, messages: list[Message]) -> tuple[str | None, list[dict[str, str]]]:
+    def _responses_input(self, messages: list[Message]) -> tuple[str | None, list[dict[str, Any]]]:
         """转为 Responses API input，并将 system 消息提取为 instructions。"""
         instructions: list[str] = []
-        input_messages: list[dict[str, str]] = []
+        input_messages: list[dict[str, Any]] = []
 
         for msg in messages:
             if msg.role == MessageRole.SYSTEM:
                 if msg.content:
                     instructions.append(msg.content)
                 continue
-            if msg.role in {MessageRole.USER, MessageRole.ASSISTANT}:
+            if msg.role not in {MessageRole.USER, MessageRole.ASSISTANT}:
+                continue
+
+            attachment_refs: list[dict[str, Any]] | None = (
+                msg.metadata.get("attachment_refs") if msg.role == MessageRole.USER else None
+            )
+            if attachment_refs:
+                # Responses API uses input_text / input_image content blocks.
+                content_blocks: list[dict[str, Any]] = []
+                if msg.content:
+                    content_blocks.append({"type": "input_text", "text": msg.content})
+                for ref in attachment_refs:
+                    data_b64 = ref.get("data_b64")
+                    if not data_b64:
+                        continue
+                    mime = ref.get("mime_type", "")
+                    if mime == "application/pdf":
+                        try:
+                            pdf_text = _extract_pdf_text(data_b64, ref.get("filename", "document"))
+                            content_blocks.append(
+                                {
+                                    "type": "input_text",
+                                    "text": f"[PDF: {ref.get('filename', 'document')}]\n{pdf_text}",
+                                }
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        content_blocks.append(
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:{mime};base64,{data_b64}",
+                            }
+                        )
+                input_messages.append({"role": msg.role.value, "content": content_blocks})
+            else:
                 input_messages.append({"role": msg.role.value, "content": msg.content})
 
         return "\n\n".join(instructions) if instructions else None, input_messages
@@ -268,17 +303,16 @@ class OpenAIAdapter(LLMAdapter):
         messages: list[Message],
         model: str,
         max_tokens: int,
-        temperature: float,
         reasoning_effort: str | None = None,
         verbosity: str | None = None,
     ) -> LLMResponse:
         client = self._get_client()
         instructions, input_messages = self._responses_input(messages)
+        # Responses API (GPT-5 / o-series) does not accept temperature or top_p.
         request_params: dict[str, Any] = {
             "model": model,
             "input": input_messages,
             "max_output_tokens": max_tokens,
-            "temperature": temperature,
         }
         if instructions:
             request_params["instructions"] = instructions
@@ -300,17 +334,16 @@ class OpenAIAdapter(LLMAdapter):
         messages: list[Message],
         model: str,
         max_tokens: int,
-        temperature: float,
         reasoning_effort: str | None = None,
         verbosity: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         client = self._get_client()
         instructions, input_messages = self._responses_input(messages)
+        # Responses API (GPT-5 / o-series) does not accept temperature or top_p.
         request_params: dict[str, Any] = {
             "model": model,
             "input": input_messages,
             "max_output_tokens": max_tokens,
-            "temperature": temperature,
         }
         if instructions:
             request_params["instructions"] = instructions
@@ -360,7 +393,6 @@ class OpenAIAdapter(LLMAdapter):
                 messages=messages,
                 model=model,
                 max_tokens=max_tokens,
-                temperature=temperature,
                 reasoning_effort=kwargs.get("reasoning_effort"),
                 verbosity=kwargs.get("verbosity"),
             )
@@ -374,16 +406,22 @@ class OpenAIAdapter(LLMAdapter):
             "model": model,
             "messages": converted_messages,
             "max_tokens": max_tokens,
-            "temperature": temperature,
         }
+        # temperature 和 top_p 互斥：设了 top_p 就不发 temperature（GLM 强制要求）
         if top_p is not None:
             request_params["top_p"] = top_p
+        else:
+            request_params["temperature"] = temperature
         if stop_sequences:
             request_params["stop"] = stop_sequences
 
         service_tier: str | None = kwargs.get("service_tier")
         if service_tier:
             request_params["service_tier"] = service_tier
+
+        reasoning_effort_gen: str | None = kwargs.get("reasoning_effort")
+        if reasoning_effort_gen:
+            request_params["extra_body"] = {"reasoning_effort": reasoning_effort_gen}
 
         if response_format is not None:
             schema = response_format.model_json_schema()
@@ -469,7 +507,6 @@ class OpenAIAdapter(LLMAdapter):
                 messages=messages,
                 model=model,
                 max_tokens=max_tokens,
-                temperature=temperature,
                 reasoning_effort=kwargs.get("reasoning_effort"),
                 verbosity=kwargs.get("verbosity"),
             ):
@@ -485,12 +522,14 @@ class OpenAIAdapter(LLMAdapter):
             "model": model,
             "messages": converted_messages,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        # temperature 和 top_p 互斥：设了 top_p 就不发 temperature（GLM 强制要求）
         if top_p is not None:
             request_params["top_p"] = top_p
+        else:
+            request_params["temperature"] = temperature
         if stop_sequences:
             request_params["stop"] = stop_sequences
 
@@ -502,12 +541,23 @@ class OpenAIAdapter(LLMAdapter):
         if tools:
             request_params["tools"] = tools
 
-        # GLM thinking mode: passed via extra_body when thinking_mode is active.
+        # Build extra_body: GLM/DeepSeek thinking + reasoning_effort (via extra_body).
+        # Both providers use {"thinking": {"type": "enabled"}} as the toggle format.
         # GLM streaming returns reasoning content as delta.reasoning_content.
+        extra_body: dict[str, Any] = {}
         thinking_mode: str | None = kwargs.get("thinking_mode")
-        glm_thinking = thinking_mode and thinking_mode != "off" and "glm" in (model or "").lower()
-        if glm_thinking:
-            request_params["extra_body"] = {"thinking": {"enabled": True}}
+        _model_lower = (model or "").lower()
+        if (
+            thinking_mode
+            and thinking_mode != "off"
+            and ("glm" in _model_lower or "deepseek" in _model_lower)
+        ):
+            extra_body["thinking"] = {"type": "enabled"}
+        reasoning_effort_param: str | None = kwargs.get("reasoning_effort")
+        if reasoning_effort_param:
+            extra_body["reasoning_effort"] = reasoning_effort_param
+        if extra_body:
+            request_params["extra_body"] = extra_body
 
         stream = await client.chat.completions.create(**request_params)
 

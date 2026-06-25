@@ -60,6 +60,24 @@ async def test_delete_removes_record_and_file(client: AttachmentClient, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_delete_shared_file_only_after_last_reference(
+    client: AttachmentClient,
+    tmp_path: Path,
+):
+    first = await client.upload(_PNG_1PX, filename="a.png", mime_type="image/png")
+    second = await client.upload(_PNG_1PX, filename="b.png", mime_type="image/png")
+    assert first.id != second.id
+    assert first.storage_key == second.storage_key
+
+    file_path = tmp_path / "attachments" / first.storage_key
+    await client.delete(first.id)
+    assert file_path.exists()
+
+    await client.delete(second.id)
+    assert not file_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_delete_nonexistent_is_noop(client: AttachmentClient):
     await client.delete("does-not-exist")  # must not raise
 

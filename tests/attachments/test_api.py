@@ -7,10 +7,11 @@ import io
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from astracore.infrastructure.attachments.local_fs import LocalFSAttachmentStorage
-from astracore.infrastructure.db.models import UserRow
-from astracore.infrastructure.db.session import get_engine, init_db
+from astracore.infrastructure.db.models import AttachmentRow, UserRow
+from astracore.infrastructure.db.session import get_engine, get_session, init_db
 from astracore.modules.attachments import api as attachments_api
 from astracore.modules.auth.dependencies import get_current_user
 
@@ -59,6 +60,70 @@ async def test_upload_valid_png(env, tmp_path):
     body = resp.json()
     assert body["mime_type"] == "image/png"
     assert body["attachment_id"]
+
+
+@pytest.mark.asyncio
+async def test_upload_same_png_twice_reuses_physical_file(env):
+    db_url, storage, user_a, _ = env
+    app = _make_app(db_url, storage, user_a)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/v1/attachments",
+            files={"file": ("photo.png", io.BytesIO(_PNG_1PX), "image/png")},
+        )
+        second = await client.post(
+            "/api/v1/attachments",
+            files={"file": ("photo.png", io.BytesIO(_PNG_1PX), "image/png")},
+        )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["attachment_id"] != second.json()["attachment_id"]
+
+    async with get_session(db_url) as db:
+        result = await db.execute(
+            select(AttachmentRow).where(
+                AttachmentRow.id.in_(
+                    [first.json()["attachment_id"], second.json()["attachment_id"]]
+                )
+            )
+        )
+        rows = list(result.scalars().all())
+
+    assert len(rows) == 2
+    assert len({row.storage_key for row in rows}) == 1
+    assert len(list((storage._base / user_a.id).iterdir())) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_shared_attachment_file_only_after_last_reference(env):
+    db_url, storage, user_a, _ = env
+    app = _make_app(db_url, storage, user_a)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/v1/attachments",
+            files={"file": ("photo.png", io.BytesIO(_PNG_1PX), "image/png")},
+        )
+        second = await client.post(
+            "/api/v1/attachments",
+            files={"file": ("photo.png", io.BytesIO(_PNG_1PX), "image/png")},
+        )
+
+        async with get_session(db_url) as db:
+            result = await db.execute(
+                select(AttachmentRow).where(AttachmentRow.id == first.json()["attachment_id"])
+            )
+            row = result.scalar_one()
+            file_path = storage._base / row.storage_key
+
+        assert file_path.exists()
+        delete_first = await client.delete(f"/api/v1/attachments/{first.json()['attachment_id']}")
+        assert delete_first.status_code == 204
+        assert file_path.exists()
+
+        delete_second = await client.delete(f"/api/v1/attachments/{second.json()['attachment_id']}")
+        assert delete_second.status_code == 204
+        assert not file_path.exists()
 
 
 @pytest.mark.asyncio

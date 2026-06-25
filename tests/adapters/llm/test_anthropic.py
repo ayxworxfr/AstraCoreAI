@@ -214,6 +214,29 @@ async def test_generate_omits_temperature_when_profile_disables_it():
     assert "temperature" not in create.call_args.kwargs
 
 
+async def test_generate_sends_only_one_sampling_parameter():
+    adapter = AnthropicAdapter(api_key="test-key", supports_temperature=True)
+    create = AsyncMock()
+    create.return_value = MagicMock(
+        content=[MagicMock(type="text", text="ok")],
+        usage=MagicMock(input_tokens=1, output_tokens=1),
+    )
+    adapter._client = MagicMock()
+    adapter._client.messages.create = create
+
+    await adapter.generate(
+        messages=[Message(role=MessageRole.USER, content="Hi")],
+        temperature=0.2,
+        top_p=0.8,
+        top_k=20,
+    )
+
+    request = create.call_args.kwargs
+    assert request["top_p"] == 0.8
+    assert "temperature" not in request
+    assert "top_k" not in request
+
+
 # ---------- generate_stream — helpers ----------
 
 

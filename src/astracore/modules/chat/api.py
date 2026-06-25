@@ -259,6 +259,8 @@ class ChatRequest(BaseModel):
     session_id: UUID | None = None
     model_profile: str | None = None
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=0)
     use_tools: bool = False
     thinking_mode: str | None = None
     thinking_budget: int = Field(default=8000, ge=1000, le=32000)
@@ -272,6 +274,8 @@ class ChatRequest(BaseModel):
         return ChatOptions(
             model_profile=self.model_profile,
             temperature=self.temperature,
+            top_p=self.top_p,
+            top_k=self.top_k,
             use_tools=self.use_tools,
             thinking_mode=self.thinking_mode,
             thinking_budget=self.thinking_budget,
