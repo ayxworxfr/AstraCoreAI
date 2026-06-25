@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # ============================================================
 # Stage 1: Build React frontend
 # ============================================================
@@ -24,12 +25,20 @@ COPY --from=frontend-builder /usr/local/lib/node_modules /usr/local/lib/node_mod
 
 WORKDIR /app
 
-# Install Python dependencies first (layer cache friendly)
+# 为网络较慢的服务器配置 pip 源，可通过 build arg 覆盖。
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_INDEX_URL=${PIP_INDEX_URL}
+
+# 先安装依赖再复制源码，代码级改动不会让依赖层失效。
 COPY pyproject.toml README.md LICENSE ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    mkdir -p src/astracore \
+    && touch src/astracore/__init__.py \
+    && pip install -e ".[anthropic,openai,vector]"
+
 COPY src/ ./src/
 COPY config/ ./config/
-
-RUN pip install --no-cache-dir -e ".[anthropic,openai,vector]"
 
 # Copy built frontend from Stage 1
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
