@@ -12,6 +12,7 @@ from astracore.modules.attachments.ports import AttachmentStoragePort
 from astracore.modules.chat.domain.chat_options import ChatOptions
 from astracore.modules.chat.pipeline import ChatPipeline
 from astracore.shared.policy.engine import PolicyEngine
+from astracore.shared.policy.rules import CompactionRule
 
 
 def _make_pipeline(storage: AttachmentStoragePort | None = None) -> ChatPipeline:
@@ -21,7 +22,7 @@ def _make_pipeline(storage: AttachmentStoragePort | None = None) -> ChatPipeline
     cfg.agent.max_tool_result_chars = 4000
     cfg.policy.timeout.build_llm_httpx_timeout.return_value = MagicMock()
     cfg.policy.timeout.tool_timeout_s = 30
-    cfg.policy.compaction = MagicMock()
+    cfg.policy.compaction = CompactionRule()
 
     return ChatPipeline(
         config=cfg,

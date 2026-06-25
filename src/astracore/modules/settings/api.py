@@ -91,7 +91,9 @@ async def _load_settings_map(db_url: str, user_id: str) -> dict[str, str]:
 def _build_response(data: dict[str, str]) -> UserSettingsResponse:
     def _get(key: str) -> str:
         value = data.get(key)
-        return value if value not in (None, "") else _setting_default(key)
+        if value is None or value == "":
+            return _setting_default(key)
+        return value
 
     raw_stop = _get("stop_sequences")
     try:
