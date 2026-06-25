@@ -20,6 +20,7 @@ import {
   Tooltip,
   Typography,
   message,
+  theme as antTheme,
 } from 'antd';
 import {
   CrownOutlined,
@@ -246,13 +247,15 @@ function ParamCard({
   children: React.ReactNode;
   style?: React.CSSProperties;
 }) {
+  const { token } = antTheme.useToken();
   return (
     <Card
       size="small"
       style={{
         borderRadius: 14,
-        background: '#fff',
-        boxShadow: '0 1px 2px rgba(15, 23, 42, 0.04)',
+        background: token.colorBgContainer,
+        borderColor: token.colorBorderSecondary,
+        boxShadow: token.boxShadowTertiary,
         ...style,
       }}
       styles={{ body: { padding: 16 } }}
@@ -284,10 +287,15 @@ function RuntimeParamsHeader({
   saved: boolean;
   onSave: () => void;
 }) {
+  const { token } = antTheme.useToken();
   return (
     <Card
       size="small"
-      style={{ borderRadius: 16, background: 'linear-gradient(135deg, #f8fbff 0%, #fff 58%)' }}
+      style={{
+        borderRadius: 16,
+        borderColor: token.colorBorderSecondary,
+        background: `linear-gradient(135deg, ${token.colorFillTertiary} 0%, ${token.colorBgContainer} 58%)`,
+      }}
       styles={{ body: { padding: 18 } }}
     >
       <Flex align="center" justify="space-between" gap={16}>
@@ -322,6 +330,7 @@ function ReferenceSection({
   title: string;
   items: Array<{ label: string; range: string }>;
 }) {
+  const { token } = antTheme.useToken();
   return (
     <div>
       <Typography.Text type="secondary" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -330,7 +339,7 @@ function ReferenceSection({
       <Flex vertical gap={7} style={{ marginTop: 8 }}>
         {items.map((item) => (
           <Flex key={item.label} justify="space-between" align="center" gap={12}>
-            <Typography.Text style={{ fontSize: 12 }}>{item.label}</Typography.Text>
+            <Typography.Text style={{ fontSize: 12, color: token.colorText }}>{item.label}</Typography.Text>
             <Typography.Text type="secondary" style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
               {item.range}
             </Typography.Text>
@@ -343,6 +352,7 @@ function ReferenceSection({
 
 function RuntimeParamsTab(): JSX.Element {
   const { settings, fetchSettings, saveSettings } = useSkillStore();
+  const { token } = antTheme.useToken();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [form] = Form.useForm<Pick<UserSettings, 'stop_sequences' | 'rag_top_k' | 'context_max_messages' | 'timezone' | 'thinking_collapse_mode'>>();
@@ -457,8 +467,24 @@ function RuntimeParamsTab(): JSX.Element {
       <Card
         size="small"
         title="参考值"
-        style={{ width: 420, flex: '0 0 420px', borderRadius: 16, position: 'sticky', top: 0 }}
-        styles={{ header: { fontSize: 13, fontWeight: 600 }, body: { padding: 16 } }}
+        style={{
+          width: 420,
+          flex: '0 0 420px',
+          borderRadius: 16,
+          position: 'sticky',
+          top: 0,
+          background: token.colorBgContainer,
+          borderColor: token.colorBorderSecondary,
+        }}
+        styles={{
+          header: {
+            fontSize: 13,
+            fontWeight: 600,
+            borderColor: token.colorBorderSecondary,
+            color: token.colorText,
+          },
+          body: { padding: 16 },
+        }}
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '18px 20px' }}>
           <ReferenceSection
