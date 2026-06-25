@@ -99,17 +99,16 @@ storage:
   vector:
     collection_name: astracore       # ChromaDB collection 名称
     persist_directory: ./chroma_db   # 持久化目录；不填则使用内存模式（重启丢失）
-    embedding_model: all-MiniLM-L6-v2  # sentence-transformers 模型名
+    embedding_model: all-MiniLM-L6-v2  # Chroma ONNX 默认模型
 ```
 
-`vector.embedding_model` 同时用于 RAG 文档向量化和技能路由（vector 模式）。两者共享同一个模型，保证语义空间一致。
+`vector.embedding_model` 同时用于 RAG 文档向量化和记忆向量检索。当前默认镜像仅支持 Chroma ONNX `all-MiniLM-L6-v2`，避免拉取 PyTorch/CUDA 依赖。
 
-可选模型：
+内置模型：
 
 | 模型 | 大小 | 适用场景 |
 |------|------|---------|
-| `all-MiniLM-L6-v2`（默认） | ~90MB | 英文 |
-| `paraphrase-multilingual-MiniLM-L12-v2` | ~420MB | 中文 / 多语言 |
+| `all-MiniLM-L6-v2`（默认） | ~90MB | 通用轻量语义检索 |
 
 > ⚠️ 切换 `vector.embedding_model` 后，已有的向量数据与新模型不兼容，需要清空 ChromaDB 并重新索引：
 > ```bash

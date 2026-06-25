@@ -93,7 +93,7 @@ assistant: "【记忆快照】
 
 - **文件**：`src/astracore/infrastructure/memory/vector.py`
 - **Collection**：`astracore_memory`
-- **Embedding**：`SentenceTransformerEmbeddingFunction("all-MiniLM-L6-v2")`，中文场景可改用 `paraphrase-multilingual-MiniLM-L12-v2`
+- **Embedding**：Chroma ONNX `all-MiniLM-L6-v2`
 - **距离**：cosine
 
 每条记忆文档内容：`f"{subject}: {content}"` — 主题与正文拼接，提升召回率
@@ -200,8 +200,7 @@ _after_run()（后台）
 ```yaml
 retrieval:
   persist_directory: ./chroma_db
-  embedding_model: all-MiniLM-L6-v2       # 英文
-  # embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言
+  embedding_model: all-MiniLM-L6-v2       # Chroma ONNX 默认模型
 
 memory:
   db_url: sqlite+aiosqlite:///./astracore.db

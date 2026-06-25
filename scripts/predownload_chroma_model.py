@@ -12,12 +12,22 @@ import inspect
 import os
 import re
 import socket
+import ssl
 import sys
 import tarfile
 import urllib.request
 from pathlib import Path
 
 socket.setdefaulttimeout(600)  # 10-minute socket timeout
+
+REQUIRED_ONNX_FILES = (
+    "config.json",
+    "model.onnx",
+    "special_tokens_map.json",
+    "tokenizer_config.json",
+    "tokenizer.json",
+    "vocab.txt",
+)
 
 if len(sys.argv) > 1:
     model_dir = sys.argv[1]
@@ -27,23 +37,35 @@ else:
 try:
     import chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 as _m
 
-    os.makedirs(model_dir, exist_ok=True)
+    model_path = Path(model_dir)
+    extracted_path = model_path / "onnx"
+    model_path.mkdir(parents=True, exist_ok=True)
 
-    existing = [f for f in os.listdir(model_dir) if not f.startswith(".")]
-    if existing:
-        print(f"ChromaDB ONNX model already present ({len(existing)} files), skipping download.", flush=True)
+    missing = [name for name in REQUIRED_ONNX_FILES if not (extracted_path / name).is_file()]
+    if not missing:
+        print("ChromaDB ONNX model already present, skipping download.", flush=True)
         raise SystemExit(0)
 
     src = inspect.getsource(_m)
     url = re.search(r"https://[^\s\"']+onnx\.tar\.gz", src).group()
 
-    tar_path = os.path.join(model_dir, "onnx.tar.gz")
+    tar_path = model_path / "onnx.tar.gz"
+    if tar_path.exists():
+        tar_path.unlink()
+
     print(f"Downloading ChromaDB ONNX model from {url} ...", flush=True)
-    urllib.request.urlretrieve(url, tar_path)
+    import certifi
+
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(url, timeout=600, context=ssl_context) as response:
+        tar_path.write_bytes(response.read())
 
     with tarfile.open(tar_path) as t:
-        t.extractall(model_dir)
-    os.remove(tar_path)
+        if sys.version_info >= (3, 12):
+            t.extractall(model_path, filter="data")
+        else:
+            t.extractall(model_path)
+    tar_path.unlink()
 
     print("ChromaDB ONNX model ready.", flush=True)
 

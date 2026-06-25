@@ -81,7 +81,7 @@ policy:
 
 agent:
   max_tool_result_chars: 20000
-  max_tool_iterations: 8
+  max_tool_iterations: 15
   enable_spawn_agents: false
 
 hitl:
@@ -104,8 +104,7 @@ storage:
     enabled: true
     collection_name: astracore
     persist_directory: ./chroma_db
-    # embedding_model: all-MiniLM-L6-v2          # 默认，英文场景，~90MB
-    embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言场景，~420MB
+    embedding_model: all-MiniLM-L6-v2          # Chroma ONNX 默认模型，避免拉取 torch/CUDA
 
 mcp:
   servers:

@@ -3,6 +3,7 @@
 import asyncio
 from typing import Any
 
+from astracore.infrastructure.retrieval.embedding import build_chroma_embedding_function
 from astracore.modules.rag.domain import Citation, RetrievalQuery, RetrievedChunk
 from astracore.modules.rag.ports.retriever import IndexResult, RetrieverAdapter
 
@@ -37,11 +38,7 @@ class ChromaRetrieverAdapter(RetrieverAdapter):
                 else:
                     self._client = chromadb.Client()
 
-                from chromadb.utils.embedding_functions import (  # noqa: PLC0415
-                    SentenceTransformerEmbeddingFunction,
-                )
-
-                ef = SentenceTransformerEmbeddingFunction(model_name=self.embedding_model)
+                ef = build_chroma_embedding_function(self.embedding_model)
                 self._collection = self._client.get_or_create_collection(
                     name=self.collection_name,
                     embedding_function=ef,

@@ -9,6 +9,7 @@ import asyncio
 import logging
 from typing import Any
 
+from astracore.infrastructure.retrieval.embedding import build_chroma_embedding_function
 from astracore.modules.memory.domain import StructuredMemory
 
 logger = logging.getLogger(__name__)
@@ -44,14 +45,13 @@ class MemoryVectorAdapter:
     def _init_sync(self) -> None:
         try:
             import chromadb
-            from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
             if self._persist_directory:
                 client: Any = chromadb.PersistentClient(path=self._persist_directory)
             else:
                 client = chromadb.Client()
 
-            ef = SentenceTransformerEmbeddingFunction(model_name=self._embedding_model)
+            ef = build_chroma_embedding_function(self._embedding_model)
             self._collection = client.get_or_create_collection(
                 name=self._COLLECTION_NAME,
                 embedding_function=ef,

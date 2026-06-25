@@ -22,11 +22,9 @@ services:
       ASTRACORE_CONFIG: "/app/config/config.docker.yaml"
     volumes:
       - astracore_data:/app/data
-      - chroma_models:/home/appuser/.cache/chroma
     depends_on:
       redis:
         condition: service_healthy
 
 volumes:
   astracore_data:
-  chroma_models:   # ChromaDB ONNX model cache — persists across restarts, downloaded once

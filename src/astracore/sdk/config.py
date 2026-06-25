@@ -118,14 +118,13 @@ class LLMConfig(BaseModel):
 
 
 class VectorConfig(BaseModel):
-    """Vector store (RAG / skill routing) configuration."""
+    """Vector store (RAG / memory retrieval) configuration."""
 
     enabled: bool = True
     collection_name: str = "astracore"
     persist_directory: str | None = None
     embedding_model: str = "all-MiniLM-L6-v2"
-    """sentence-transformers 模型名，同时用于 RAG 向量化和技能路由。
-    中文场景推荐 paraphrase-multilingual-MiniLM-L12-v2。"""
+    """Chroma ONNX embedding 模型名，当前仅支持 all-MiniLM-L6-v2。"""
 
 
 class StorageConfig(BaseModel):

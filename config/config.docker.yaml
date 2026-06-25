@@ -1,5 +1,5 @@
 llm:
-  default_profile: claude-sonnet
+  default_profile: deepseek-v4-flash
   profiles:
     - id: deepseek-v4-flash
       label: DeepSeek Chat
@@ -35,8 +35,7 @@ storage:
     # enabled: false
     collection_name: astracore
     persist_directory: /app/data/chroma_db
-    # embedding_model: all-MiniLM-L6-v2          # 默认，英文场景，~90MB
-    # embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # 中文/多语言场景，~420MB
+    embedding_model: all-MiniLM-L6-v2          # Chroma ONNX 默认模型，避免拉取 torch/CUDA
 
 skills:
   extra_dirs: []

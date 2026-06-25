@@ -341,7 +341,7 @@ storage:
     enabled: true
     collection_name: astracore
     persist_directory: ./chroma_db
-    # embedding_model: paraphrase-multilingual-MiniLM-L12-v2
+    embedding_model: all-MiniLM-L6-v2
 
 skills:
   extra_dirs: []
