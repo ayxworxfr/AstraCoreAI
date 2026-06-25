@@ -52,7 +52,13 @@ export function ChatMessageList({
   return (
     <div style={{ flex: '1 1 0', minHeight: 0, overflow: 'hidden', position: 'relative' }}>
       {messages.length === 0 && !isLoadingMessages ? (
-        <Flex vertical align="center" justify="center" gap={32} style={{ height: '100%', padding: '0 24px' }}>
+        <Flex
+          vertical
+          align="center"
+          justify="center"
+          gap={32}
+          style={{ height: '100%', padding: '0 var(--content-padding-x)' }}
+        >
           <Flex vertical align="center" gap={16}>
             <Avatar
               size={72}
@@ -87,7 +93,14 @@ export function ChatMessageList({
               {isLoadingMoreMessages ? '加载中...' : '上滑加载更早的消息'}
             </div>
           )}
-          <div style={{ maxWidth: 860, margin: '0 auto', width: '100%', padding: '24px 24px 16px' }}>
+          <div
+            style={{
+              maxWidth: 'var(--content-max-width)',
+              margin: '0 auto',
+              width: '100%',
+              padding: '24px var(--content-padding-x) 16px',
+            }}
+          >
             {messages.map((m) => (
               <MessageRow
                 key={m.id}

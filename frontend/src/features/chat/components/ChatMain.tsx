@@ -184,7 +184,14 @@ export default function ChatMain(): JSX.Element {
 
       {/* HITL 问题卡：AI 调用 ask_user 时阻塞等待用户回复 */}
       {pendingQuestion && (
-        <div style={{ padding: '0 24px', maxWidth: 860, margin: '0 auto', width: '100%' }}>
+        <div
+          style={{
+            padding: '0 var(--content-padding-x)',
+            maxWidth: 'var(--content-max-width)',
+            margin: '0 auto',
+            width: '100%',
+          }}
+        >
           <QuestionCard
             question={pendingQuestion}
             onSubmit={(selected, freeform) => submitAnswer(activeConversationId, selected, freeform)}
@@ -194,7 +201,7 @@ export default function ChatMain(): JSX.Element {
 
       {/* 会话错误提示：仅当前会话有效，刷新自动消失 */}
       {sessionError && (
-        <div style={{ padding: '0 24px' }}>
+        <div style={{ padding: '0 var(--content-padding-x)' }}>
           <Alert
             type="error"
             message={sessionError}

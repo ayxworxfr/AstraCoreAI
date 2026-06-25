@@ -380,7 +380,13 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
       style={{ padding: '8px 0 20px', borderTop: '1px solid rgba(5, 5, 5, 0.06)', flexShrink: 0 }}
     >
       <div
-        style={{ maxWidth: 860, margin: '0 auto', width: '100%', padding: '0 24px', position: 'relative' }}
+        style={{
+          maxWidth: 'var(--content-max-width)',
+          margin: '0 auto',
+          width: '100%',
+          padding: '0 var(--content-padding-x)',
+          position: 'relative',
+        }}
         onPaste={handlePaste}
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
@@ -393,7 +399,7 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
             justify="center"
             style={{
               position: 'absolute',
-              inset: '0 24px 0',
+              inset: '0 var(--content-padding-x) 0',
               zIndex: 20,
               borderRadius: 16,
               border: '1px dashed #2f80ed',

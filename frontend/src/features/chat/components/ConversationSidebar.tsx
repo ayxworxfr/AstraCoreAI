@@ -11,6 +11,10 @@ import { getAppTimeGroup } from '@/shared/utils/time';
 
 type ConversationItem = NonNullable<ConversationsProps['items']>[number];
 
+type ConversationSidebarProps = {
+  onConversationSelected?: () => void;
+};
+
 const GROUP_ORDER: Record<string, number> = {
   '置顶': 0,
   '今天': 1,
@@ -18,7 +22,7 @@ const GROUP_ORDER: Record<string, number> = {
   '更早': 3,
 };
 
-export default function ConversationSidebar(): JSX.Element {
+export default function ConversationSidebar({ onConversationSelected }: ConversationSidebarProps): JSX.Element {
   const timezone = useSkillStore((s) => s.settings.timezone);
   const {
     conversations,
@@ -63,6 +67,7 @@ export default function ConversationSidebar(): JSX.Element {
 
   const handleActiveChange = (key: string) => {
     switchConversation(key);
+    onConversationSelected?.();
   };
 
   const openRenameModal = (id: string) => {
@@ -91,7 +96,9 @@ export default function ConversationSidebar(): JSX.Element {
           icon={<EditOutlined />}
           block
           size="large"
-          onClick={() => void createConversation()}
+          onClick={() => {
+            void createConversation().then(() => onConversationSelected?.());
+          }}
         >
           新建会话
         </Button>

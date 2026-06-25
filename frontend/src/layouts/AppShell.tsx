@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Avatar, Badge, Button, Dropdown, Layout, Menu, Space, Typography } from 'antd';
+import { Avatar, Badge, Button, Dropdown, Grid, Layout, Menu, Space, Typography } from 'antd';
 import { LogoutOutlined, MoonOutlined, RocketOutlined, SunOutlined } from '@ant-design/icons';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
@@ -9,6 +9,7 @@ import { useSystemStore } from '@/features/system/store/systemStore';
 import { apiClient } from '@/shared/services/apiClient';
 
 const { Header, Content } = Layout;
+const { useBreakpoint } = Grid;
 
 const SCHEDULING_ENABLED = import.meta.env.VITE_FEATURE_SCHEDULING !== 'false';
 const HEADER_BRAND_WIDTH = 180;
@@ -16,6 +17,7 @@ const HEADER_USER_WIDTH = 132;
 
 export default function AppShell(): JSX.Element {
   const { theme, toggleTheme } = useSettingsStore();
+  const screens = useBreakpoint();
   const fetchSettings = useSkillStore((s) => s.fetchSettings);
   const { systemInfo, fetchSystemInfo } = useSystemStore();
   const location = useLocation();
@@ -23,6 +25,7 @@ export default function AppShell(): JSX.Element {
   const { user, logout } = useAuthStore();
 
   const ragEnabled = systemInfo?.rag_enabled ?? true;
+  const isMobile = screens.md === false;
 
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
@@ -76,20 +79,39 @@ export default function AppShell(): JSX.Element {
         style={{
           display: 'flex',
           alignItems: 'center',
-          padding: '0 16px',
+          padding: isMobile ? '0 8px' : '0 16px',
           flexShrink: 0,
           height: 64,
           lineHeight: '64px',
           borderBottom: theme === 'light' ? '1px solid #e8edf2' : '1px solid rgba(255,255,255,0.06)',
         }}
       >
-        <div style={{ width: HEADER_BRAND_WIDTH, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div
+          style={{
+            width: isMobile ? 36 : HEADER_BRAND_WIDTH,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
           <RocketOutlined style={{ fontSize: 20, color: '#1677ff' }} />
-          <Typography.Text strong style={{ fontSize: 15, letterSpacing: '-0.01em' }}>
-            AstraCoreAI
-          </Typography.Text>
+          {!isMobile && (
+            <Typography.Text strong style={{ fontSize: 15, letterSpacing: '-0.01em' }}>
+              AstraCoreAI
+            </Typography.Text>
+          )}
         </div>
-        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', minWidth: 0 }}>
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            justifyContent: isMobile ? 'flex-start' : 'center',
+            minWidth: 0,
+            overflowX: isMobile ? 'auto' : 'visible',
+            scrollbarWidth: 'none',
+          }}
+        >
           <Menu
             theme={theme === 'dark' ? 'dark' : 'light'}
             mode="horizontal"
@@ -102,11 +124,20 @@ export default function AppShell(): JSX.Element {
               lineHeight: '64px',
               fontSize: 14,
               fontWeight: 500,
-              minWidth: 460,
+              minWidth: isMobile ? 0 : 460,
+              flexShrink: 0,
             }}
           />
         </div>
-        <div style={{ width: HEADER_USER_WIDTH, flexShrink: 0, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+        <div
+          style={{
+            width: isMobile ? 40 : HEADER_USER_WIDTH,
+            flexShrink: 0,
+            display: 'flex',
+            justifyContent: 'flex-end',
+            alignItems: 'center',
+          }}
+        >
           {user && (
             <Dropdown
               trigger={['click']}

@@ -52,6 +52,19 @@ html[data-theme='dark'] {
   --app-scrollbar-track: rgba(13, 17, 23, 0.18);
 }
 
+@media (max-width: 767px) {
+  :root {
+    --content-padding-x: 12px;
+    --avatar-size: 28px;
+    --avatar-gap: 8px;
+    --avatar-slot-width: 36px;
+    --msg-row-gap-y: 12px;
+    --msg-padding-y-top: 16px;
+    --msg-padding-y-bottom: 12px;
+    --input-panel-padding-y-bottom: 12px;
+  }
+}
+
 .app-scroll-area {
   height: 100%;
 }
