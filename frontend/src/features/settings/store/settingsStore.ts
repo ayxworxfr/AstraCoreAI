@@ -19,7 +19,7 @@ type SettingsState = {
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
-      theme: 'dark' as Theme,
+      theme: 'light' as Theme,
       toggleTheme: () => set({ theme: get().theme === 'dark' ? 'light' : 'dark' }),
       tts: {
         voiceName: null,
