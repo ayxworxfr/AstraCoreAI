@@ -63,6 +63,41 @@ html[data-theme='dark'] {
     --msg-padding-y-bottom: 12px;
     --input-panel-padding-y-bottom: 12px;
   }
+
+  .mobile-page-padding {
+    padding: 12px !important;
+  }
+
+  .mobile-full-width {
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: 1 1 100% !important;
+  }
+
+  .system-llm-grid {
+    flex-direction: column !important;
+  }
+
+  .system-llm-grid > .ant-card {
+    width: 100% !important;
+  }
+
+  .mobile-descriptions .ant-descriptions-item-label,
+  .mobile-descriptions .ant-descriptions-item-content {
+    display: block !important;
+    width: 100% !important;
+    border-inline-end: 0 !important;
+  }
+
+  .mobile-descriptions .ant-descriptions-item-label {
+    padding-bottom: 4px !important;
+    color: var(--ant-color-text-secondary);
+  }
+
+  .mobile-descriptions .ant-descriptions-item-content {
+    padding-top: 4px !important;
+    word-break: break-word;
+  }
 }
 
 .app-scroll-area {

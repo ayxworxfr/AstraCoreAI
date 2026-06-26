@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Avatar, Badge, Button, Dropdown, Grid, Layout, Menu, Space, Typography } from 'antd';
-import { LogoutOutlined, MoonOutlined, RocketOutlined, SunOutlined } from '@ant-design/icons';
+import { EllipsisOutlined, LogoutOutlined, MoonOutlined, RocketOutlined, SunOutlined } from '@ant-design/icons';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { useAuthStore } from '@/features/auth/store/authStore';
@@ -67,6 +67,9 @@ export default function AppShell(): JSX.Element {
     ...(SCHEDULING_ENABLED ? [{ key: '/scheduled-tasks', label: <NavLink to="/scheduled-tasks">任务</NavLink> }] : []),
     { key: '/system', label: <NavLink to="/system">系统</NavLink> },
   ];
+  const visibleNavItems = isMobile ? navItems.slice(0, 3) : navItems;
+  const moreNavItems = isMobile ? navItems.slice(3) : [];
+  const moreMenuActive = moreNavItems.some((item) => location.pathname === item.key);
 
   const handleLogout = () => {
     logout();
@@ -107,6 +110,7 @@ export default function AppShell(): JSX.Element {
             flex: 1,
             display: 'flex',
             justifyContent: isMobile ? 'flex-start' : 'center',
+            alignItems: 'center',
             minWidth: 0,
             overflowX: isMobile ? 'auto' : 'visible',
             scrollbarWidth: 'none',
@@ -116,7 +120,7 @@ export default function AppShell(): JSX.Element {
             theme={theme === 'dark' ? 'dark' : 'light'}
             mode="horizontal"
             selectedKeys={[location.pathname]}
-            items={navItems}
+            items={visibleNavItems}
             style={{
               background: 'transparent',
               border: 'none',
@@ -128,6 +132,25 @@ export default function AppShell(): JSX.Element {
               flexShrink: 0,
             }}
           />
+          {isMobile && moreNavItems.length > 0 && (
+            <Dropdown
+              trigger={['click']}
+              placement="bottom"
+              menu={{ items: moreNavItems }}
+            >
+              <Button
+                type={moreMenuActive ? 'primary' : 'text'}
+                icon={<EllipsisOutlined />}
+                style={{
+                  height: 64,
+                  width: 64,
+                  borderRadius: 0,
+                  flexShrink: 0,
+                  color: moreMenuActive ? undefined : 'inherit',
+                }}
+              />
+            </Dropdown>
+          )}
         </div>
         <div
           style={{

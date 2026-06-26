@@ -146,9 +146,9 @@ function LLMInfoTab(): JSX.Element {
   const defaultProfile = info?.llm.profiles.find((profile) => profile.id === info.llm.default_profile);
 
   return (
-    <Flex gap={16} align="flex-start">
-      <Card title="LLM 配置" style={{ flex: 1 }}>
-        <Descriptions column={1} size="small" bordered>
+    <Flex className="system-llm-grid" gap={16} align="flex-start">
+      <Card title="LLM 配置" style={{ flex: 1, minWidth: 0 }}>
+        <Descriptions className="mobile-descriptions" column={1} size="small" bordered>
           <Descriptions.Item label="默认 Profile">
             {defaultProfile ? (defaultProfile.label || defaultProfile.id) : '—'}
           </Descriptions.Item>
@@ -169,21 +169,21 @@ function LLMInfoTab(): JSX.Element {
         </Descriptions>
       </Card>
 
-      <Card title="模型 Profiles" style={{ flex: 1 }}>
+      <Card title="模型 Profiles" style={{ flex: 1, minWidth: 0 }}>
         {info ? (
           <Flex vertical gap={10}>
             {info.llm.profiles.map((profile) => (
               <Card key={profile.id} size="small" styles={{ body: { padding: '10px 12px' } }}>
-                <Flex align="center" justify="space-between" gap={12}>
-                  <div>
+                <Flex align="center" justify="space-between" gap={12} wrap="wrap">
+                  <div style={{ minWidth: 0, flex: '1 1 160px' }}>
                     <Typography.Text strong>
                       {profile.label || profile.id}
                     </Typography.Text>
-                    <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 2 }}>
+                    <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 2, wordBreak: 'break-word' }}>
                       {profile.protocol} / {profile.model}
                     </Typography.Text>
                   </div>
-                  <Flex align="center" gap={6}>
+                  <Flex align="center" gap={6} wrap="wrap">
                     {profile.id === info.llm.default_profile && <Badge status="processing" text="默认" />}
                     <Badge status={profile.api_key_configured ? 'success' : 'error'} text={profile.api_key_configured ? 'Key 已配置' : 'Key 缺失'} />
                   </Flex>
@@ -194,14 +194,14 @@ function LLMInfoTab(): JSX.Element {
         ) : '—'}
       </Card>
 
-      <Card title="工具 & 集成" style={{ flex: 1 }}>
-        <Descriptions column={1} size="small" bordered>
+      <Card title="工具 & 集成" style={{ flex: 1, minWidth: 0 }}>
+        <Descriptions className="mobile-descriptions" column={1} size="small" bordered>
           <Descriptions.Item label="MCP 工具链">
             {info ? (
               info.mcp_servers.length > 0 ? (
                 <Flex vertical gap={6}>
                   <Badge status="success" text={`已启用（${info.mcp_servers.length} 个 server）`} />
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12, wordBreak: 'break-word' }}>
                     {info.mcp_servers
                       .map((s) => (s.name === s.type ? s.name : `${s.name} (${s.type})`))
                       .join(' / ')}
@@ -725,7 +725,7 @@ function UserManagementTab(): JSX.Element {
       {contextHolder}
 
       {/* 页头 */}
-      <Flex justify="space-between" align="center">
+      <Flex justify="space-between" align="center" gap={12} wrap="wrap">
         <div>
           <Flex align="center" gap={8}>
             <Typography.Text strong style={{ fontSize: 14 }}>用户账户</Typography.Text>
@@ -748,6 +748,7 @@ function UserManagementTab(): JSX.Element {
         allowClear
         value={searchText}
         onChange={(e) => setSearchText(e.target.value)}
+        className="mobile-full-width"
         style={{ maxWidth: 280 }}
       />
 
@@ -759,6 +760,7 @@ function UserManagementTab(): JSX.Element {
         dataSource={filteredUsers}
         columns={columns}
         pagination={false}
+        scroll={{ x: 620 }}
         locale={{ emptyText: searchText ? `未找到"${searchText}"` : '暂无用户' }}
         onRow={(user) => ({
           style: {
@@ -828,7 +830,7 @@ export default function SystemPage(): JSX.Element {
 
   return (
     <AppScrollArea style={{ height: '100%' }}>
-      <Flex vertical style={{ padding: 24 }} gap={16}>
+      <Flex vertical className="mobile-page-padding" style={{ padding: 24 }} gap={16}>
       <Typography.Title level={4} style={{ margin: 0 }}>
         系统
       </Typography.Title>

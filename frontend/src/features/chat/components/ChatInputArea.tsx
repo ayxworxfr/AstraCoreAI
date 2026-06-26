@@ -11,7 +11,7 @@ import {
   RobotOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
-import { Button, Flex, Popover, Slider, Tooltip, Typography, theme } from 'antd';
+import { Button, Drawer, Flex, Grid, Popover, Slider, Tooltip, Typography, theme } from 'antd';
 import { useChatStore } from '@/features/chat/store/chatStore';
 import { useSystemStore } from '@/features/system/store/systemStore';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
@@ -29,6 +29,8 @@ import type {
   TopPControl,
   TopKControl,
 } from '@/features/system/types';
+
+const { useBreakpoint } = Grid;
 
 function AttachmentChip({
   att,
@@ -129,24 +131,26 @@ function SamplingRow({
 }) {
   const { token } = theme.useToken();
   return (
-    <Flex
-      align="center"
-      gap={10}
+    <div
       style={{
-        padding: '5px 6px',
-        margin: '0 -6px',
-        borderRadius: 10,
+        display: 'grid',
+        gridTemplateColumns: '92px minmax(96px, 1fr) 40px 48px',
+        alignItems: 'center',
+        columnGap: 10,
+        padding: '8px 10px',
+        borderRadius: 12,
         borderLeft: `3px solid ${active ? '#60a5fa' : 'rgba(148, 163, 184, 0.42)'}`,
         background: active ? 'rgba(59, 130, 246, 0.08)' : 'rgba(148, 163, 184, 0.08)',
-        transition: 'background 0.16s ease, border-color 0.16s ease',
+        transition: 'background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease',
+        boxSizing: 'border-box',
       }}
     >
       {children}
       <span
         style={{
-          width: 42,
+          justifySelf: 'end',
+          width: 44,
           textAlign: 'center',
-          flexShrink: 0,
           fontSize: 11,
           lineHeight: '18px',
           borderRadius: 999,
@@ -157,7 +161,7 @@ function SamplingRow({
       >
         {active ? '生效' : '待用'}
       </span>
-    </Flex>
+    </div>
   );
 }
 
@@ -197,8 +201,9 @@ function AdvancedPanel({
       vertical
       gap={12}
       style={{
-        width: 480,
-        padding: '4px 2px',
+        width: 'min(480px, calc(100vw - 32px))',
+        maxWidth: 'calc(100vw - 32px)',
+        padding: '4px 0',
       }}
     >
       <Flex vertical gap={2}>
@@ -218,7 +223,7 @@ function AdvancedPanel({
             step={temperatureControl.step}
             value={tempValue}
             onChange={onTemperatureChange}
-            style={{ flex: 1 }}
+            style={{ flex: 1, minWidth: 96 }}
             tooltip={{ formatter: (v) => v?.toFixed(2) }}
           />
           <Typography.Text style={{ fontSize: 12, width: 36, textAlign: 'right', flexShrink: 0 }}>
@@ -237,7 +242,7 @@ function AdvancedPanel({
             step={topPControl.step}
             value={topPValue}
             onChange={onTopPChange}
-            style={{ flex: 1 }}
+            style={{ flex: 1, minWidth: 96 }}
             tooltip={{ formatter: (v) => v?.toFixed(2) }}
           />
           <Typography.Text style={{ fontSize: 12, width: 36, textAlign: 'right', flexShrink: 0 }}>
@@ -255,7 +260,7 @@ function AdvancedPanel({
             step={topKControl.step}
             value={topKValue}
             onChange={onTopKChange}
-            style={{ flex: 1 }}
+            style={{ flex: 1, minWidth: 96 }}
             tooltip={{ formatter: (v) => String(v) }}
           />
           <Typography.Text style={{ fontSize: 12, width: 36, textAlign: 'right', flexShrink: 0 }}>
@@ -272,6 +277,7 @@ function AdvancedPanel({
 
 export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string) => void }) {
   const { token } = theme.useToken();
+  const screens = useBreakpoint();
   const appTheme = useSettingsStore((s) => s.theme);
   const [inputValue, setInputValue] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -374,6 +380,21 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
 
   const isAttachmentButtonDisabled = baseAttachmentDisabled || uploadingCount > 0;
   const isDark = appTheme === 'dark';
+  const isMobile = screens.md === false;
+  const advancedPanel = (
+    <AdvancedPanel
+      temperatureControl={temperatureControl}
+      topPControl={topPControl}
+      topKControl={topKControl}
+      temperature={temperature}
+      topP={topP}
+      topK={topK}
+      onTemperatureChange={setTemperature}
+      onTopPChange={setTopP}
+      onTopKChange={setTopK}
+      disabled={toolbarDisabled}
+    />
+  );
 
   return (
     <div
@@ -436,27 +457,15 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
             />
           )}
 
-          {hasAdvanced && (
+          {hasAdvanced && !isMobile && (
             <Popover
               trigger="click"
               placement="topLeft"
               open={advancedOpen}
               onOpenChange={(open) => setAdvancedOpen(open)}
-              overlayInnerStyle={{ borderRadius: 14, padding: 14 }}
-              content={(
-                <AdvancedPanel
-                  temperatureControl={temperatureControl}
-                  topPControl={topPControl}
-                  topKControl={topKControl}
-                  temperature={temperature}
-                  topP={topP}
-                  topK={topK}
-                  onTemperatureChange={setTemperature}
-                  onTopPChange={setTopP}
-                  onTopKChange={setTopK}
-                  disabled={toolbarDisabled}
-                />
-              )}
+              overlayStyle={{ maxWidth: 'calc(100vw - 16px)' }}
+              overlayInnerStyle={{ borderRadius: 14, padding: 12, maxWidth: 'calc(100vw - 16px)' }}
+              content={advancedPanel}
             >
               <Button
                 size="small"
@@ -477,6 +486,49 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
                 高级
               </Button>
             </Popover>
+          )}
+
+          {hasAdvanced && isMobile && (
+            <>
+              <Button
+                size="small"
+                type={advancedOpen ? 'primary' : 'default'}
+                ghost={advancedOpen}
+                disabled={toolbarDisabled}
+                onClick={() => setAdvancedOpen(true)}
+                style={{
+                  borderRadius: 20,
+                  fontSize: 12,
+                  height: 26,
+                  padding: '0 10px',
+                  ...(advancedOpen
+                    ? { borderColor: '#6366f1', color: '#6366f1', background: '#eef2ff' }
+                    : { color: token.colorTextSecondary }),
+                }}
+                icon={<RobotOutlined />}
+              >
+                高级
+              </Button>
+              <Drawer
+                open={advancedOpen}
+                placement="bottom"
+                onClose={() => setAdvancedOpen(false)}
+                height="auto"
+                styles={{
+                  content: {
+                    borderRadius: '18px 18px 0 0',
+                    overflow: 'hidden',
+                  },
+                  body: {
+                    padding: 14,
+                    maxHeight: '72vh',
+                    overflowY: 'auto',
+                  },
+                }}
+              >
+                {advancedPanel}
+              </Drawer>
+            </>
           )}
 
           {ragEnabled && (

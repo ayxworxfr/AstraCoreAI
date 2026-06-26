@@ -230,7 +230,7 @@ export default function MemoryPage(): JSX.Element {
 
   return (
     <AppScrollArea style={{ height: '100%' }}>
-      <Flex vertical style={{ padding: 24 }} gap={16}>
+      <Flex vertical className="mobile-page-padding" style={{ padding: 24 }} gap={16}>
       <Card
         bordered={false}
         styles={{ body: { padding: 20 } }}
@@ -295,6 +295,7 @@ export default function MemoryPage(): JSX.Element {
             placeholder="Scope"
             value={scope}
             options={SCOPE_OPTIONS}
+            className="mobile-full-width"
             style={{ width: 150 }}
             onChange={(value) => {
               setScope(value);
@@ -308,6 +309,7 @@ export default function MemoryPage(): JSX.Element {
             value={conversationId}
             options={conversationOptions}
             optionFilterProp="label"
+            className="mobile-full-width"
             style={{ width: 320 }}
             onChange={(value) => {
               setConversationId(value);
@@ -319,6 +321,7 @@ export default function MemoryPage(): JSX.Element {
             placeholder="Project"
             value={projectId}
             options={projectOptions}
+            className="mobile-full-width"
             style={{ width: 220 }}
             disabled={Boolean(conversationId)}
             onChange={setProjectId}
@@ -329,9 +332,10 @@ export default function MemoryPage(): JSX.Element {
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             onSearch={() => { void load(); }}
+            className="mobile-full-width"
             style={{ flex: '1 1 280px', minWidth: 240, maxWidth: 460 }}
           />
-          <Button type="primary" ghost onClick={() => { void load(); }}>
+          <Button className="mobile-full-width" type="primary" ghost onClick={() => { void load(); }}>
             筛选
           </Button>
         </Flex>
@@ -413,6 +417,7 @@ export default function MemoryPage(): JSX.Element {
             {
               title: 'Content',
               dataIndex: 'content',
+              width: 320,
               render: (_value: string, item) => (
                 <Flex vertical gap={4}>
                   <Typography.Paragraph
@@ -463,6 +468,7 @@ export default function MemoryPage(): JSX.Element {
               ),
             },
           ]}
+          scroll={{ x: 1100 }}
         />
       </Card>
 

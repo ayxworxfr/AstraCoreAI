@@ -2,8 +2,19 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useTTSStore } from './ttsStore';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { DEFAULT_VOICE_ID } from './voiceRegistry';
-import { apiClient } from '@/shared/services/apiClient';
+import { getAuthHeaders } from '@/shared/services/apiClient';
+import { getCachedAudio, setCachedAudio } from './audioCache';
 import type { TTSStatus } from './ttsStore';
+
+const _API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+
+/**
+ * MediaSource streaming with audio/mpeg is supported on desktop Chrome/Edge/Firefox
+ * and Android Chrome, but not on iOS Safari (returns false for audio/mpeg).
+ * The blob fallback path is used when this is false.
+ */
+const _MSE_SUPPORTED =
+  typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/mpeg');
 
 export type UseTTSReturn = {
   status: TTSStatus;
@@ -15,22 +26,24 @@ export type UseTTSReturn = {
 /**
  * Manages Edge TTS playback for one chat message via the backend proxy.
  *
- * Fetches an audio/mpeg blob from /api/v1/tts/synthesize and plays it
- * with an HTMLAudioElement. AbortController cancels in-flight requests
- * when stop() is called or another message takes over.
+ * Two paths depending on browser support:
+ *  - MSE (MediaSource): streams audio/mpeg chunks via fetch ReadableStream,
+ *    starts playing on first buffered chunk, caches the completed blob.
+ *  - Blob fallback (iOS / no MSE): downloads the full response, then plays.
+ *    Still benefits from the LRU cache on repeat plays.
  *
- * Only one message can play at a time — calling play() on a second message
- * updates the store's activeMessageId, which causes the first message's
- * useEffect to abort its request and stop its audio element.
+ * Only one message plays at a time — the store's activeMessageId enforces this.
  */
 export function useTTS(messageId: string, text: string): UseTTSReturn {
-  const { activeMessageId, status, setActive, clearActive } = useTTSStore();
+  const { activeMessageId, status, setLoading, clearActive } = useTTSStore();
   const isActive = activeMessageId === messageId;
   const currentStatus: TTSStatus = isActive ? status : 'idle';
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const blobUrlRef = useRef<string | null>(null);
+  // Tracks a freshly-created URL that we must revoke on cleanup.
+  // Not set for cache-owned URLs — the cache manages their lifetime.
+  const ownedUrlRef = useRef<string | null>(null);
 
   const cleanup = useCallback(() => {
     abortRef.current?.abort();
@@ -40,9 +53,9 @@ export function useTTS(messageId: string, text: string): UseTTSReturn {
       audioRef.current.src = '';
       audioRef.current = null;
     }
-    if (blobUrlRef.current) {
-      URL.revokeObjectURL(blobUrlRef.current);
-      blobUrlRef.current = null;
+    if (ownedUrlRef.current) {
+      URL.revokeObjectURL(ownedUrlRef.current);
+      ownedUrlRef.current = null;
     }
   }, []);
 
@@ -56,56 +69,174 @@ export function useTTS(messageId: string, text: string): UseTTSReturn {
     cleanup();
 
     const { tts } = useSettingsStore.getState();
+    const voice = tts.voiceName ?? DEFAULT_VOICE_ID;
+    const { rate, pitch } = tts;
+    const truncatedText = text.slice(0, 8000);
     const ab = new AbortController();
     abortRef.current = ab;
-    setActive(messageId);
 
-    apiClient
-      .post<Blob>(
-        '/api/v1/tts/synthesize',
-        {
-          text: text.slice(0, 8000),
-          voice: tts.voiceName ?? DEFAULT_VOICE_ID,
-          rate: tts.rate,
-          pitch: tts.pitch,
-        },
-        { responseType: 'blob', signal: ab.signal },
-      )
-      .then((response) => {
-        if (ab.signal.aborted) return;
+    setLoading(messageId);
 
-        const url = URL.createObjectURL(response.data);
-        blobUrlRef.current = url;
-        const audio = new Audio(url);
+    // Serve from LRU cache immediately if available.
+    const cached = getCachedAudio(messageId);
+    if (cached) {
+      const audio = new Audio(cached);
+      audioRef.current = audio;
+      // Cache owns this URL; do not set ownedUrlRef.
+      audio.onplay = () => useTTSStore.getState().setPlaying(messageId);
+      const onDone = () => {
+        audioRef.current = null;
+        useTTSStore.getState().clearActive();
+      };
+      audio.onended = onDone;
+      audio.onerror = onDone;
+      audio.play().catch(onDone);
+      return;
+    }
+
+    const fetchAudio = () =>
+      fetch(`${_API_BASE}/api/v1/tts/synthesize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ text: truncatedText, voice, rate, pitch }),
+        signal: ab.signal,
+      });
+
+    if (_MSE_SUPPORTED) {
+      void (async () => {
+        const mediaSource = new MediaSource();
+        const mseUrl = URL.createObjectURL(mediaSource);
+        ownedUrlRef.current = mseUrl;
+
+        const audio = new Audio(mseUrl);
         audioRef.current = audio;
 
-        audio.onended = () => {
-          URL.revokeObjectURL(url);
-          blobUrlRef.current = null;
-          audioRef.current = null;
-          useTTSStore.getState().clearActive();
-        };
-        audio.onerror = () => {
-          URL.revokeObjectURL(url);
-          blobUrlRef.current = null;
-          audioRef.current = null;
-          useTTSStore.getState().clearActive();
-        };
+        audio.onplay = () => useTTSStore.getState().setPlaying(messageId);
 
-        audio.play().catch(() => {
-          cleanup();
+        // Revoke the MSE URL and clear state when audio finishes or errors.
+        // Also aborts any in-flight download so we don't waste bandwidth.
+        const onDone = () => {
+          ab.abort();
+          audioRef.current = null;
+          if (ownedUrlRef.current) {
+            URL.revokeObjectURL(ownedUrlRef.current);
+            ownedUrlRef.current = null;
+          }
           useTTSStore.getState().clearActive();
-        });
-      })
-      .catch((err: unknown) => {
+        };
+        audio.onended = onDone;
+        audio.onerror = onDone;
+
+        // Start buffering immediately; browser plays once enough data is available.
+        audio.play().catch(onDone);
+
+        await new Promise<void>((resolve) =>
+          mediaSource.addEventListener('sourceopen', () => resolve(), { once: true }),
+        );
         if (ab.signal.aborted) return;
-        console.error('[TTS] synthesize failed', err);
-        cleanup();
-        useTTSStore.getState().clearActive();
-      });
-  }, [text, messageId, setActive, cleanup]);
 
-  // When another message takes over, abort this message's request and audio.
+        const sb = mediaSource.addSourceBuffer('audio/mpeg');
+        const appendQueue: Uint8Array<ArrayBuffer>[] = [];
+        const allChunks: Uint8Array<ArrayBuffer>[] = [];
+        let streamDone = false;
+
+        // Append the next queued chunk only when SourceBuffer is not updating.
+        const flush = () => {
+          if (sb.updating || appendQueue.length === 0) return;
+          sb.appendBuffer(appendQueue.shift()!);
+        };
+
+        // Signal end-of-stream and write to cache once all chunks are appended.
+        const tryEndStream = () => {
+          if (!streamDone || appendQueue.length > 0 || sb.updating) return;
+          try {
+            mediaSource.endOfStream();
+          } catch {
+            // MediaSource may already be closed if the audio element was detached.
+          }
+          const blob = new Blob(allChunks, { type: 'audio/mpeg' });
+          setCachedAudio(messageId, URL.createObjectURL(blob));
+        };
+
+        sb.addEventListener('updateend', () => {
+          flush();
+          tryEndStream();
+        });
+
+        try {
+          const response = await fetchAudio();
+          if (!response.ok) throw new Error(`TTS ${response.status}`);
+
+          const reader = response.body!.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (ab.signal.aborted) break;
+            // Fetch stream chunks are always ArrayBuffer-backed; cast is safe.
+            const chunk = value as Uint8Array<ArrayBuffer>;
+            allChunks.push(chunk);
+            appendQueue.push(chunk);
+            flush();
+          }
+        } catch (err) {
+          if (!ab.signal.aborted) {
+            console.error('[TTS] stream error', err);
+            // Signals a network error to the audio element, which fires onerror → onDone.
+            try {
+              mediaSource.endOfStream('network');
+            } catch {
+              // Ignore if already closed.
+            }
+          }
+          return;
+        }
+
+        streamDone = true;
+        tryEndStream();
+      })();
+    } else {
+      // Blob fallback: collect the full response before playing (iOS Safari).
+      void (async () => {
+        try {
+          const response = await fetchAudio();
+          if (!response.ok) throw new Error(`TTS ${response.status}`);
+          if (ab.signal.aborted) return;
+
+          const blob = await response.blob();
+          if (ab.signal.aborted) return;
+
+          const blobUrl = URL.createObjectURL(blob);
+          // Track ownership so cleanup() can revoke if stop() is called before cache handoff.
+          ownedUrlRef.current = blobUrl;
+
+          const audio = new Audio(blobUrl);
+          audioRef.current = audio;
+
+          audio.onplay = () => useTTSStore.getState().setPlaying(messageId);
+          const onDone = () => {
+            audioRef.current = null;
+            useTTSStore.getState().clearActive();
+          };
+          audio.onended = onDone;
+          audio.onerror = onDone;
+
+          // Hand URL ownership to the cache before play(); if stop() fires after
+          // this point, cleanup() will skip revocation (ownedUrlRef is null).
+          setCachedAudio(messageId, blobUrl);
+          ownedUrlRef.current = null;
+
+          audio.play().catch(onDone);
+        } catch (err) {
+          if (!ab.signal.aborted) {
+            console.error('[TTS] blob error', err);
+            useTTSStore.getState().clearActive();
+          }
+        }
+      })();
+    }
+  }, [text, messageId, setLoading, cleanup]);
+
+  // When another message takes over, abort and cleanup this one.
   useEffect(() => {
     if (!isActive) {
       cleanup();

@@ -17,6 +17,8 @@ export default function ChatMain(): JSX.Element {
   const prevScrollHeightRef = useRef<number | null>(null);
   // 标记初次加载完成后需要滚到底部（让用户看到最新消息，之后才能上拉加载更早的）
   const shouldScrollToBottomRef = useRef(false);
+  // 流式生成时是否自动跟随到底部；用户主动上滑后暂停，避免列表被反复拉回造成抖动。
+  const shouldAutoFollowStreamRef = useRef(true);
   // 记录当前会话是否已做过首屏滚底；刷新时 activeConversationId 可能来自持久化，不一定会变化
   const initialBottomScrolledConvRef = useRef<string | null>(null);
   // 通过 ref 让 handleScroll 始终能拿到最新的 handleScrollLoadMore，
@@ -58,6 +60,7 @@ export default function ChatMain(): JSX.Element {
   }, []);
 
   const handleScrollToBottom = useCallback(() => {
+    shouldAutoFollowStreamRef.current = true;
     scrollToBottom('smooth');
   }, [scrollToBottom]);
 
@@ -67,6 +70,11 @@ export default function ChatMain(): JSX.Element {
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
     const distanceFromBottom = maxScroll - el.scrollTop;
     setShowScrollBtn(distanceFromBottom > 120);
+    if (distanceFromBottom > 96) {
+      shouldAutoFollowStreamRef.current = false;
+    } else if (distanceFromBottom < 32) {
+      shouldAutoFollowStreamRef.current = true;
+    }
     // scroll 事件：滚到顶部附近时触发加载更多
     if (el.scrollTop < 200) {
       void handleScrollLoadMoreRef.current();
@@ -76,10 +84,11 @@ export default function ChatMain(): JSX.Element {
   // streaming 时若已在底部则自动跟随；不在底部则仅显示按钮
   useEffect(() => {
     if (!isStreaming) return;
+    if (!shouldAutoFollowStreamRef.current) return;
     const el = scrollContainerRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < 120) scrollToBottom('instant');
+    if (distanceFromBottom < 160) scrollToBottom('instant');
   });
 
   // 应用启动时从后端加载对话列表
@@ -125,6 +134,7 @@ export default function ChatMain(): JSX.Element {
       if (!isLoadingMessages) void loadMessages(activeConversationId);
     } else {
       // 已缓存的会话（本次会话内切换回来），直接滚到底部
+      shouldAutoFollowStreamRef.current = true;
       scrollToBottom('instant');
     }
   }, [activeConversationId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -146,6 +156,7 @@ export default function ChatMain(): JSX.Element {
       // 初次加载 / 页面刷新恢复活跃会话：滚到底部让用户看到最新消息
       shouldScrollToBottomRef.current = false;
       initialBottomScrolledConvRef.current = activeConversationId;
+      shouldAutoFollowStreamRef.current = true;
       scrollToBottom('instant');
     }
   }, [messages, scrollToBottom]);
@@ -164,6 +175,7 @@ export default function ChatMain(): JSX.Element {
 
   const handleSendMessage = useCallback((value: string) => {
     setSessionError(null);
+    shouldAutoFollowStreamRef.current = true;
     void sendMessage(value);
   }, [setSessionError, sendMessage]);
 

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-_ONNX_MODEL_NAME = "all-MiniLM-L6-v2"
 
+def build_chroma_embedding_function(model_name: str = "all-MiniLM-L6-v2") -> Any:
+    """Build the Chroma embedding function used by RAG and memory retrieval.
 
-def build_chroma_embedding_function(model_name: str = _ONNX_MODEL_NAME) -> Any:
-    """Build the Chroma embedding function used by RAG and memory retrieval."""
-    if model_name != _ONNX_MODEL_NAME:
-        raise ValueError("Only all-MiniLM-L6-v2 is supported by the default ONNX embedding backend")
-
+    Uses ChromaDB's built-in ONNXMiniLM_L6_V2 (no extra package required).
+    ``model_name`` is accepted for API compatibility but only all-MiniLM-L6-v2
+    is produced — callers that change the model must supply their own EF.
+    """
     from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
 
     return ONNXMiniLM_L6_V2()

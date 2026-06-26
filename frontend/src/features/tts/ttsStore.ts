@@ -1,11 +1,12 @@
 import { create } from 'zustand';
 
-export type TTSStatus = 'idle' | 'playing';
+export type TTSStatus = 'idle' | 'loading' | 'playing';
 
 type TTSStore = {
   activeMessageId: string | null;
   status: TTSStatus;
-  setActive: (id: string) => void;
+  setLoading: (id: string) => void;
+  setPlaying: (id: string) => void;
   clearActive: () => void;
 };
 
@@ -13,6 +14,7 @@ type TTSStore = {
 export const useTTSStore = create<TTSStore>((set) => ({
   activeMessageId: null,
   status: 'idle',
-  setActive: (id) => set({ activeMessageId: id, status: 'playing' }),
+  setLoading: (id) => set({ activeMessageId: id, status: 'loading' }),
+  setPlaying: (id) => set({ activeMessageId: id, status: 'playing' }),
   clearActive: () => set({ activeMessageId: null, status: 'idle' }),
 }));

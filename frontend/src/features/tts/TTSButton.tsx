@@ -1,4 +1,4 @@
-import { SoundOutlined, StopOutlined, SettingOutlined } from '@ant-design/icons';
+import { SoundOutlined, StopOutlined, SettingOutlined, LoadingOutlined } from '@ant-design/icons';
 import { Button, Flex, Popover, Select, Slider, Tooltip, Typography } from 'antd';
 import { useTTS } from './useTTS';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
@@ -68,20 +68,22 @@ export function TTSButton({ messageId, content, btnStyle }: TTSButtonProps) {
 
   if (!supported || !cleanText.trim()) return null;
 
+  const isLoading = status === 'loading';
   const isPlaying = status === 'playing';
+  const isActive = isLoading || isPlaying;
 
   return (
     <Flex gap={1} align="center">
-      <Tooltip title={isPlaying ? '停止朗读' : '朗读'}>
+      <Tooltip title={isLoading ? '取消' : isPlaying ? '停止朗读' : '朗读'}>
         <Button
           type="text"
           size="small"
-          icon={isPlaying ? <StopOutlined /> : <SoundOutlined />}
-          onClick={isPlaying ? stop : play}
+          icon={isLoading ? <LoadingOutlined /> : isPlaying ? <StopOutlined /> : <SoundOutlined />}
+          onClick={isActive ? stop : play}
           style={btnStyle}
         />
       </Tooltip>
-      {!isPlaying && (
+      {!isActive && (
         <Popover
           trigger="click"
           content={<TTSSettingsPanel />}

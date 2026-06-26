@@ -106,7 +106,7 @@ docker-cache-model: ## 预下载 ChromaDB 模型到 docker/chroma_model/（构�
 	@echo "$(GREEN)⬇️  预下载 ChromaDB ONNX 模型...$(NC)"
 	@$(HATCH) run python scripts/predownload_chroma_model.py
 
-docker-build: docker-cache-model ## 构建 Docker 镜像（自动预下载模型缓存）
+docker-build: ## 构建 Docker 镜像（自动预下载模型缓存）
 	@echo "$(GREEN)🐳 构建 Docker 镜像...$(NC)"
 	@PIP_INDEX_URL="$(DOCKER_PIP_INDEX_URL)" docker compose build
 
