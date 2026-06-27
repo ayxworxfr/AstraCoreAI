@@ -8,7 +8,11 @@ import pytest
 
 from astracore.infrastructure.db.session import get_engine, init_db
 from astracore.modules.scheduling.application.task_service import ScheduledTaskService
-from astracore.modules.scheduling.domain.task import CreateTaskRequest, TriggerType
+from astracore.modules.scheduling.domain.task import (
+    CreateTaskRequest,
+    TriggerType,
+    UpdateTaskRequest,
+)
 
 
 @pytest.fixture
@@ -206,6 +210,67 @@ async def test_update_run_stats(manual_test, svc) -> None:
     assert fetched.error_count == 1
     assert fetched.last_error == "boom"
     assert fetched.last_run_id == "run-2"
+
+
+async def test_update_task_timezone_only_recomputes_next_run(manual_test, svc) -> None:
+    task = await svc.create_task(
+        CreateTaskRequest(
+            user_id="u1",
+            prompt="timezone update",
+            trigger_type=TriggerType.DATE,
+            trigger_config={"run_at": "2099-01-01T09:00:00"},
+            timezone="Asia/Shanghai",
+        )
+    )
+    assert task.next_run_at is not None
+    original_next_run = task.next_run_at
+    if original_next_run.tzinfo is None:
+        original_next_run = original_next_run.replace(tzinfo=UTC)
+    assert original_next_run == datetime(2099, 1, 1, 1, 0, 0, tzinfo=UTC)
+
+    updated = await svc.update_task(
+        task.id,
+        "u1",
+        UpdateTaskRequest(timezone="UTC"),
+    )
+
+    assert updated is not None
+    assert updated.timezone == "UTC"
+    assert updated.next_run_at is not None
+    next_run = updated.next_run_at
+    if next_run.tzinfo is None:
+        next_run = next_run.replace(tzinfo=UTC)
+    assert next_run == datetime(2099, 1, 1, 9, 0, 0, tzinfo=UTC)
+
+
+async def test_update_finished_date_task_reactivates_when_schedule_changes(
+    manual_test, svc
+) -> None:
+    task = await svc.create_task(
+        CreateTaskRequest(
+            user_id="u1",
+            prompt="one-shot",
+            trigger_type=TriggerType.DATE,
+            trigger_config={"run_at": "2099-01-01T00:00:00+00:00"},
+        )
+    )
+    await svc.mark_finished(task.id)
+
+    updated = await svc.update_task(
+        task.id,
+        "u1",
+        UpdateTaskRequest(
+            trigger_config={"run_at": "2099-01-02T00:00:00+00:00"},
+        ),
+    )
+
+    assert updated is not None
+    assert updated.status.value == "active"
+    assert updated.next_run_at is not None
+    next_run = updated.next_run_at
+    if next_run.tzinfo is None:
+        next_run = next_run.replace(tzinfo=UTC)
+    assert next_run == datetime(2099, 1, 2, 0, 0, 0, tzinfo=UTC)
 
 
 async def test_mark_finished(manual_test, svc) -> None:

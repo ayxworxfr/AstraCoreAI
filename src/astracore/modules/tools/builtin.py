@@ -559,7 +559,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
     )
 
     # ------------------------------------------------------------------
-    # Scheduling tools: schedule_task / list_scheduled_tasks / cancel_scheduled_task
+    # Scheduling tools: schedule_task / list_scheduled_tasks / update_scheduled_task / cancel_scheduled_task
     # ------------------------------------------------------------------
 
     async def _schedule_task(
@@ -645,6 +645,73 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
             lines.append(f"• [{t.status.value}] {t.name}（ID: {t.id}）  下次执行：{next_str}")
         return "\n".join(lines)
 
+    async def _update_scheduled_task(
+        task_id: str,
+        name: str | None = None,
+        prompt: str | None = None,
+        trigger_type: str | None = None,
+        trigger_config: dict[str, Any] | None = None,
+        timezone: str | None = None,
+        model_profile: str | None = None,
+        use_tools: bool | None = None,
+        _context: dict[str, object] | None = None,
+    ) -> str:
+        from astracore.modules.scheduling.application.task_service import (  # noqa: PLC0415
+            ScheduledTaskService,
+        )
+        from astracore.modules.scheduling.domain.task import (  # noqa: PLC0415
+            TriggerType,
+            UpdateTaskRequest,
+        )
+
+        if not any(
+            value is not None
+            for value in (
+                name,
+                prompt,
+                trigger_type,
+                trigger_config,
+                timezone,
+                model_profile,
+                use_tools,
+            )
+        ):
+            return "未提供任何要更新的字段。"
+
+        ctx = _context or {}
+        user_id = str(ctx.get("user_id") or "default")
+        cfg = AstraCoreConfig()
+        svc = ScheduledTaskService(db_url or cfg.storage.db_url, cfg.scheduling.default_timezone)
+
+        try:
+            task = await svc.update_task(
+                task_id,
+                user_id,
+                UpdateTaskRequest(
+                    name=name,
+                    prompt=prompt,
+                    trigger_type=TriggerType(trigger_type) if trigger_type else None,
+                    trigger_config=trigger_config,
+                    timezone=timezone,
+                    model_profile=model_profile,
+                    use_tools=use_tools,
+                ),
+            )
+        except Exception as exc:
+            return f"更新定时任务失败：{exc}"
+
+        if task is None:
+            return f"未找到 ID 为 {task_id!r} 的定时任务，或无权操作。"
+
+        next_str = task.next_run_at.isoformat() if task.next_run_at else "—"
+        return (
+            f"定时任务已更新（ID: {task.id}）\n"
+            f"名称：{task.name}\n"
+            f"触发器：{task.trigger_type.value} — {task.trigger_config}\n"
+            f"时区：{task.timezone}\n"
+            f"下次执行：{next_str}"
+        )
+
     async def _cancel_scheduled_task(
         task_id: str,
         _context: dict[str, object] | None = None,
@@ -676,7 +743,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
             "  cron — 标准 5 字段 cron 表达式（如 '0 9 * * *' 每天 9 点）\n"
             "  interval — 每隔 N 秒执行一次\n"
             "  date — 一次性在指定时刻执行（ISO8601 格式）\n"
-            "管理已有任务请用 list_scheduled_tasks 与 cancel_scheduled_task。"
+            "管理已有任务请用 list_scheduled_tasks、update_scheduled_task 与 cancel_scheduled_task。"
         ),
         parameters=[
             ToolParameter(
@@ -735,6 +802,72 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=False,
             ),
         ],
+    )
+
+    native.register_tool(
+        name="update_scheduled_task",
+        func=_update_scheduled_task,
+        description=(
+            "更新已有定时任务。适用于用户要求修改任务提示词、任务名称、执行时间、执行周期、"
+            "时区、模型或是否启用工具。需先通过 list_scheduled_tasks 获取任务 ID。"
+            "只传需要修改的字段；未传字段保持不变。"
+        ),
+        parameters=[
+            ToolParameter(
+                name="task_id",
+                type=ToolParameterType.STRING,
+                description="要更新的任务 ID",
+                required=True,
+            ),
+            ToolParameter(
+                name="name",
+                type=ToolParameterType.STRING,
+                description="新的任务显示名称（选填）",
+                required=False,
+            ),
+            ToolParameter(
+                name="prompt",
+                type=ToolParameterType.STRING,
+                description="新的任务提示词，触发时作为用户消息送入 AI（选填）",
+                required=False,
+            ),
+            ToolParameter(
+                name="trigger_type",
+                type=ToolParameterType.STRING,
+                description="新的触发器类型（选填）：cron | interval | date",
+                required=False,
+            ),
+            ToolParameter(
+                name="trigger_config",
+                type=ToolParameterType.OBJECT,
+                description=(
+                    "新的触发器参数（选填）：\n"
+                    '  cron → {"expr": "0 9 * * *"}\n'
+                    '  interval → {"seconds": 3600}\n'
+                    '  date → {"run_at": "2026-06-20T14:00:00+08:00"}'
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="timezone",
+                type=ToolParameterType.STRING,
+                description="新的时区（选填），例如 Asia/Shanghai",
+                required=False,
+            ),
+            ToolParameter(
+                name="model_profile",
+                type=ToolParameterType.STRING,
+                description="新的模型 profile ID（选填）",
+                required=False,
+            ),
+            ToolParameter(
+                name="use_tools",
+                type=ToolParameterType.BOOLEAN,
+                description="触发执行时是否启用工具与联网能力（选填）",
+                required=False,
+            ),
+        ],
+        requires_confirmation=True,
     )
 
     native.register_tool(

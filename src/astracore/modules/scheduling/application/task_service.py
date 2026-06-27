@@ -37,6 +37,13 @@ def _parse_date_run_at(run_at_raw: object, timezone: str) -> datetime:
     return run_at.astimezone(UTC)
 
 
+def _validate_timezone(timezone: str) -> None:
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, KeyError) as exc:
+        raise ValueError(f"Unknown timezone: {timezone}") from exc
+
+
 def _row_to_domain(row: ScheduledTaskRow) -> ScheduledTask:
     return ScheduledTask(
         id=row.id,
@@ -195,12 +202,7 @@ class ScheduledTaskService:
     async def create_task(self, req: CreateTaskRequest, max_per_user: int = 50) -> ScheduledTask:
         """Create a task, validate trigger, and register with APScheduler."""
         tz = req.timezone or self._default_timezone
-        try:
-            import zoneinfo  # noqa: PLC0415
-
-            zoneinfo.ZoneInfo(tz)
-        except (ZoneInfoNotFoundError, KeyError) as exc:
-            raise ValueError(f"Unknown timezone: {tz}") from exc
+        _validate_timezone(tz)
 
         _build_apscheduler_trigger(req.trigger_type, req.trigger_config, tz)  # validate
 
@@ -257,16 +259,23 @@ class ScheduledTaskService:
             if req.use_tools is not None:
                 row.use_tools = req.use_tools
 
-            if req.trigger_type is not None or req.trigger_config is not None:
+            trigger_updated = (
+                req.trigger_type is not None
+                or req.trigger_config is not None
+                or req.timezone is not None
+            )
+            if trigger_updated:
                 new_type = req.trigger_type or TriggerType(row.trigger_type)
                 new_cfg = req.trigger_config or dict(row.trigger_config)
                 tz = req.timezone or row.timezone
+                _validate_timezone(tz)
                 _build_apscheduler_trigger(new_type, new_cfg, tz)  # validate
                 row.trigger_type = new_type.value
                 row.trigger_config = new_cfg
-                if req.timezone:
-                    row.timezone = req.timezone
+                row.timezone = tz
                 row.next_run_at = _compute_next_run(new_type, new_cfg, row.timezone)
+                if row.status == TaskStatus.FINISHED.value:
+                    row.status = TaskStatus.ACTIVE.value
 
             row.updated_at = datetime.now(UTC)
             await db.commit()
