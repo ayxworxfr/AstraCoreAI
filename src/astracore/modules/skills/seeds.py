@@ -34,6 +34,11 @@ SKILLS_DIR = Path(__file__).parent / "builtin"
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
+def _is_seed_document(path: Path) -> bool:
+    """过滤 macOS AppleDouble 等非正文文件，避免二进制元数据混入知识库。"""
+    return path.suffix == ".md" and not path.name.startswith("._") and "__MACOSX" not in path.parts
+
+
 # ---------------------------------------------------------------------------
 # 文档种子（向量库）
 # ---------------------------------------------------------------------------
@@ -90,14 +95,18 @@ async def seed_documents(pipeline: object) -> None:
         logger.warning("knowledge_base 目录不存在: %s，跳过种子写入", DOCS_DIR)
         return
 
-    md_files = sorted(DOCS_DIR.rglob("*.md"))
+    md_files = sorted(path for path in DOCS_DIR.rglob("*.md") if _is_seed_document(path))
     if not md_files:
         logger.info("knowledge_base 目录为空，无文档可写入")
         return
 
     success_count = 0
     for path in md_files:
-        document_id, content, metadata = _parse_doc_md(path, DOCS_DIR)
+        try:
+            document_id, content, metadata = _parse_doc_md(path, DOCS_DIR)
+        except UnicodeDecodeError as exc:
+            logger.warning("知识库文档不是 UTF-8 文本，跳过: %s - %s", path, exc)
+            continue
         result = await pipeline.retriever.index_document(
             document_id=document_id,
             text=content,

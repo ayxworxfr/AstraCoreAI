@@ -2,6 +2,9 @@
 .github
 .env
 *.env
+._*
+**/._*
+__MACOSX/
 node_modules
 frontend/node_modules
 __pycache__
