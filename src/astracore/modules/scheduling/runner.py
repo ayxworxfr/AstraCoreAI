@@ -4,7 +4,7 @@ When a trigger fires, APScheduler calls the importable async job function. That 
 
 1. Acquires the global concurrency semaphore (``_RUN_SEMAPHORE``).
 2. Skips if the same task is already running (per-task lock via ``_RUNNING_TASKS``).
-3. Creates a ``ConversationRow`` (title = "task name (datetime)") + ``ChatRunRow``.
+3. Reuses the task conversation, or creates one fallback conversation if it was deleted.
 4. Delegates execution to ``run_pipeline_background`` from the shared executor.
 5. Updates task stats (last_run_id, run_count, error_count, next_run_at).
 6. Marks one-shot date-trigger tasks as finished.
@@ -52,7 +52,7 @@ def init_runner(
 async def _create_trigger_conversation(
     db_url: str, user_id: str, task_name: str, task_id: str
 ) -> str:
-    """Create a new ConversationRow for this trigger; return its id (= session_id)."""
+    """Create a fallback ConversationRow for this task; return its id (= session_id)."""
     session_id = str(uuid4())
     now = datetime.now(UTC)
     ts = now.strftime("%Y-%m-%d %H:%M")
@@ -68,6 +68,21 @@ async def _create_trigger_conversation(
         db.add(row)
         await db.commit()
     return session_id
+
+
+async def _resolve_task_conversation(
+    db_url: str,
+    user_id: str,
+    task_name: str,
+    task_id: str,
+    conversation_id: str | None,
+) -> str:
+    if conversation_id:
+        async with get_session(db_url) as db:
+            row = await db.get(ConversationRow, conversation_id)
+            if row is not None and row.user_id == user_id:
+                return conversation_id
+    return await _create_trigger_conversation(db_url, user_id, task_name, task_id)
 
 
 async def _fire(task_id: str) -> None:
@@ -124,8 +139,8 @@ async def _fire(task_id: str) -> None:
 
     async def _run() -> None:
         async with semaphore:
-            session_id_str = await _create_trigger_conversation(
-                db_url, task.user_id, task.name, task_id
+            session_id_str = await _resolve_task_conversation(
+                db_url, task.user_id, task.name, task_id, task.conversation_id
             )
             session_id = UUID(session_id_str)
             run_row = await create_chat_run_row(

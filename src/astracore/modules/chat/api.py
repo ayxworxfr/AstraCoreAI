@@ -444,9 +444,12 @@ async def _get_active_run_row(session_id: UUID) -> ChatRunRow | None:
                 ChatRunRow.status == "running",
             )
             .order_by(ChatRunRow.created_at.desc())
-            .limit(1)
         )
-        return result.scalar_one_or_none()
+        for row in result.scalars():
+            trigger_source = (row.request or {}).get("trigger_source", "user")
+            if trigger_source == "user":
+                return row
+        return None
 
 
 async def _update_run_row(run_id: str, **patch: Any) -> ChatRunRow | None:

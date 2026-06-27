@@ -581,6 +581,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
 
         ctx = _context or {}
         user_id = str(ctx.get("user_id") or "default")
+        session_id_raw = ctx.get("session_id")
+        conversation_id = str(session_id_raw) if session_id_raw is not None else None
         # 未显式指定时，沿用当前对话的模型 profile；都没有则使用系统默认值
         _raw_profile = ctx.get("profile_id")
         effective_profile: str | None = model_profile or (
@@ -601,6 +603,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                     name=name,
                     timezone=timezone,
                     model_profile=effective_profile,
+                    conversation_id=conversation_id,
                 ),
                 max_per_user=cfg.scheduling.max_tasks_per_user,
             )
