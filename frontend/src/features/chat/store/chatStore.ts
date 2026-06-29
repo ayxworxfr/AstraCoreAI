@@ -872,7 +872,7 @@ export const useChatStore = create<ChatStore>()(
           createdAt: nowIso(),
           attachments: pendingAttachments.length ? [...pendingAttachments] : undefined,
         };
-        const assistantId = uuid();
+        let assistantId = uuid();
         const msgThinkingMode = thinkingMode !== 'off' ? 'deep' : 'normal';
         const assistantMsg: ChatMessage = {
           id: assistantId,
@@ -957,6 +957,17 @@ export const useChatStore = create<ChatStore>()(
               enable_web: enableWeb,
               attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
             });
+
+            // Remap placeholder ID → server run_id before any callbacks are registered.
+            // When loadMessages() replaces messages on completion, React sees the same
+            // key and reuses the DOM node instead of unmounting → no flash.
+            set((s) => {
+              const msgs = (s.messagesByConversation[activeConversationId] ?? []).map((m) =>
+                m.id === assistantId ? { ...m, id: run.run_id } : m,
+              );
+              return { messagesByConversation: { ...s.messagesByConversation, [activeConversationId]: msgs } };
+            });
+            assistantId = run.run_id;
 
             if (get().subscribedRunIds[run.run_id]) {
               runHandledByExistingSubscription = true;

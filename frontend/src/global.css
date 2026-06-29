@@ -160,6 +160,34 @@ textarea::-webkit-scrollbar-thumb:hover {
   background: var(--app-scrollbar-thumb-hover);
 }
 
+.markdown-body .md-code-block,
+.markdown-body .shiki-block pre {
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-scrollbar-thumb) var(--app-scrollbar-track);
+}
+
+.markdown-body .md-code-block::-webkit-scrollbar,
+.markdown-body .shiki-block pre::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.markdown-body .md-code-block::-webkit-scrollbar-track,
+.markdown-body .shiki-block pre::-webkit-scrollbar-track {
+  background: var(--app-scrollbar-track);
+}
+
+.markdown-body .md-code-block::-webkit-scrollbar-thumb,
+.markdown-body .shiki-block pre::-webkit-scrollbar-thumb {
+  background: var(--app-scrollbar-thumb);
+  border-radius: 999px;
+}
+
+.markdown-body .md-code-block::-webkit-scrollbar-thumb:hover,
+.markdown-body .shiki-block pre::-webkit-scrollbar-thumb:hover {
+  background: var(--app-scrollbar-thumb-hover);
+}
+
 
 /* ─── github-markdown-css 适配 ──────────────────────────────────────────────── */
 

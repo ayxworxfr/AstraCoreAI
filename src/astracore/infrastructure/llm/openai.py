@@ -132,6 +132,37 @@ class OpenAIAdapter(LLMAdapter):
         return self._client
 
     @staticmethod
+    def _tools_for_responses(kwargs: dict[str, Any]) -> list[dict[str, Any]] | None:
+        """Convert tool defs to Responses API format (flat, not nested under 'function')."""
+        raw = kwargs.get("tools")
+        if not raw:
+            return None
+        out: list[dict[str, Any]] = []
+        for t in raw:
+            if t.get("type") == "function" and "function" in t:
+                fn = t["function"]
+                out.append(
+                    {
+                        "type": "function",
+                        "name": fn.get("name", ""),
+                        "description": fn.get("description") or "",
+                        "parameters": fn.get("parameters", {}),
+                    }
+                )
+            elif "name" in t and "input_schema" in t:
+                out.append(
+                    {
+                        "type": "function",
+                        "name": t["name"],
+                        "description": t.get("description") or "",
+                        "parameters": t["input_schema"],
+                    }
+                )
+            else:
+                out.append(t)
+        return out
+
+    @staticmethod
     def _tools_for_openai(kwargs: dict[str, Any]) -> list[dict[str, Any]] | None:
         """将 ToolLoop 的 Anthropic 风格工具定义转为 OpenAI tools格式。"""
         raw = kwargs.get("tools")
@@ -213,7 +244,35 @@ class OpenAIAdapter(LLMAdapter):
                 if msg.content:
                     instructions.append(msg.content)
                 continue
+
+            # Tool results → function_call_output items
+            if msg.role == MessageRole.TOOL and msg.has_tool_results():
+                for tr in msg.tool_results:
+                    input_messages.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": tr.tool_call_id,
+                            "output": tr.content,
+                        }
+                    )
+                continue
+
             if msg.role not in {MessageRole.USER, MessageRole.ASSISTANT}:
+                continue
+
+            # Assistant tool calls → function_call items
+            if msg.role == MessageRole.ASSISTANT and msg.has_tool_calls():
+                if msg.content:
+                    input_messages.append({"role": "assistant", "content": msg.content})
+                for tc in msg.tool_calls:
+                    input_messages.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tc.id,
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        }
+                    )
                 continue
 
             attachment_refs: list[dict[str, Any]] | None = (
@@ -305,6 +364,7 @@ class OpenAIAdapter(LLMAdapter):
         max_tokens: int,
         reasoning_effort: str | None = None,
         verbosity: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
         client = self._get_client()
         instructions, input_messages = self._responses_input(messages)
@@ -320,11 +380,34 @@ class OpenAIAdapter(LLMAdapter):
             request_params["reasoning"] = {"effort": reasoning_effort}
         if verbosity:
             request_params["text"] = {"format": {"verbosity": verbosity, "type": "text"}}
+        if tools:
+            request_params["tools"] = tools
 
         response = await client.responses.create(**request_params)
+
+        tool_calls: list[ToolCall] = []
+        for item in getattr(response, "output", []) or []:
+            if getattr(item, "type", "") == "function_call":
+                raw_args = getattr(item, "arguments", "{}") or "{}"
+                try:
+                    arguments = json.loads(raw_args)
+                except json.JSONDecodeError as exc:
+                    try:
+                        arguments = repair_json(getattr(item, "name", ""), raw_args, exc)
+                    except ValueError:
+                        arguments = {}
+                call_id = getattr(item, "call_id", "") or getattr(item, "id", "")
+                tool_calls.append(
+                    ToolCall(
+                        id=call_id,
+                        name=getattr(item, "name", ""),
+                        arguments=arguments,
+                    )
+                )
+
         return LLMResponse(
             content=self._response_text(response),
-            tool_calls=[],
+            tool_calls=tool_calls,
             model=model,
             usage=self._response_usage(response),
         )
@@ -336,6 +419,7 @@ class OpenAIAdapter(LLMAdapter):
         max_tokens: int,
         reasoning_effort: str | None = None,
         verbosity: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         client = self._get_client()
         instructions, input_messages = self._responses_input(messages)
@@ -351,18 +435,46 @@ class OpenAIAdapter(LLMAdapter):
             request_params["reasoning"] = {"effort": reasoning_effort}
         if verbosity:
             request_params["text"] = {"format": {"verbosity": verbosity, "type": "text"}}
+        if tools:
+            request_params["tools"] = tools
 
+        usage: dict[str, int] = {}
         async with client.responses.stream(**request_params) as stream:
             async for event in stream:
-                if getattr(event, "type", "") == "response.output_text.delta":
+                event_type = getattr(event, "type", "")
+                if event_type == "response.output_text.delta":
                     delta = getattr(event, "delta", "")
                     if delta:
+                        yield StreamEvent(event_type=StreamEventType.TEXT_DELTA, content=delta)
+
+                elif event_type == "response.output_item.done":
+                    item = getattr(event, "item", None)
+                    if item and getattr(item, "type", "") == "function_call":
+                        raw_args = getattr(item, "arguments", "{}") or "{}"
+                        try:
+                            arguments = json.loads(raw_args)
+                        except json.JSONDecodeError as exc:
+                            try:
+                                arguments = repair_json(getattr(item, "name", ""), raw_args, exc)
+                            except ValueError:
+                                arguments = {}
+                        call_id = getattr(item, "call_id", "") or getattr(item, "id", "")
                         yield StreamEvent(
-                            event_type=StreamEventType.TEXT_DELTA,
-                            content=delta,
+                            event_type=StreamEventType.TOOL_CALL,
+                            tool_call=ToolCall(
+                                id=call_id,
+                                name=getattr(item, "name", ""),
+                                arguments=arguments,
+                            ),
                         )
 
-        yield StreamEvent(event_type=StreamEventType.DONE)
+            try:
+                final = stream.get_final_response()
+                usage = self._response_usage(final)
+            except Exception:
+                pass
+
+        yield StreamEvent(event_type=StreamEventType.DONE, metadata={"usage": usage})
 
     async def generate(
         self,
@@ -395,6 +507,7 @@ class OpenAIAdapter(LLMAdapter):
                 max_tokens=max_tokens,
                 reasoning_effort=kwargs.get("reasoning_effort"),
                 verbosity=kwargs.get("verbosity"),
+                tools=self._tools_for_responses(kwargs),
             )
 
         converted_messages = self._convert_messages(messages)
@@ -509,6 +622,7 @@ class OpenAIAdapter(LLMAdapter):
                 max_tokens=max_tokens,
                 reasoning_effort=kwargs.get("reasoning_effort"),
                 verbosity=kwargs.get("verbosity"),
+                tools=self._tools_for_responses(kwargs),
             ):
                 yield event
             return

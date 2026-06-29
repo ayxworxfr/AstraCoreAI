@@ -141,7 +141,6 @@ async def execute_run_loop(
     accumulated_content = ""
     thinking_blocks: list[str] = []
     tool_activity: list[dict[str, Any]] = []
-    round_text_buffer: list[str] = []
     in_tool_round = False
     round_count = 0
     total_input_tokens = 0
@@ -157,11 +156,6 @@ async def execute_run_loop(
     async for event in pipeline.stream(ctx, extra_context=extra or None):
         if event.event_type == StreamEventType.DONE:
             if event.metadata.get("source") == "tool_loop":
-                if round_text_buffer:
-                    flushed = "".join(round_text_buffer)
-                    accumulated_content += flushed
-                    _sink("message", {"text": flushed})
-                round_text_buffer = []
                 in_tool_round = False
             else:
                 _u = event.metadata.get("usage", {})
@@ -169,20 +163,9 @@ async def execute_run_loop(
                 total_output_tokens = int(_u.get("output_tokens", 0))
                 total_cache_read_input_tokens = int(_u.get("cache_read_input_tokens", 0))
                 total_cache_creation_input_tokens = int(_u.get("cache_creation_input_tokens", 0))
-                if round_text_buffer:
-                    flushed = "".join(round_text_buffer)
-                    accumulated_content += flushed
-                    _sink("message", {"text": flushed})
                 break
 
         elif event.event_type == StreamEventType.ROUND_START:
-            if round_text_buffer:
-                if not thinking_blocks:
-                    thinking_blocks.append("")
-                flushed = "".join(round_text_buffer)
-                thinking_blocks[-1] += flushed
-                _sink("thinking", {"text": flushed})
-            round_text_buffer = []
             in_tool_round = False
             round_count = int(event.metadata.get("round", round_count + 1))
             thinking_blocks.append("")
@@ -194,17 +177,16 @@ async def execute_run_loop(
                     thinking_blocks.append("")
                 thinking_blocks[-1] += event.content
                 _sink("thinking", {"text": event.content})
-            elif ctx.mode == "normal":
+            else:
+                # Stream immediately regardless of mode; pre-tool deliberation
+                # appears as message text before tool activity (same as ChatGPT).
                 accumulated_content += event.content
                 _sink("message", {"text": event.content})
-            else:
-                round_text_buffer.append(event.content)
 
         elif event.event_type == StreamEventType.THINKING_DELTA and event.content:
             if not thinking_blocks:
                 thinking_blocks.append("")
-                if ctx.mode == "normal":
-                    _sink("thinking_start", {"round": 1})
+                _sink("thinking_start", {"round": 1})
             thinking_blocks[-1] += event.content
             _sink("thinking", {"text": event.content})
 
@@ -218,11 +200,6 @@ async def execute_run_loop(
             if not in_tool_round:
                 if not thinking_blocks:
                     thinking_blocks.append("")
-                if round_text_buffer:
-                    flushed = "".join(round_text_buffer)
-                    thinking_blocks[-1] += flushed
-                    _sink("thinking", {"text": flushed})
-                round_text_buffer = []
                 in_tool_round = True
             if event.tool_call.name == "save_memory":
                 memory_saved_by_tool = True

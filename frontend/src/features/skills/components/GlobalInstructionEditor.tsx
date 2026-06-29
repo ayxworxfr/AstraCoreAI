@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Button, Card, Flex, Form, Input, Typography } from 'antd';
+import { Button, Card, Flex, Form, Input, Typography, message } from 'antd';
 import RagMarkdownEditor from '@/features/rag/components/RagMarkdownEditor';
+import { normalizeError } from '@/shared/services/apiClient';
 import type { UserSettings } from '@/features/skills/types';
 
 type Props = {
@@ -35,6 +36,9 @@ export default function GlobalInstructionEditor({ value, settings, onSave }: Pro
         ai_name: aiName,
         owner_name: ownerName,
       });
+      void message.success('全局设置已保存');
+    } catch (error) {
+      void message.error(normalizeError(error));
     } finally {
       setSaving(false);
     }
@@ -74,7 +78,7 @@ export default function GlobalInstructionEditor({ value, settings, onSave }: Pro
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               追加到每次对话的 System Prompt 末尾，对所有技能生效
             </Typography.Text>
-            <RagMarkdownEditor value={instruction} onChange={setInstruction} height={160} />
+            <RagMarkdownEditor value={instruction} onChange={setInstruction} height={180} />
           </Flex>
         </Form.Item>
       </Form>

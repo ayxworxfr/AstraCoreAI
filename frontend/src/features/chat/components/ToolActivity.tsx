@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Flex, Typography, Collapse, Popover, theme } from 'antd';
-import { CheckOutlined, CloseCircleOutlined, LoadingOutlined } from '@ant-design/icons';
+import { Button, Flex, Typography, Collapse, Popover, Tooltip, theme } from 'antd';
+import { CheckOutlined, CloseCircleOutlined, CopyOutlined, LoadingOutlined } from '@ant-design/icons';
 import type { SubAgentActivity, ToolActivity } from '@/features/chat/types';
 import AppScrollArea from '@/shared/components/AppScrollArea';
 
@@ -10,6 +10,42 @@ function formatDuration(ms: number | undefined): string | null {
   if (ms === undefined) return null;
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function stripExternalDataWrapper(value: string): string {
+  return value
+    .replace(/^\s*<external_data\b[^>]*>\s*/i, '')
+    .replace(/\s*<\/external_data>\s*$/i, '');
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const { token } = theme.useToken();
+
+  const handleCopy = (event: React.MouseEvent<HTMLElement>) => {
+    event.stopPropagation();
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <Tooltip title={copied ? '已复制' : '复制'}>
+      <Button
+        type="text"
+        size="small"
+        icon={copied ? <CheckOutlined style={{ color: token.colorSuccess }} /> : <CopyOutlined />}
+        onClick={handleCopy}
+        style={{
+          width: 22,
+          height: 22,
+          minWidth: 22,
+          color: token.colorTextTertiary,
+        }}
+      />
+    </Tooltip>
+  );
 }
 
 function ToolDetailPopover({ tool }: { tool: ToolActivity }) {
@@ -25,24 +61,36 @@ function ToolDetailPopover({ tool }: { tool: ToolActivity }) {
     fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace',
   };
   const hasInput = tool.input && Object.keys(tool.input).length > 0;
+  const inputText = hasInput ? JSON.stringify(tool.input, null, 2) : '';
+  const resultText = tool.result === undefined ? undefined : stripExternalDataWrapper(tool.result);
+  const sectionTitleStyle: React.CSSProperties = {
+    color: token.colorTextSecondary,
+    fontWeight: 500,
+  };
   return (
     <div style={{ maxWidth: 380, fontSize: 12 }}>
       {hasInput && (
         <div style={{ marginBottom: tool.result !== undefined ? 10 : 0 }}>
-          <div style={{ color: token.colorTextSecondary, marginBottom: 4, fontWeight: 500 }}>输入参数</div>
+          <Flex align="center" justify="space-between" style={{ marginBottom: 4 }}>
+            <div style={sectionTitleStyle}>输入参数</div>
+            <CopyButton text={inputText} />
+          </Flex>
           <AppScrollArea style={{ maxHeight: 160, borderRadius: 4 }}>
-            <pre style={preStyle}>{JSON.stringify(tool.input, null, 2)}</pre>
+            <pre style={preStyle}>{inputText}</pre>
           </AppScrollArea>
         </div>
       )}
-      {tool.result !== undefined && (
+      {resultText !== undefined && (
         <div>
-          <div style={{ color: tool.isError ? token.colorError : token.colorTextSecondary, marginBottom: 4, fontWeight: 500 }}>
-            {tool.isError ? '错误信息' : '返回结果'}
-          </div>
+          <Flex align="center" justify="space-between" style={{ marginBottom: 4 }}>
+            <div style={{ ...sectionTitleStyle, color: tool.isError ? token.colorError : token.colorTextSecondary }}>
+              {tool.isError ? '错误信息' : '返回结果'}
+            </div>
+            <CopyButton text={resultText} />
+          </Flex>
           <AppScrollArea style={{ maxHeight: 160, borderRadius: 4 }}>
             <pre style={{ ...preStyle, color: tool.isError ? token.colorError : undefined }}>
-              {tool.result.length > 600 ? tool.result.slice(0, 600) + '\n…（已截断）' : tool.result}
+              {resultText}
             </pre>
           </AppScrollArea>
         </div>
