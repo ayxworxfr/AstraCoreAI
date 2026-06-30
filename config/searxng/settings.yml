@@ -1,6 +1,18 @@
 # SearXNG minimal configuration for AstraCoreAI.
-# use_default_settings: true 继承官方默认值，只覆盖需要改的字段。
-use_default_settings: true
+# 只继承当前部署环境验证可用的默认引擎，避免不可达/反爬引擎在启动或搜索时反复报错。
+# 可选引擎参考：
+# - bing：优先推荐，英文搜索质量好；当前镜像/地区页面解析为 0 条结果，升级镜像或配置代理后可再试。
+# - baidu：国内可用性较好，当前环境实测可返回结果；英文搜索质量一般。
+# - 360search：国内可用性较好，当前环境实测可返回结果；结果偏中文，质量不如 Bing。
+# - duckduckgo web：隐私友好，国外通用搜索；当前环境容易超时。
+# - qwant：欧洲通用搜索；当前环境容易超时。
+# - yahoo：国外通用搜索；当前环境容易超时。
+# - google / startpage / brave / wikipedia / wikidata：质量或覆盖面好，但当前网络不可达、超时或启动初始化失败。
+# 修改时同步替换 use_default_settings.engines.keep_only 和下方 engines 列表。
+use_default_settings:
+  engines:
+    keep_only:
+      - baidu
 
 general:
   instance_name: "AstraCore Search"
@@ -20,35 +32,6 @@ search:
     - json
 
 engines:
-  # DDG 对服务器 IP 触发 CAPTCHA，禁用
-  - name: duckduckgo
-    disabled: true
-  - name: duckduckgo definitions
-    disabled: true
-
-  # news 专用引擎在服务器 IP 上均触发 CAPTCHA 或返回空文档，全部禁用。
-  # 近期新闻改用通用引擎 + time_range 参数获取。
-  - name: bing news
-    disabled: true
-  - name: startpage
-    disabled: true
-  - name: startpage news
-    disabled: true
-  - name: google news
-    disabled: true
-  - name: yahoo news
-    disabled: true
-
-  # 国内网络不可达，禁用
-  - name: brave
-    disabled: true
-  - name: wikipedia
-    disabled: true
-  - name: mojeek
-    disabled: true
-
-  # 国内可用引擎
-  - name: bing
-    disabled: false
+  # Bing 在当前 SearXNG 镜像中返回 0 条结果，改用 Baidu。
   - name: baidu
     disabled: false

@@ -1,0 +1,1 @@
+# server.limiter=false 时不启用限速；保留文件避免 SearXNG 启动时报告缺失配置。

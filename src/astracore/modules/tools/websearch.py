@@ -8,6 +8,12 @@ import httpx
 
 from astracore.sdk.config import SearXNGSearchConfig, TavilySearchConfig, WebSearchConfig
 
+_SEARXNG_HEADERS = {
+    # SearXNG 的 botdetection 需要看到调用方 IP；Docker 内部直连没有反代头。
+    "X-Forwarded-For": "127.0.0.1",
+    "X-Real-IP": "127.0.0.1",
+}
+
 
 async def _tavily(query: str, max_results: int, cfg: TavilySearchConfig) -> str:
     api_key = os.getenv(cfg.api_key_env, "").strip()
@@ -60,6 +66,7 @@ async def _searxng(
         resp = await client.get(
             f"{cfg.base_url.rstrip('/')}/search",
             params=params,
+            headers=_SEARXNG_HEADERS,
         )
         resp.raise_for_status()
         data = resp.json()
