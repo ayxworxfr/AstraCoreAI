@@ -1,9 +1,7 @@
 """内置工具集合，注册到 NativeToolAdapter 供工具循环使用。"""
 
 import ast
-import asyncio
 import math
-import os
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -15,6 +13,11 @@ from astracore.modules.tools.ports.tool import ToolAdapter, ToolParameter, ToolP
 from astracore.sdk.config import AstraCoreConfig
 from astracore.shared.domain.hitl import HITLOption, PendingQuestion
 from astracore.shared.policy.engine import PolicyEngine
+
+# 工具单次输出字符上限（防止多轮调用堆叠后 context 爆炸）
+_WEB_SEARCH_MAX_OUTPUT_CHARS = 15_000
+_FETCH_PAGE_MAX_OUTPUT_CHARS = 15_000
+_KNOWLEDGE_BASE_MAX_OUTPUT_CHARS = 8_000
 
 # 安全数学求值白名单
 _SAFE_MATH: dict[str, Any] = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
@@ -54,57 +57,34 @@ def _calculate(expression: str) -> str:
         return f"计算失败：{e}"
 
 
-async def _tavily_search(query: str, max_results: int, api_key: str) -> str:
-    import httpx  # noqa: PLC0415
+async def _web_search(
+    query: str,
+    max_results: int = 5,
+    categories: str = "",
+    language: str = "",
+) -> str:
+    from astracore.modules.tools.websearch import search  # noqa: PLC0415
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": api_key,
-                "query": query,
-                "search_depth": "basic",
-                "max_results": max_results,
-                "include_answer": True,
-            },
-        )
-        data = resp.json()
-    parts: list[str] = []
-    if data.get("answer"):
-        parts.append(f"摘要：{data['answer']}")
-    for r in data.get("results", []):
-        parts.append(
-            f"标题：{r.get('title', '无标题')}\n"
-            f"内容：{r.get('content', '')}\n"
-            f"URL：{r.get('url', '')}"
-        )
-    return "\n\n---\n\n".join(parts) if parts else "未找到相关搜索结果"
-
-
-async def _duckduckgo_search(query: str, max_results: int) -> str:
-    from ddgs import DDGS  # noqa: PLC0415
-
-    def _sync() -> list[dict[str, Any]]:
-        return list(DDGS().text(query, max_results=max_results))
-
-    results = await asyncio.to_thread(_sync)
-    if not results:
-        return "未找到相关搜索结果"
-    parts = [
-        f"标题：{r.get('title', '无标题')}\n内容：{r.get('body', '')}\nURL：{r.get('href', '')}"
-        for r in results
-    ]
-    return "\n\n---\n\n".join(parts)
-
-
-async def _web_search(query: str, max_results: int = 5) -> str:
-    api_key = os.getenv("TAVILY_API_KEY", "").strip()
+    cfg = AstraCoreConfig()
     try:
-        if api_key:
-            return await _tavily_search(query, max_results, api_key)
-        return await _duckduckgo_search(query, max_results)
+        return await search(
+            query,
+            max_results,
+            cfg.web_search,
+            categories=categories,
+            language=language,
+        )
     except Exception as e:
-        return f"搜索失败：{e}"
+        return f"搜索失败（{cfg.web_search.provider}）：{e}"
+
+
+async def _fetch_page(url: str) -> str:
+    from astracore.modules.tools.websearch import fetch_page  # noqa: PLC0415
+
+    try:
+        return await fetch_page(url)
+    except Exception as e:
+        return f"页面获取失败：{e}"
 
 
 def build_tool_adapter(db_url: str = "") -> ToolAdapter:
@@ -376,34 +356,82 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         ],
         # 知识库片段量级一般 5-10 条 × 1-2 KB，单次 8000 字符足够；
         # 防止极端长文档把 context 撑爆触发 LLM API 流式超时。
-        metadata={"max_output_chars": 8_000},
+        metadata={"max_output_chars": _KNOWLEDGE_BASE_MAX_OUTPUT_CHARS},
     )
+
+    _ws_cfg = AstraCoreConfig().web_search
+    _ws_description = (
+        "在互联网上搜索实时信息。当需要查询最新新闻、当前事件、"
+        "实时数据或训练数据截止日期之后的信息时使用。"
+        "在进行网络搜索的时候检查当前年份是否正确。"
+    )
+    _ws_params: list[ToolParameter] = [
+        ToolParameter(
+            name="query",
+            type=ToolParameterType.STRING,
+            description="搜索关键词或问题",
+            required=True,
+        ),
+        ToolParameter(
+            name="max_results",
+            type=ToolParameterType.NUMBER,
+            description="返回结果数量，默认 5",
+            required=False,
+        ),
+    ]
+    if _ws_cfg.provider == "searxng":
+        _ws_description += "\n根据问题类型选择合适的 categories / language 以提升结果质量。"
+        _ws_params += [
+            ToolParameter(
+                name="categories",
+                type=ToolParameterType.STRING,
+                description=(
+                    "搜索分类（选填）："
+                    "general（通用网页，默认）/ science（学术论文）/ "
+                    "it（编程与技术）/ social_media（社交媒体讨论）。"
+                    "查技术文档用 it，查学术内容用 science。"
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="language",
+                type=ToolParameterType.STRING,
+                description=(
+                    "语言偏好（选填）：zh / en / ja 等 BCP-47 语言代码。"
+                    "留空使用实例默认设置。用户明确要求某语言结果时填写。"
+                ),
+                required=False,
+            ),
+        ]
 
     native.register_tool(
         name="web_search",
         func=_web_search,
+        description=_ws_description,
+        parameters=_ws_params,
+        # WebSearch 单条 result 平均 500-1500 字符 × 5 条 ≈ 5 KB；
+        # 15000 字符上限保留充足摘要，10 次堆叠 ≈ 150K，仍可控。
+        metadata={"max_output_chars": _WEB_SEARCH_MAX_OUTPUT_CHARS},
+    )
+
+    native.register_tool(
+        name="fetch_page",
+        func=_fetch_page,
         description=(
-            "在互联网上搜索实时信息。当需要查询最新新闻、当前事件、"
-            "实时数据或训练数据截止日期之后的信息时使用。"
-            "在进行网络搜索的时候检查当前年份是否正确。"
+            "获取指定 URL 的网页正文内容。"
+            "通常在 web_search 获取搜索结果列表后，对需要深入阅读的页面调用此工具以获取完整内容。"
         ),
         parameters=[
             ToolParameter(
-                name="query",
+                name="url",
                 type=ToolParameterType.STRING,
-                description="搜索关键词或问题",
+                description="要获取的网页 URL",
                 required=True,
             ),
-            ToolParameter(
-                name="max_results",
-                type=ToolParameterType.NUMBER,
-                description="返回结果数量，默认 5",
-                required=False,
-            ),
         ],
-        # WebSearch 单条 result 平均 500-1500 字符 × 5 条 ≈ 5 KB；
-        # 8000 字符上限避免多轮联网搜索堆叠后 context 爆炸（10 次 × 8K = 80K，可控）。
-        metadata={"max_output_chars": 8_000},
+        # 单页正文通常 5-30 KB，15000 字符约覆盖 2-3 屏主体内容；
+        # 避免超长页面（法律条文、长文文章）撑爆 context。
+        metadata={"max_output_chars": _FETCH_PAGE_MAX_OUTPUT_CHARS},
     )
 
     native.register_tool(

@@ -1,0 +1,54 @@
+# SearXNG minimal configuration for AstraCoreAI.
+# use_default_settings: true 继承官方默认值，只覆盖需要改的字段。
+use_default_settings: true
+
+general:
+  instance_name: "AstraCore Search"
+  debug: false
+
+server:
+  # 生产部署前务必替换为强随机字符串
+  secret_key: "change-me-in-production"
+  # 内部使用，关闭限速
+  limiter: false
+  public_instance: false
+
+search:
+  # 必须开启 json 格式，否则 /search?format=json 返回 403
+  formats:
+    - html
+    - json
+
+engines:
+  # DDG 对服务器 IP 触发 CAPTCHA，禁用
+  - name: duckduckgo
+    disabled: true
+  - name: duckduckgo definitions
+    disabled: true
+
+  # news 专用引擎在服务器 IP 上均触发 CAPTCHA 或返回空文档，全部禁用。
+  # 近期新闻改用通用引擎 + time_range 参数获取。
+  - name: bing news
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: startpage news
+    disabled: true
+  - name: google news
+    disabled: true
+  - name: yahoo news
+    disabled: true
+
+  # 国内网络不可达，禁用
+  - name: brave
+    disabled: true
+  - name: wikipedia
+    disabled: true
+  - name: mojeek
+    disabled: true
+
+  # 国内可用引擎
+  - name: bing
+    disabled: false
+  - name: baidu
+    disabled: false

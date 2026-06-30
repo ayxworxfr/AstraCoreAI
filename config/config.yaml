@@ -123,5 +123,13 @@ scheduling:
   misfire_grace_seconds: 300
   max_concurrent_runs: 5
 
+web_search:
+  provider: searxng           # tavily | searxng | duckduckgo
+  tavily:
+    api_key_env: TAVILY_API_KEY  # .env 中保存真实 key
+  searxng:
+    base_url: http://127.0.0.1:8080
+    engines: ""                  # 留空 = 实例默认引擎；可填 "google,bing"
+
 debug:
   log_prompts: true

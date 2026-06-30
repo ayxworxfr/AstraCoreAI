@@ -5,8 +5,15 @@ FROM node:20-slim AS frontend-builder
 
 WORKDIR /frontend
 
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --prefer-offline
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --include=dev --prefer-offline \
+    --registry="${NPM_REGISTRY}" \
+    --fetch-retries=5 \
+    --fetch-retry-mintimeout=20000 \
+    --fetch-retry-maxtimeout=120000
 
 COPY frontend/ ./
 RUN npm run build

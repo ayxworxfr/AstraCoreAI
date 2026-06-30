@@ -94,6 +94,15 @@ skills:
   #  - D:/my-skills
   #  - ~/shared-skills
 
+# 网络搜索配置
+web_search:
+  provider: duckduckgo           # tavily | searxng | duckduckgo（默认 duckduckgo，无需 API key）
+  tavily:
+    api_key_env: TAVILY_API_KEY  # 指向 .env 中的 Tavily API key 环境变量名
+  searxng:
+    base_url: http://localhost:8080  # 自托管或公共 SearXNG 实例地址
+    engines: ""                      # 留空 = 实例默认引擎；可填 "google,bing" 等
+
 # 开发者调试配置
 debug:
   log_prompts: false         # true 时在每次 LLM 调用前把完整提示词（system prompt + 消息列表）打印到 stdout

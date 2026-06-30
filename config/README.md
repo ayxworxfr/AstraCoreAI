@@ -234,6 +234,35 @@ hitl:
 - `require_memory_promotion_approval`：AI 判断某条 session 记忆值得长期保留时，会先创建 pending 状态等待用户在记忆管理页确认，而非直接晋升。
 - `inline_question_timeout`：仅对 `ask_user` 工具的主动询问生效；工具审批和记忆晋升使用前端异步确认，不受此超时约束。
 
+## 网络搜索配置（web_search）
+
+`web_search` 控制 `web_search` 内置工具使用的搜索 provider：
+
+```yaml
+web_search:
+  provider: duckduckgo           # tavily | searxng | duckduckgo
+  tavily:
+    api_key_env: TAVILY_API_KEY
+  searxng:
+    base_url: http://localhost:8080
+    engines: ""
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `provider` | str | `duckduckgo` | 激活的搜索 provider，三选一 |
+| `tavily.api_key_env` | str | `TAVILY_API_KEY` | Tavily API key 所在的环境变量名，真实 key 写在 `.env` |
+| `searxng.base_url` | str | `http://localhost:8080` | SearXNG 实例地址（自托管或公共实例） |
+| `searxng.engines` | str | `""` | 传给 SearXNG 的引擎列表（逗号分隔），留空使用实例默认配置 |
+
+**Provider 选择建议：**
+
+- `duckduckgo`：无需任何 key，开箱即用，搜索质量一般。
+- `tavily`：需 `TAVILY_API_KEY`，AI 优化结果，质量最高。
+- `searxng`：需自托管或使用公共实例，聚合 70+ 搜索引擎，质量好，完全免费。
+
+配置的 provider 发生错误时快速失败，直接返回错误消息，不自动切换到其他 provider。
+
 ## 调试配置（debug）
 
 ```yaml

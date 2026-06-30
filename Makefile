@@ -17,6 +17,7 @@ HATCH_ENV_VARS := HATCH_DATA_DIR="$(CURDIR)/.hatch/data" HATCH_CACHE_DIR="$(CURD
 HATCH  := $(HATCH_ENV_VARS) $(PYTHON) -m hatch
 HF_OFFLINE_ENV_VARS := HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 DOCKER_PIP_INDEX_URL ?= https://pypi.tuna.tsinghua.edu.cn/simple
+DOCKER_NPM_REGISTRY ?= https://registry.npmjs.org/
 
 ##@ 帮助信息
 
@@ -108,7 +109,7 @@ docker-cache-model: ## 预下载 ChromaDB 模型到 docker/chroma_model/（构�
 
 docker-build: ## 构建 Docker 镜像（自动预下载模型缓存）
 	@echo "$(GREEN)🐳 构建 Docker 镜像...$(NC)"
-	@PIP_INDEX_URL="$(DOCKER_PIP_INDEX_URL)" docker compose build
+	@PIP_INDEX_URL="$(DOCKER_PIP_INDEX_URL)" NPM_REGISTRY="$(DOCKER_NPM_REGISTRY)" docker compose build
 
 docker-up: ## 启动容器服务（后台运行）
 	@echo "$(GREEN)🚀 启动容器服务...$(NC)"

@@ -8,11 +8,27 @@ services:
       timeout: 3s
       retries: 5
 
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      SEARXNG_BASE_URL: "http://127.0.0.1:8080/"
+    volumes:
+      - ./config/searxng:/etc/searxng:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   app:
     build:
       context: .
       args:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -24,6 +40,8 @@ services:
       - astracore_data:/app/data
     depends_on:
       redis:
+        condition: service_healthy
+      searxng:
         condition: service_healthy
 
 volumes:

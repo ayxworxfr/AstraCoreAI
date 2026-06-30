@@ -230,6 +230,32 @@ class PolicyConfig(BaseModel):
     compaction: CompactionRule = Field(default_factory=CompactionRule)
 
 
+class TavilySearchConfig(BaseModel):
+    """Tavily search provider configuration."""
+
+    api_key_env: str = "TAVILY_API_KEY"
+    """Environment variable name that holds the Tavily API key."""
+
+
+class SearXNGSearchConfig(BaseModel):
+    """SearXNG search provider configuration."""
+
+    base_url: str = "http://localhost:8080"
+    """Base URL of the SearXNG instance (self-hosted or public)."""
+    engines: str = ""
+    """Comma-separated engine list forwarded to SearXNG (e.g. 'google,bing').
+    Empty string defers to the instance's default engine selection."""
+
+
+class WebSearchConfig(BaseModel):
+    """Web search tool configuration."""
+
+    provider: Literal["tavily", "searxng", "duckduckgo"] = "duckduckgo"
+    """Active search provider. Must be one of: tavily, searxng, duckduckgo."""
+    tavily: TavilySearchConfig = Field(default_factory=TavilySearchConfig)
+    searxng: SearXNGSearchConfig = Field(default_factory=SearXNGSearchConfig)
+
+
 class DebugConfig(BaseModel):
     """Developer debug configuration."""
 
@@ -306,6 +332,7 @@ class AstraCoreConfig(BaseModel):
     hitl: HITLConfig = Field(default_factory=HITLConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     scheduling: SchedulingConfig = Field(default_factory=SchedulingConfig)
+    web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
     debug: DebugConfig = Field(default_factory=DebugConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     """Global policy defaults (retry / timeout / compaction). retry / timeout 可在

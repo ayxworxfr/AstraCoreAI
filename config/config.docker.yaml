@@ -40,6 +40,15 @@ storage:
 skills:
   extra_dirs: []
 
+# 网络搜索配置
+web_search:
+  provider: searxng           # tavily | searxng | duckduckgo
+  tavily:
+    api_key_env: TAVILY_API_KEY
+  searxng:
+    base_url: http://searxng:8080  # Docker Compose 内部服务名
+    engines: ""
+
 # 开发者调试配置
 debug:
   log_prompts: false
