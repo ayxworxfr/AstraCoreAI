@@ -3,6 +3,7 @@ import { Button, Flex, Typography, Collapse, Popover, Tooltip, theme } from 'ant
 import { CheckOutlined, CloseCircleOutlined, CopyOutlined, LoadingOutlined } from '@ant-design/icons';
 import type { SubAgentActivity, ToolActivity } from '@/features/chat/types';
 import AppScrollArea from '@/shared/components/AppScrollArea';
+import { copyText } from '@/shared/utils/clipboard';
 
 const TOOL_BADGE_VISIBLE = 3;
 
@@ -24,7 +25,8 @@ function CopyButton({ text }: { text: string }) {
 
   const handleCopy = (event: React.MouseEvent<HTMLElement>) => {
     event.stopPropagation();
-    void navigator.clipboard.writeText(text).then(() => {
+    void copyText(text).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });

@@ -15,6 +15,7 @@ import type { ChatMessage } from '@/features/chat/types';
 import { downloadAttachment } from '@/features/attachments/attachmentService';
 import { useChatStore } from '@/features/chat/store/chatStore';
 import { useSkillStore } from '@/features/skills/store/skillStore';
+import { copyText } from '@/shared/utils/clipboard';
 import { formatAppMessageTime } from '@/shared/utils/time';
 import { formatBytes } from '@/shared/utils/format';
 import { TTSButton } from '@/features/tts/TTSButton';
@@ -37,7 +38,8 @@ function MessageActions({
   const { token } = theme.useToken();
 
   const handleCopy = () => {
-    void navigator.clipboard.writeText(message.content).then(() => {
+    void copyText(message.content).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });

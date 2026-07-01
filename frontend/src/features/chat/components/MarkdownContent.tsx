@@ -12,6 +12,7 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { useTypewriter } from '@/shared/hooks/useTypewriter';
+import { copyText } from '@/shared/utils/clipboard';
 import { getShikiHighlighter, patchStreamingMarkdown, SUPPORTED_SHIKI_LANGS } from '@/shared/utils/markdown';
 
 /** 向下传递"当前气泡是否正在流式输出"，用于控制代码块的 shiki 高亮时机 */
@@ -24,7 +25,8 @@ function CopyCodeButton({ code }: { code: string }) {
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
-    void navigator.clipboard.writeText(code).then(() => {
+    void copyText(code).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
