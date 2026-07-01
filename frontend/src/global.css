@@ -279,10 +279,32 @@ html[data-theme='dark'] .markdown-body .footnotes {
 
 /* ─── 代码块 fallback（流式期间 / shiki 尚未就绪）──────────────────────────── */
 
+.markdown-body .md-code-shell {
+  position: relative;
+}
+
+.markdown-body .md-code-copy-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.markdown-body .md-code-shell:hover .md-code-copy-button,
+.markdown-body .md-code-copy-button:focus-visible {
+  opacity: 0.94;
+  transform: translateY(0);
+}
+
 /* 加 .markdown-body 前缀使优先级（0,2,0）高于 github-markdown-css 的 pre（0,1,1）*/
 .markdown-body .md-code-block {
   margin: 10px 0;
-  padding: 14px 16px;
+  padding: 14px 76px 14px 16px;
   border-radius: 8px;
   overflow: auto;
   font-family: ui-monospace, 'SF Mono', Consolas, 'Cascadia Code', monospace;
@@ -315,7 +337,7 @@ html[data-theme='dark'] .markdown-body .md-code-block {
 /* shiki 在 <pre> 上设置了 background-color 内联样式，这里只补边距和字体 */
 .markdown-body .shiki-block pre {
   margin: 0;
-  padding: 14px 16px;
+  padding: 14px 76px 14px 16px;
   overflow: auto;
   font-family: ui-monospace, 'SF Mono', Consolas, 'Cascadia Code', monospace;
   font-size: 13px;

@@ -60,7 +60,8 @@ DO NOT USE for OpenClaw 运维（→ openclaw-manager）或纯数据分析（→
 
 | 意图 | 正确 Skill | 排除 Skill |
 |---|---|---|
-| 写/改/调试代码 | programmer | — |
+| 写/改/调试代码 | programmer | code-studio（工作流命令）|
+| 项目初始化/开发计划/工作流 | code-studio | programmer（临时代码问题）|
 | 写文章/润色/摘要 | writer | novel-writer（长篇小说）、storyteller（叙事讲解） |
 | 写长篇章节连载 | novel-writer | writer、storyteller |
 | 知识/历史/概念叙事讲解 | storyteller | writer（功能性写作）、novel-writer（连载） |

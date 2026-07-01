@@ -6,6 +6,8 @@ import {
   useState,
   type ComponentPropsWithoutRef,
 } from 'react';
+import { Button, Tooltip } from 'antd';
+import { CheckOutlined, CopyOutlined } from '@ant-design/icons';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
@@ -14,6 +16,35 @@ import { getShikiHighlighter, patchStreamingMarkdown, SUPPORTED_SHIKI_LANGS } fr
 
 /** 向下传递"当前气泡是否正在流式输出"，用于控制代码块的 shiki 高亮时机 */
 const StreamingContext = createContext(false);
+
+// ─── 代码块复制按钮 ─────────────────────────────────────────────────────────────
+
+function CopyCodeButton({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    void navigator.clipboard.writeText(code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <Tooltip title={copied ? '已复制' : '复制代码'}>
+      <Button
+        className="md-code-copy-button"
+        type="text"
+        size="small"
+        icon={copied ? <CheckOutlined /> : <CopyOutlined />}
+        onClick={handleCopy}
+        aria-label={copied ? '已复制代码' : '复制代码'}
+      >
+        {copied ? '已复制' : '复制'}
+      </Button>
+    </Tooltip>
+  );
+}
 
 // ─── 块级代码 ─────────────────────────────────────────────────────────────────
 
@@ -55,16 +86,17 @@ function CodeBlock({ children, className }: ComponentPropsWithoutRef<'code'>) {
     };
   }, [code, lang, isStreaming, appTheme]);
 
-  if (html) {
-    // shiki 输出带内联样式的完整 HTML，背景色由主题决定，是安全的
-    return <div className="shiki-block" dangerouslySetInnerHTML={{ __html: html }} />;
-  }
-
-  // 流式期间或 shiki 尚未就绪时的纯文本 fallback
   return (
-    <pre className="md-code-block">
-      <code>{code}</code>
-    </pre>
+    <div className="md-code-shell">
+      {html ? (
+        <div className="shiki-block" dangerouslySetInnerHTML={{ __html: html }} />
+      ) : (
+        <pre className="md-code-block">
+          <code>{code}</code>
+        </pre>
+      )}
+      {!isStreaming && <CopyCodeButton code={code} />}
+    </div>
   );
 }
 
