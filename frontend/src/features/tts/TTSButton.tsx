@@ -3,7 +3,7 @@ import { Button, Flex, Popover, Select, Slider, Tooltip, Typography } from 'antd
 import { useTTS } from './useTTS';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
 import { stripMarkdown } from './markdownStripper';
-import { EDGE_TTS_VOICES } from './voiceRegistry';
+import { EDGE_TTS_VOICES, resolveVoiceId } from './voiceRegistry';
 
 function TTSSettingsPanel() {
   const { tts, setTTS } = useSettingsStore();
@@ -21,7 +21,7 @@ function TTSSettingsPanel() {
           size="small"
           placeholder="晓晓（默认）"
           allowClear
-          value={tts.voiceName ?? undefined}
+          value={resolveVoiceId(tts.voiceName)}
           onChange={(v) => setTTS({ voiceName: v ?? null })}
           options={voiceOptions}
         />

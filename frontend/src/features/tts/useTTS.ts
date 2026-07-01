@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useTTSStore } from './ttsStore';
 import { useSettingsStore } from '@/features/settings/store/settingsStore';
-import { DEFAULT_VOICE_ID } from './voiceRegistry';
+import { resolveVoiceId } from './voiceRegistry';
 import { getAuthHeaders } from '@/shared/services/apiClient';
 import type { TTSStatus } from './ttsStore';
 
@@ -66,7 +66,7 @@ export function useTTS(messageId: string, text: string): UseTTSReturn {
     cleanup();
 
     const { tts } = useSettingsStore.getState();
-    const voice = tts.voiceName ?? DEFAULT_VOICE_ID;
+    const voice = resolveVoiceId(tts.voiceName);
     const { rate, pitch } = tts;
     const truncatedText = text.slice(0, 8000);
     const ab = new AbortController();
