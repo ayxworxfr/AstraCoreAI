@@ -69,12 +69,12 @@ metadata:
 
 | 禁止 | 替代 |
 |---|---|
-| `/plan` 时未检查 PROJECT.md 就生成计划 | 先读 `.claude/astra/PROJECT.md`，不存在则阻断提示先 `/init` |
-| `/build` 时未确认 plan `status` 就开始执行 | 读取 plan 文件 `status` 字段，非 `confirmed` 则阻断 |
+| `/plan` 时 PROJECT.md 缺失就停下甩锅 | 自动执行 /init 补齐 PROJECT.md，再继续 /plan |
+| `/build` 时 plan 缺失就停下甩锅 | 自动询问任务描述，执行 /plan，再继续 /build |
+| `/build` 时 plan 是 draft 就停下甩锅 | 展示草稿，当场请用户确认，确认后继续 |
 | `/explore` 时超范围读取文件（>15个未经确认） | 列出计划读取的文件请用户确认后再读 |
 | 执行中遇到报错继续下一步 | 立即停，在 plan 文件记录错误位置，等用户指令 |
 | 文档格式自由发挥 | 严格按各 reference 中的模板格式生成文档 |
-| "应该没问题" / "理论上可行" | 给出实际可执行的验证命令和预期输出 |
 
 ---
 

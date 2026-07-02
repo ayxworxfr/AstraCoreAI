@@ -742,29 +742,44 @@ class ToolLoopUseCase:
             # tool_call_id → error message：JSON 解析失败的工具调用，跳过实际执行
             parse_error_results: dict[str, str] = {}
             assistant_metadata: dict[str, Any] = {}
+            _llm_completed = False
 
-            async for event in self.llm.generate_stream(
-                messages=injected_messages,
-                model=model,
-                tools=tools_for_llm,
-                **llm_kwargs,
-            ):
-                if event.event_type == StreamEventType.TEXT_DELTA and event.content:
-                    accumulated_content += event.content
-                elif event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
-                    accumulated_tool_calls.append(event.tool_call)
-                elif event.event_type == StreamEventType.TOOL_CALL_ERROR and event.tool_call:
-                    # 参数 JSON 无法修复：仍将 tool_call 写入 assistant 消息保持协议完整性，
-                    # 工具执行阶段会直接注入 is_error=True 的结果，LLM 下一轮可自行重试。
-                    accumulated_tool_calls.append(event.tool_call)
-                    parse_error_results[event.tool_call.id] = (
-                        event.error or "工具参数 JSON 解析失败，请重新调用"
+            try:
+                async for event in self.llm.generate_stream(
+                    messages=injected_messages,
+                    model=model,
+                    tools=tools_for_llm,
+                    **llm_kwargs,
+                ):
+                    if event.event_type == StreamEventType.TEXT_DELTA and event.content:
+                        accumulated_content += event.content
+                    elif event.event_type == StreamEventType.TOOL_CALL and event.tool_call:
+                        accumulated_tool_calls.append(event.tool_call)
+                    elif event.event_type == StreamEventType.TOOL_CALL_ERROR and event.tool_call:
+                        # 参数 JSON 无法修复：仍将 tool_call 写入 assistant 消息保持协议完整性，
+                        # 工具执行阶段会直接注入 is_error=True 的结果，LLM 下一轮可自行重试。
+                        accumulated_tool_calls.append(event.tool_call)
+                        parse_error_results[event.tool_call.id] = (
+                            event.error or "工具参数 JSON 解析失败，请重新调用"
+                        )
+                    elif event.event_type == StreamEventType.DONE:
+                        raw_blocks = event.metadata.get(self._ANTHROPIC_BLOCKS_KEY)
+                        if isinstance(raw_blocks, list) and raw_blocks:
+                            assistant_metadata[self._ANTHROPIC_BLOCKS_KEY] = raw_blocks
+                    yield event
+                _llm_completed = True
+            finally:
+                # 流式中断时（连接断开、请求取消等）保存已生成的部分回答，
+                # 避免中断导致本轮已累积内容完全丢失。
+                if not _llm_completed and accumulated_content.strip():
+                    session.add_message(
+                        Message(
+                            role=MessageRole.ASSISTANT,
+                            content=accumulated_content,
+                            tool_calls=accumulated_tool_calls,
+                            metadata=assistant_metadata,
+                        )
                     )
-                elif event.event_type == StreamEventType.DONE:
-                    raw_blocks = event.metadata.get(self._ANTHROPIC_BLOCKS_KEY)
-                    if isinstance(raw_blocks, list) and raw_blocks:
-                        assistant_metadata[self._ANTHROPIC_BLOCKS_KEY] = raw_blocks
-                yield event
 
             llm_duration_ms = int((time.monotonic() - round_start_time) * 1000)
             await self._fire_after_llm(
@@ -828,16 +843,29 @@ class ToolLoopUseCase:
             yield StreamEvent(event_type=StreamEventType.DONE, metadata={"source": "tool_loop"})
             msgs = self._build_closing_messages(session.get_messages())
             closing_content = ""
-            async for event in self.llm.generate_stream(
-                messages=msgs, model=model, tools=None, **llm_kwargs
-            ):
-                if event.event_type == StreamEventType.TEXT_DELTA and event.content:
-                    closing_content += event.content
-                yield event
-            session.add_message(
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content=closing_content or "工具执行完成。",
-                    tool_calls=[],
+            _closing_completed = False
+            try:
+                async for event in self.llm.generate_stream(
+                    messages=msgs, model=model, tools=None, **llm_kwargs
+                ):
+                    if event.event_type == StreamEventType.TEXT_DELTA and event.content:
+                        closing_content += event.content
+                    yield event
+                _closing_completed = True
+            finally:
+                if not _closing_completed and closing_content.strip():
+                    session.add_message(
+                        Message(
+                            role=MessageRole.ASSISTANT,
+                            content=closing_content,
+                            tool_calls=[],
+                        )
+                    )
+            if _closing_completed:
+                session.add_message(
+                    Message(
+                        role=MessageRole.ASSISTANT,
+                        content=closing_content or "工具执行完成。",
+                        tool_calls=[],
+                    )
                 )
-            )

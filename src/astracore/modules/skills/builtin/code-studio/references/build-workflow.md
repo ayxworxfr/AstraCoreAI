@@ -4,22 +4,20 @@
 
 ---
 
-## 检查门（执行任何步骤前，两项必须全部通过）
+## 前置处理
 
-**检查门 1**：定位 plan 文件
+**定位 plan 文件**：
 
 - 用户指定文件名（如 `/build add-user-auth`）→ 读取 `.claude/astra/plans/*add-user-auth*.md`
 - 未指定 → 读取 `.claude/astra/plans/` 下**最近修改**的 `.md` 文件
-- 文件**不存在** → 阻断，输出：`⚠️ 未找到 plan 文件，请先运行 /plan <任务描述> 制定开发计划。`
+- 文件**不存在** → **自动询问任务描述，执行 /plan 工作流生成 plan**，确认后继续执行 /build
 
-**检查门 2**：验证 plan 状态
+**处理 plan 状态**：
 
-- 读取 plan 文件顶部 `status` 字段
-- `status: confirmed` 或 `status: in-progress` → 通过
-- 其他值（`draft` / `done` / 缺失）→ 阻断，说明原因：
-  - `draft`：计划尚未确认，提示用户先确认 plan
-  - `done`：计划已完成，询问"是否重新执行？"
-  - 缺失：文件格式错误，展示文件内容让用户核查
+- `confirmed` 或 `in-progress` → 继续
+- `draft` → 展示草稿内容，**直接在对话中请用户确认**，确认后将 status 改为 `confirmed` 再继续，不要求用户重新输入 `/plan`
+- `done` → 展示已完成摘要，询问"是否重新执行？"，用户确认后将 status 改回 `confirmed` 再执行
+- 缺失 status 字段 → 视为 `draft` 处理
 
 ---
 

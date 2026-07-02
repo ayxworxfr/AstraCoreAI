@@ -1,23 +1,22 @@
 import { useState, useEffect } from 'react';
-import { Avatar, Button, Flex, Tooltip, Typography, theme } from 'antd';
+import { Avatar, Button, Flex, Tooltip, theme } from 'antd';
 import { Bubble } from '@ant-design/x';
 import {
   CheckOutlined,
   CopyOutlined,
   DeleteOutlined,
-  FilePdfOutlined,
-  PictureOutlined,
   RobotOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import type { AttachmentPreview } from '@/features/attachments/types';
 import type { ChatMessage } from '@/features/chat/types';
 import { downloadAttachment } from '@/features/attachments/attachmentService';
+import AttachmentPreviewCard from '@/features/attachments/components/AttachmentPreviewCard';
+import ImagePreviewModal from '@/features/attachments/components/ImagePreviewModal';
 import { useChatStore } from '@/features/chat/store/chatStore';
 import { useSkillStore } from '@/features/skills/store/skillStore';
 import { copyText } from '@/shared/utils/clipboard';
 import { formatAppMessageTime } from '@/shared/utils/time';
-import { formatBytes } from '@/shared/utils/format';
 import { TTSButton } from '@/features/tts/TTSButton';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolActivityRow, SubAgentPanel } from './ToolActivity';
@@ -102,11 +101,15 @@ function MessageActions({
   );
 }
 
-function SentAttachmentPreview({ att }: { att: AttachmentPreview }) {
-  const { token } = theme.useToken();
+function SentAttachmentPreview({
+  att,
+  onPreview,
+}: {
+  att: AttachmentPreview;
+  onPreview: (src: string, alt: string) => void;
+}) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const isImage = att.mimeType.startsWith('image/');
-  const isPdf = att.mimeType === 'application/pdf';
 
   useEffect(() => {
     if (!isImage) return undefined;
@@ -130,62 +133,39 @@ function SentAttachmentPreview({ att }: { att: AttachmentPreview }) {
   }, [att.id, isImage]);
 
   return (
-    <Flex
-      align="center"
-      gap={8}
-      onClick={() => { if (previewUrl) window.open(previewUrl, '_blank', 'noopener,noreferrer'); }}
-      style={{
-        width: 220,
-        padding: 6,
-        borderRadius: 12,
-        cursor: previewUrl ? 'zoom-in' : 'default',
-        background: 'rgba(255, 255, 255, 0.72)',
-        border: `1px solid ${token.colorBorderSecondary}`,
-        boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.72)',
+    <AttachmentPreviewCard
+      attachment={att}
+      imageUrl={previewUrl}
+      size="regular"
+      align="right"
+      onPreview={() => {
+        if (previewUrl) onPreview(previewUrl, att.filename);
       }}
-    >
-      {previewUrl ? (
-        <img
-          src={previewUrl}
-          alt={att.filename}
-          style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 9, flexShrink: 0 }}
-        />
-      ) : (
-        <Flex
-          align="center"
-          justify="center"
-          style={{
-            width: 44,
-            height: 44,
-            borderRadius: 9,
-            flexShrink: 0,
-            color: isPdf ? token.colorError : token.colorTextSecondary,
-            background: token.colorFillSecondary,
-            fontSize: 20,
-          }}
-        >
-          {isPdf ? <FilePdfOutlined /> : <PictureOutlined />}
-        </Flex>
-      )}
-      <Flex vertical gap={2} style={{ minWidth: 0, flex: 1 }}>
-        <Typography.Text ellipsis style={{ fontSize: 12, lineHeight: 1.25 }}>
-          {att.filename}
-        </Typography.Text>
-        <Typography.Text type="secondary" style={{ fontSize: 11, lineHeight: 1.2 }}>
-          {isImage ? '图片' : isPdf ? 'PDF' : '附件'} · {formatBytes(att.sizeBytes)}
-        </Typography.Text>
-      </Flex>
-    </Flex>
+    />
   );
 }
 
 function SentAttachmentList({ attachments }: { attachments: AttachmentPreview[] }) {
+  const [imagePreview, setImagePreview] = useState<{ src: string; alt: string } | null>(null);
+
   return (
-    <Flex wrap gap={6} justify="flex-end" style={{ marginTop: 8, maxWidth: 460 }}>
-      {attachments.map((att) => (
-        <SentAttachmentPreview key={att.id} att={att} />
-      ))}
-    </Flex>
+    <>
+      <Flex wrap gap={6} justify="flex-end" style={{ marginTop: 8, maxWidth: 460 }}>
+        {attachments.map((att) => (
+          <SentAttachmentPreview
+            key={att.id}
+            att={att}
+            onPreview={(src, alt) => setImagePreview({ src, alt })}
+          />
+        ))}
+      </Flex>
+      <ImagePreviewModal
+        open={!!imagePreview}
+        src={imagePreview?.src ?? null}
+        alt={imagePreview?.alt ?? ''}
+        onClose={() => setImagePreview(null)}
+      />
+    </>
   );
 }
 

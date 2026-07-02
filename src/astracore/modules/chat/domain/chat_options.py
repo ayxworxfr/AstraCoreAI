@@ -46,7 +46,7 @@ class ChatOptions:
     thinking_budget:
         Token budget when ``thinking_mode='on'``.  Ignored for adaptive mode.
     reasoning_effort:
-        GPT-5 reasoning depth: ``'minimal'|'low'|'medium'|'high'``.
+        GPT-5/5.5 reasoning depth: ``'low'|'medium'|'high'|'xhigh'``.
         ``None`` defers to profile then provider default.
     verbosity:
         GPT-5 response length: ``'low'|'medium'|'high'``.

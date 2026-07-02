@@ -73,23 +73,37 @@ def _build_controls(profile: LLMProfileConfig) -> list[ModelControl]:
     controls: list[ModelControl] = []
 
     # ── Thinking（主工具栏）────────────────────────────────────────────────
+    # ThinkingControl.default 优先读 profile.thinking_mode；未配置时默认取该模型
+    # 支持的最强思考模式（'on' 或 'adaptive'），使切换到 thinking 模型时自动开启。
+    # 如需对某个 profile 默认关闭，在 config.yaml 中显式设置 thinking_mode: off。
     if caps.adaptive_thinking_only:
-        controls.append(ThinkingControl(modes=["off", "adaptive"], default="off"))
+        modes = ["off", "adaptive"]
     elif caps.thinking:
         model_lower = profile.model.lower()
         # GLM / DeepSeek 的 thinking API 是二值开关（type=enabled），无自适应模式。
         # Anthropic Claude 支持三档：off / on（budget_tokens）/ adaptive（Opus 4.7 以下）。
         if "glm" in model_lower or "deepseek" in model_lower:
-            controls.append(ThinkingControl(modes=["off", "on"], default="off"))
+            modes = ["off", "on"]
         else:
-            controls.append(ThinkingControl(modes=["off", "on", "adaptive"], default="off"))
+            modes = ["off", "on", "adaptive"]
+    else:
+        modes = None
+
+    if modes is not None:
+        if profile.thinking_mode and profile.thinking_mode in modes:
+            default_mode = profile.thinking_mode
+        else:
+            # Not explicitly configured: default to the strongest available thinking mode.
+            default_mode = "on" if "on" in modes else "adaptive"
+        controls.append(ThinkingControl(modes=modes, default=default_mode))
 
     # ── Reasoning effort（主工具栏）────────────────────────────────────────
     # levels encode per-provider options; kind stays unified so frontend never
     # needs to know the provider brand.
     if caps.reasoning_effort_protocol == "responses":
+        # GPT-5/5.5 Responses API: 'minimal' was removed; 'xhigh' added.
         controls.append(
-            ReasoningEffortControl(levels=["minimal", "low", "medium", "high"], default="medium")
+            ReasoningEffortControl(levels=["low", "medium", "high", "xhigh"], default="medium")
         )
     elif caps.reasoning_effort_protocol == "extra_body":
         model = profile.model.lower()
@@ -99,7 +113,7 @@ def _build_controls(profile: LLMProfileConfig) -> list[ModelControl]:
             controls.append(
                 ReasoningEffortControl(
                     levels=["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-                    default="max",
+                    default="medium",
                 )
             )
 

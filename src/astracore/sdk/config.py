@@ -46,7 +46,7 @@ class LLMProfileConfig(BaseModel):
     thinking_budget: int = Field(default=8000, ge=1000)
     """Claude Extended Thinking 的 token 预算，仅 thinking_mode='on' 时生效。"""
     reasoning_effort: str | None = None
-    """GPT-5 推理深度默认值。'minimal'|'low'|'medium'|'high'。None = 不发送（provider 默认 medium）。"""
+    """GPT-5/5.5 推理深度默认值。'low'|'medium'|'high'|'xhigh'。None = 不发送（provider 默认 medium）。"""
     verbosity: str | None = None
     """GPT-5 回答长度控制。'low'|'medium'|'high'。None = 不发送（provider 默认 medium）。"""
 

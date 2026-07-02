@@ -148,7 +148,7 @@ def test_build_controls_gpt5_no_temperature(_make_profile):
 
     effort = next((c for c in controls if c.kind == "reasoning_effort"), None)
     assert effort is not None
-    assert effort.levels == ["minimal", "low", "medium", "high"]
+    assert effort.levels == ["low", "medium", "high", "xhigh"]
 
 
 def test_build_controls_deepseek_openai_reasoning_effort(_make_profile):

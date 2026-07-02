@@ -498,6 +498,20 @@ async def _rebuild_short_term_from_runs(session_id: UUID) -> None:
 # ------------------------------------------------------------------
 
 
+def _build_cancel_patch(active: _ActiveRun | None) -> dict[str, Any]:
+    """Build ChatRunRow update fields for a cancelled run, preserving accumulated output."""
+    patch: dict[str, Any] = {"status": "cancelled", "error": "用户已停止生成"}
+    if active is None:
+        return patch
+    if content := active.state.get("assistant_content"):
+        patch["assistant_content"] = content
+    if thinking := active.state.get("thinking_blocks"):
+        patch["thinking_blocks"] = thinking
+    if tools := active.state.get("tool_activity"):
+        patch["tool_activity"] = [{**item, "done": True} for item in tools]
+    return patch
+
+
 async def _execute_run(*, run_id: str, ctx: ChatContext, user_id: str = "default") -> None:
     """Stream a fully-resolved ChatContext and broadcast SSE events for the run."""
     cfg = _get_settings()
@@ -571,7 +585,8 @@ async def _run_chat_in_background(
         _broadcast_run_event(run_id, "error", {"message": str(e)})
         return
     except asyncio.CancelledError:
-        row = await _update_run_row(run_id, status="cancelled", error="用户已停止生成")
+        patch = _build_cancel_patch(_ACTIVE_RUNS.get(run_id))
+        row = await _update_run_row(run_id, **patch)
         if row:
             _broadcast_snapshot(run_id, row)
         _broadcast_run_event(run_id, "error", {"message": "用户已停止生成"})
@@ -793,14 +808,18 @@ async def cancel_chat_run(
     if row.user_id != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
     active = _ACTIVE_RUNS.get(rid)
-    if active is not None and active.task is not None:
-        active.task.cancel()
+    if active is not None:
+        patch = _build_cancel_patch(active)
+        if active.task is not None:
+            active.task.cancel()
         active.update(
             status="cancelled",
             error="用户已停止生成",
             completed_at=datetime.now(UTC).isoformat(),
         )
-    row = await _update_run_row(rid, status="cancelled", error="用户已停止生成")
+    else:
+        patch = _build_cancel_patch(None)
+    row = await _update_run_row(rid, **patch)
     if row is None:
         raise HTTPException(status_code=404, detail="Run not found")
     _broadcast_snapshot(rid, row)

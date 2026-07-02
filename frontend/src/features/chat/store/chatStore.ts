@@ -410,10 +410,12 @@ export const useChatStore = create<ChatStore>()(
         const { activeConversationId } = get();
         set((s) => ({
           activeModelId: id,
-          // sampling overrides are profile-specific; reset when profile changes
+          // sampling overrides are profile-specific; reset when profile changes.
+          // thinkingMode is reset by ModelSelector after fetching the new profile's default.
           temperature: null,
           topP: null,
           topK: null,
+          reasoningEffort: null,
           conversations: s.conversations.map((c) =>
             c.id === activeConversationId ? { ...c, modelId: id } : c,
           ),
@@ -820,9 +822,9 @@ export const useChatStore = create<ChatStore>()(
         const { runIdByConversation, abortControllerByConversation, messagesByConversation } = get();
         const runId = runIdByConversation[conversationId];
         abortControllerByConversation[conversationId]?.abort();
-        if (runId) void cancelChatRun(runId).catch(() => undefined);
 
-        const msgs = (messagesByConversation[conversationId] ?? []).map((m) =>
+        // 乐观更新：立即将流式消息标为 done，避免 UI 卡在 streaming 状态
+        const optimisticMsgs = (messagesByConversation[conversationId] ?? []).map((m) =>
           m.status === 'streaming'
             ? { ...m, status: 'done' as const, toolActivity: m.toolActivity?.map((t) => ({ ...t, done: true })) }
             : m,
@@ -837,15 +839,39 @@ export const useChatStore = create<ChatStore>()(
           const pendingQ = { ...s.pendingQuestionByConversation };
           delete pendingQ[conversationId];
           return {
-            messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs },
+            messagesByConversation: { ...s.messagesByConversation, [conversationId]: optimisticMsgs },
             runIdByConversation: convRunIds,
             abortControllerByConversation: controllers,
             subscribedRunIds: runIds,
             pendingQuestionByConversation: pendingQ,
           };
         });
-        // 中断后同步后端真实 UUID，否则删除消息会 404
-        void get().loadMessages(conversationId);
+
+        const reload = () => void get().loadMessages(conversationId);
+        if (!runId) { reload(); return; }
+
+        // 等待 cancel 接口返回再更新：服务端此时已将部分内容持久化到 DB
+        void cancelChatRun(runId).then(
+          (state) => {
+            set((s) => {
+              const msgs = (s.messagesByConversation[conversationId] ?? []).map((m) => {
+                if (m.id !== runId || m.role !== 'assistant') return m;
+                return {
+                  ...m,
+                  content: state.assistant_content || m.content,
+                  thinkingBlocks: state.thinking_blocks.length ? state.thinking_blocks : m.thinkingBlocks,
+                  toolActivity: state.tool_activity.length
+                    ? normalizeToolActivity(state.tool_activity)
+                    : m.toolActivity,
+                };
+              });
+              return { messagesByConversation: { ...s.messagesByConversation, [conversationId]: msgs } };
+            });
+            // 同步后端真实 UUID，否则删除消息会 404
+            reload();
+          },
+          reload,
+        );
       },
 
       sendMessage: async (prompt) => {
@@ -1255,6 +1281,10 @@ export const useChatStore = create<ChatStore>()(
         activeConversationId: s.activeConversationId,
         useStream: s.useStream,
         thinkingMode: s.thinkingMode,
+        reasoningEffort: s.reasoningEffort,
+        temperature: s.temperature,
+        topP: s.topP,
+        topK: s.topK,
         enableRag: s.enableRag,
         enableTools: s.enableTools,
         enableWeb: s.enableWeb,

@@ -188,7 +188,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                     _cb = cast(Callable[..., Coroutine[Any, Any, dict[str, Any]]], callback)
                     answer = await _cb(q)
                     if "允许" not in answer.get("selected", []):
-                        return "用户拒绝保存此记忆。"
+                        return "用户拒绝保存此记忆。考虑存储为session级别记忆。"
 
         session_id_str = ctx.get("session_id")
         session_id = UUID(str(session_id_str)) if session_id_str else None

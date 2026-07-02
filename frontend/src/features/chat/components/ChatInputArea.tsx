@@ -2,11 +2,8 @@ import { useState, useRef, useCallback } from 'react';
 import { Sender } from '@ant-design/x';
 import {
   DatabaseOutlined,
-  DeleteOutlined,
-  FilePdfOutlined,
   GlobalOutlined,
   PaperClipOutlined,
-  PictureOutlined,
   QuestionCircleOutlined,
   RobotOutlined,
   ToolOutlined,
@@ -20,8 +17,8 @@ import { ThinkingModeSelector } from './ThinkingBlock';
 import { ReasoningEffortSelector } from './ReasoningEffortSelector';
 import ModelSelector from './ModelSelector';
 import TokenUsageBar from './TokenUsageBar';
-import { formatBytes } from '@/shared/utils/format';
-import type { AttachmentPreview } from '@/features/attachments/types';
+import AttachmentPreviewCard from '@/features/attachments/components/AttachmentPreviewCard';
+import ImagePreviewModal from '@/features/attachments/components/ImagePreviewModal';
 import type {
   TemperatureControl,
   ThinkingControl,
@@ -31,56 +28,6 @@ import type {
 } from '@/features/system/types';
 
 const { useBreakpoint } = Grid;
-
-function AttachmentChip({
-  att,
-  previewUrl,
-  onRemove,
-}: {
-  att: AttachmentPreview;
-  previewUrl?: string;
-  onRemove: (id: string) => void;
-}) {
-  const { token } = theme.useToken();
-  const isPdf = att.mimeType === 'application/pdf';
-  const icon = isPdf ? <FilePdfOutlined /> : (previewUrl ? undefined : <PictureOutlined />);
-  const name = att.filename.length > 20 ? `${att.filename.slice(0, 18)}…` : att.filename;
-  return (
-    <Flex
-      align="center"
-      gap={6}
-      style={{
-        padding: '4px 8px',
-        borderRadius: 8,
-        background: token.colorFillSecondary,
-        border: `1px solid ${token.colorBorderSecondary}`,
-        fontSize: 12,
-        maxWidth: 180,
-      }}
-    >
-      {previewUrl ? (
-        <img
-          src={previewUrl}
-          alt={att.filename}
-          style={{ width: 28, height: 28, objectFit: 'cover', borderRadius: 4, flexShrink: 0 }}
-        />
-      ) : (
-        <span style={{ color: token.colorTextSecondary, fontSize: 16, flexShrink: 0 }}>{icon}</span>
-      )}
-      <Flex vertical gap={0} style={{ flex: 1, minWidth: 0 }}>
-        <Typography.Text ellipsis style={{ fontSize: 12, lineHeight: 1.3 }}>{name}</Typography.Text>
-        <Typography.Text type="secondary" style={{ fontSize: 11, lineHeight: 1.2 }}>{formatBytes(att.sizeBytes)}</Typography.Text>
-      </Flex>
-      <Button
-        type="text"
-        size="small"
-        icon={<DeleteOutlined />}
-        onClick={() => onRemove(att.id)}
-        style={{ color: token.colorTextTertiary, padding: 0, width: 20, height: 20, flexShrink: 0 }}
-      />
-    </Flex>
-  );
-}
 
 const PARAM_HELP: Record<'temperature' | 'top_p' | 'top_k', { title: string; text: string; tip: string }> = {
   temperature: {
@@ -281,6 +228,7 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
   const appTheme = useSettingsStore((s) => s.theme);
   const [inputValue, setInputValue] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [imagePreview, setImagePreview] = useState<{ src: string; alt: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const {
@@ -350,6 +298,7 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
   const isAttachmentButtonActive = pendingAttachments.length > 0 || uploadingCount > 0;
 
   const handleSend = useCallback((value: string) => {
+    setImagePreview(null);
     clearPreviewUrls();
     onSendMessage(value);
   }, [clearPreviewUrls, onSendMessage]);
@@ -651,10 +600,15 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
         {pendingAttachments.length > 0 && (
           <Flex wrap gap={6} style={{ marginBottom: 8 }}>
             {pendingAttachments.map((att) => (
-              <AttachmentChip
+              <AttachmentPreviewCard
                 key={att.id}
-                att={att}
-                previewUrl={previewUrls[att.id]}
+                attachment={att}
+                imageUrl={previewUrls[att.id]}
+                size="compact"
+                onPreview={() => {
+                  const src = previewUrls[att.id];
+                  if (src) setImagePreview({ src, alt: att.filename });
+                }}
                 onRemove={handleRemoveAttachment}
               />
             ))}
@@ -683,6 +637,12 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
           </div>
         )}
       </div>
+      <ImagePreviewModal
+        open={!!imagePreview}
+        src={imagePreview?.src ?? null}
+        alt={imagePreview?.alt ?? ''}
+        onClose={() => setImagePreview(null)}
+      />
     </div>
   );
 }

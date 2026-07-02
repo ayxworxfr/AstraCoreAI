@@ -9,7 +9,7 @@ import type { SystemInfo } from '@/features/system/types';
 type ModelProfile = SystemInfo['llm']['profiles'][number];
 
 export default function ModelSelector({ disabled }: { disabled: boolean }): JSX.Element | null {
-  const { activeModelId, setActiveModelId } = useChatStore();
+  const { activeModelId, setActiveModelId, setThinkingMode } = useChatStore();
   const [llm, setLlm] = useState<SystemInfo['llm'] | null>(null);
 
   useEffect(() => {
@@ -38,6 +38,23 @@ export default function ModelSelector({ disabled }: { disabled: boolean }): JSX.
 
   const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
     setActiveModelId(key === defaultProfile ? null : key);
+    const prevThinkingCtrl = selectedProfile?.controls.find((c) => c.kind === 'thinking');
+    const newProfile = profilesById.get(key);
+    const thinkingCtrl = newProfile?.controls.find((c) => c.kind === 'thinking');
+    if (!thinkingCtrl) {
+      // new model doesn't support thinking at all
+      setThinkingMode('off');
+    } else if (!prevThinkingCtrl) {
+      // switching from a non-thinking model → restore new model's default
+      setThinkingMode(thinkingCtrl.default as 'off' | 'on' | 'adaptive');
+    } else {
+      const currentMode = useChatStore.getState().thinkingMode;
+      if (!(thinkingCtrl.modes as string[]).includes(currentMode)) {
+        // current mode not valid for new model → use new model's default
+        setThinkingMode(thinkingCtrl.default as 'off' | 'on' | 'adaptive');
+      }
+      // current mode is supported by new model → preserve it
+    }
   };
 
   return (
