@@ -94,15 +94,14 @@ mcp = FastMCP(
 
 @mcp.tool(
     description=(
-        "读取文件文本内容（UTF-8，附行号）。"
-        "结果包含总行数；内容超限时提示下一段的 offset，用 offset+limit 分页读完整文件。"
+        "读取文件文本内容（UTF-8，附行号）。结果包含总行数；用 offset+limit 可分段读取指定行范围。"
     )
 )
 async def read_file(path: str, offset: int = 1, limit: int | None = None) -> str:
     """Args:
     path: 文件绝对路径或相对路径。
     offset: 起始行号（从 1 开始，默认 1）。
-    limit: 最多读取的行数（不传则读到文件末尾或字符上限）。
+    limit: 最多读取的行数（不传则读到文件末尾）。
     """
     file_path = Path(path).resolve()
     if not _check_allowed_path(file_path):
@@ -125,24 +124,9 @@ async def read_file(path: str, offset: int = 1, limit: int | None = None) -> str
     end = min(start + limit, total) if limit is not None else total
     width = len(str(total))
 
-    # Accumulate lines within the character budget
-    budget = MAX_OUTPUT_CHARS - 120  # reserve room for header + notice
-    output_lines: list[str] = []
-    actual_end = start
-    for i, line in enumerate(lines[start:end]):
-        entry = f"{start + i + 1:{width}} {line}"
-        budget -= len(entry) + 1
-        if budget < 0:
-            break
-        output_lines.append(entry)
-        actual_end = start + i + 1
-
-    header = f"[{file_path.name} | 共 {total} 行 | 第 {start + 1}–{actual_end} 行]"
-    body = "\n".join(output_lines)
-    notice = (
-        f"\n... [字符超限已截断，使用 offset={actual_end + 1} 继续读取]" if actual_end < end else ""
-    )
-    return header + "\n" + body + notice
+    output_lines = [f"{start + i + 1:{width}} {line}" for i, line in enumerate(lines[start:end])]
+    header = f"[{file_path.name} | 共 {total} 行 | 第 {start + 1}–{end} 行]"
+    return header + "\n" + "\n".join(output_lines)
 
 
 @mcp.tool(description="批量读取多个文件，每个文件内容用分隔线分隔（超长自动截断）。")

@@ -146,19 +146,6 @@ async def test_read_file_offset_beyond_eof_returns_error(monkeypatch, tmp_path):
     assert "[错误]" in result
 
 
-@pytest.mark.asyncio
-async def test_read_file_truncation_shows_next_offset(monkeypatch, tmp_path):
-    """When char-truncated, result must hint the next offset."""
-    server = _load_server(monkeypatch, tmp_path)
-    f = tmp_path / "big.txt"
-    # Write enough lines to exceed MAX_OUTPUT_CHARS
-    f.write_text("\n".join("x" * 100 for _ in range(200)), encoding="utf-8")
-
-    result = await server.read_file(path=str(f))
-    assert "offset=" in result
-    assert "继续读取" in result
-
-
 # ---------------------------------------------------------------------------
 # F-1 integration: write_file / edit_file also check path
 # ---------------------------------------------------------------------------

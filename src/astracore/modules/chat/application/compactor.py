@@ -63,7 +63,17 @@ class HistoryCompactor:
         context_window = rule.context_window_tokens
         threshold = int(context_window * rule.trigger_ratio)
         estimated = self.estimate_tokens(messages)
+
+        logger.info(
+            "上下文 token 统计: 估算 %d tokens / 阈值 %d (window=%d, 消息数=%d)",
+            estimated,
+            threshold,
+            context_window,
+            len(messages),
+        )
+
         if estimated <= threshold:
+            logger.info("上下文未超阈值，无需压缩")
             return messages
 
         logger.info(
@@ -98,7 +108,17 @@ class HistoryCompactor:
             content=f"【对话摘要】\n{summary}",
             metadata={"synthetic": True, "compacted": True},
         )
-        return system_msgs + [summary_msg] + to_keep
+        result = system_msgs + [summary_msg] + to_keep
+        estimated_after = self.estimate_tokens(result)
+        logger.info(
+            "压缩完成: %d 条消息 → %d 条，估算 tokens %d → %d (压缩率 %.1f%%)",
+            len(messages),
+            len(result),
+            estimated,
+            estimated_after,
+            (1 - estimated_after / estimated) * 100 if estimated else 0,
+        )
+        return result
 
     async def _summarize(self, messages: list[Message]) -> str:
         """Call LLM to summarize a batch of messages."""

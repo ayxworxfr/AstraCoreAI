@@ -73,7 +73,7 @@ policy:
     tool_timeout_s: 120         # 工具执行超时（秒，0 = 不限制）
     retrieval_timeout_s: 10     # RAG 检索超时（秒）
   compaction:
-    context_window_tokens: 200000  # 估算上下文窗口
+    context_window_tokens: 100000  # 估算上下文窗口
     trigger_ratio: 0.5             # 估算 token 超过 window*ratio 时压缩
     compact_batch_ratio: 0.6       # 单次压缩最旧 60% 消息
     chars_per_token: 0.6           # 字符到 token 的近似换算（中英混合）
@@ -132,4 +132,4 @@ web_search:
     engines: ""                  # 留空 = 实例默认引擎；可填 "google,bing"
 
 debug:
-  log_prompts: true
+  log_prompts: false
