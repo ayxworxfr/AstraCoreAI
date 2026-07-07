@@ -54,4 +54,12 @@ debug:
   log_prompts: false
 
 mcp:
-  servers: []
+  servers:
+    - type: filesystem
+      paths:
+        - /app/workspace
+
+    - type: shell
+      allow_dirs:
+        - /app/workspace
+      timeout: 30

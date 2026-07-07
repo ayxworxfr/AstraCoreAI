@@ -37,12 +37,10 @@ services:
     environment:
       ASTRACORE_CONFIG: "/app/config/config.docker.yaml"
     volumes:
-      - astracore_data:/app/data
+      - ${HOME}/.astracore/data:/app/data
+      - ${HOME}/.astracore/workspace:/app/workspace:rw
     depends_on:
       redis:
         condition: service_healthy
       searxng:
         condition: service_healthy
-
-volumes:
-  astracore_data:

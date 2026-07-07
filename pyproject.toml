@@ -44,6 +44,7 @@ dependencies = [
     "python-jose[cryptography]>=3.3.0",
     "apscheduler>=3.11.2,<4",
     "edge-tts>=6.1.9",
+    "fastmcp>=3.0.0",
 ]
 
 [project.optional-dependencies]
