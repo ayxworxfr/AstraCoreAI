@@ -11,3 +11,5 @@ export type AttachmentPreview = {
   mimeType: string;
   sizeBytes: number;
 };
+
+export type AttachmentImageStatus = 'loading' | 'ready' | 'error';

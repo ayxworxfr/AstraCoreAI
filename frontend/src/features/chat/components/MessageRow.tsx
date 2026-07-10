@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { Avatar, Button, Flex, Tooltip, theme } from 'antd';
 import { Bubble } from '@ant-design/x';
 import {
@@ -10,9 +10,9 @@ import {
 } from '@ant-design/icons';
 import type { AttachmentPreview } from '@/features/attachments/types';
 import type { ChatMessage } from '@/features/chat/types';
-import { downloadAttachment } from '@/features/attachments/attachmentService';
 import AttachmentPreviewCard from '@/features/attachments/components/AttachmentPreviewCard';
-import ImagePreviewModal from '@/features/attachments/components/ImagePreviewModal';
+import ImagePreviewModal, { type PreviewImage } from '@/features/attachments/components/ImagePreviewModal';
+import { useAttachmentImageUrls } from '@/features/attachments/hooks/useAttachmentImageUrls';
 import { useChatStore } from '@/features/chat/store/chatStore';
 import { useSkillStore } from '@/features/skills/store/skillStore';
 import { copyText } from '@/shared/utils/clipboard';
@@ -101,69 +101,50 @@ function MessageActions({
   );
 }
 
-function SentAttachmentPreview({
-  att,
-  onPreview,
-}: {
-  att: AttachmentPreview;
-  onPreview: (src: string, alt: string) => void;
-}) {
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const isImage = att.mimeType.startsWith('image/');
-
-  useEffect(() => {
-    if (!isImage) return undefined;
-    let revoked = false;
-    let objectUrl: string | null = null;
-
-    void downloadAttachment(att.id)
-      .then((blob) => {
-        if (revoked) return;
-        objectUrl = URL.createObjectURL(blob);
-        setPreviewUrl(objectUrl);
-      })
-      .catch(() => {
-        if (!revoked) setPreviewUrl(null);
-      });
-
-    return () => {
-      revoked = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [att.id, isImage]);
-
-  return (
-    <AttachmentPreviewCard
-      attachment={att}
-      imageUrl={previewUrl}
-      size="regular"
-      align="right"
-      onPreview={() => {
-        if (previewUrl) onPreview(previewUrl, att.filename);
-      }}
-    />
-  );
-}
-
 function SentAttachmentList({ attachments }: { attachments: AttachmentPreview[] }) {
-  const [imagePreview, setImagePreview] = useState<{ src: string; alt: string } | null>(null);
+  const imageStates = useAttachmentImageUrls(attachments);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+
+  const previewableImages = useMemo<PreviewImage[]>(
+    () =>
+      attachments
+        .filter((att) => att.mimeType.startsWith('image/'))
+        .map((att) => ({
+          id: att.id,
+          alt: att.filename,
+          src: imageStates[att.id]?.url ?? null,
+          status: imageStates[att.id]?.status ?? 'loading',
+        })),
+    [attachments, imageStates],
+  );
 
   return (
     <>
       <Flex wrap gap={6} justify="flex-end" style={{ marginTop: 8, maxWidth: 460 }}>
-        {attachments.map((att) => (
-          <SentAttachmentPreview
-            key={att.id}
-            att={att}
-            onPreview={(src, alt) => setImagePreview({ src, alt })}
-          />
-        ))}
+        {attachments.map((att) => {
+          const imageState = imageStates[att.id];
+          return (
+            <AttachmentPreviewCard
+              key={att.id}
+              attachment={att}
+              imageUrl={imageState?.url}
+              imageStatus={imageState?.status}
+              size="regular"
+              align="right"
+              onPreview={() => {
+                const idx = previewableImages.findIndex((img) => img.id === att.id);
+                if (idx >= 0) setPreviewIndex(idx);
+              }}
+            />
+          );
+        })}
       </Flex>
       <ImagePreviewModal
-        open={!!imagePreview}
-        src={imagePreview?.src ?? null}
-        alt={imagePreview?.alt ?? ''}
-        onClose={() => setImagePreview(null)}
+        open={previewIndex !== null}
+        images={previewableImages}
+        index={previewIndex ?? 0}
+        onIndexChange={setPreviewIndex}
+        onClose={() => setPreviewIndex(null)}
       />
     </>
   );

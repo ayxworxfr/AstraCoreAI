@@ -1,11 +1,12 @@
-import { Button, Flex, Tooltip, Typography, theme } from 'antd';
+import { Button, Flex, Spin, Tooltip, Typography, theme } from 'antd';
 import { DeleteOutlined, FilePdfOutlined, PictureOutlined } from '@ant-design/icons';
-import type { AttachmentPreview } from '@/features/attachments/types';
+import type { AttachmentImageStatus, AttachmentPreview } from '@/features/attachments/types';
 import { formatBytes } from '@/shared/utils/format';
 
 type Props = {
   attachment: AttachmentPreview;
   imageUrl?: string | null;
+  imageStatus?: AttachmentImageStatus;
   size?: 'compact' | 'regular';
   align?: 'left' | 'right';
   onPreview?: () => void;
@@ -15,6 +16,7 @@ type Props = {
 export default function AttachmentPreviewCard({
   attachment,
   imageUrl,
+  imageStatus,
   size = 'regular',
   align = 'left',
   onPreview,
@@ -23,7 +25,8 @@ export default function AttachmentPreviewCard({
   const { token } = theme.useToken();
   const isImage = attachment.mimeType.startsWith('image/');
   const isPdf = attachment.mimeType === 'application/pdf';
-  const canPreview = isImage && !!imageUrl && !!onPreview;
+  const status: AttachmentImageStatus = imageStatus ?? (imageUrl ? 'ready' : 'loading');
+  const canPreview = isImage && status === 'ready' && !!imageUrl && !!onPreview;
   const mediaSize = size === 'compact' ? 28 : 44;
   const maxWidth = size === 'compact' ? 180 : 220;
   const filename = size === 'compact' && attachment.filename.length > 20
@@ -51,7 +54,21 @@ export default function AttachmentPreviewCard({
         textAlign: align,
       }}
     >
-      {imageUrl ? (
+      {isImage && status === 'loading' ? (
+        <Flex
+          align="center"
+          justify="center"
+          style={{
+            width: mediaSize,
+            height: mediaSize,
+            borderRadius: size === 'compact' ? 4 : 9,
+            flexShrink: 0,
+            background: token.colorFillSecondary,
+          }}
+        >
+          <Spin size="small" />
+        </Flex>
+      ) : imageUrl && status === 'ready' ? (
         <img
           src={imageUrl}
           alt={attachment.filename}

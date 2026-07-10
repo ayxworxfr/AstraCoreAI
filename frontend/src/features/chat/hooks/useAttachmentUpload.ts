@@ -12,6 +12,19 @@ const ACCEPTED_ATTACHMENT_TYPES = new Set([
   'application/pdf',
 ]);
 
+// 剪贴板粘贴的图片浏览器统一给的都是 "image.png" 这类固定名字，
+// 用递增序号 + 时间戳生成唯一文件名，避免多张粘贴图重名混淆
+let pastedImageSeq = 0;
+
+function buildPastedFilename(mimeType: string): string {
+  pastedImageSeq += 1;
+  const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `image-${stamp}-${pastedImageSeq}.${ext}`;
+}
+
 export function useAttachmentUpload({ attachmentDisabled }: { attachmentDisabled: boolean }) {
   const { addAttachment, removeAttachment } = useChatStore();
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
@@ -64,7 +77,9 @@ export function useAttachmentUpload({ attachmentDisabled }: { attachmentDisabled
     const imageFiles = Array.from(e.clipboardData.items)
       .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
-      .filter((file): file is File => file !== null);
+      .filter((file): file is File => file !== null)
+      // 粘贴的文件浏览器默认名都叫 image.png，重新命名成带时间戳的唯一英文名
+      .map((file) => new File([file], buildPastedFilename(file.type), { type: file.type }));
     if (imageFiles.length === 0) return;
     void uploadFiles(imageFiles);
   }, [attachmentDisabled, uploadFiles]);

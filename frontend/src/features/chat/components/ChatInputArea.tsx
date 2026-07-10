@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Sender } from '@ant-design/x';
 import {
   DatabaseOutlined,
@@ -18,7 +18,7 @@ import { ReasoningEffortSelector } from './ReasoningEffortSelector';
 import ModelSelector from './ModelSelector';
 import TokenUsageBar from './TokenUsageBar';
 import AttachmentPreviewCard from '@/features/attachments/components/AttachmentPreviewCard';
-import ImagePreviewModal from '@/features/attachments/components/ImagePreviewModal';
+import ImagePreviewModal, { type PreviewImage } from '@/features/attachments/components/ImagePreviewModal';
 import type {
   TemperatureControl,
   ThinkingControl,
@@ -228,7 +228,7 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
   const appTheme = useSettingsStore((s) => s.theme);
   const [inputValue, setInputValue] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [imagePreview, setImagePreview] = useState<{ src: string; alt: string } | null>(null);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const {
@@ -297,8 +297,29 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
 
   const isAttachmentButtonActive = pendingAttachments.length > 0 || uploadingCount > 0;
 
+  const previewableImages = useMemo<PreviewImage[]>(
+    () =>
+      pendingAttachments
+        .filter((att) => att.mimeType.startsWith('image/'))
+        .map((att) => ({
+          id: att.id,
+          alt: att.filename,
+          src: previewUrls[att.id] ?? null,
+          status: previewUrls[att.id] ? 'ready' : 'loading',
+        })),
+    [pendingAttachments, previewUrls],
+  );
+
+  // 附件被移除后画廊长度可能变化，避免索引越界
+  useEffect(() => {
+    if (previewIndex === null) return;
+    if (previewIndex >= previewableImages.length) {
+      setPreviewIndex(previewableImages.length > 0 ? previewableImages.length - 1 : null);
+    }
+  }, [previewIndex, previewableImages.length]);
+
   const handleSend = useCallback((value: string) => {
-    setImagePreview(null);
+    setPreviewIndex(null);
     clearPreviewUrls();
     onSendMessage(value);
   }, [clearPreviewUrls, onSendMessage]);
@@ -606,8 +627,8 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
                 imageUrl={previewUrls[att.id]}
                 size="compact"
                 onPreview={() => {
-                  const src = previewUrls[att.id];
-                  if (src) setImagePreview({ src, alt: att.filename });
+                  const idx = previewableImages.findIndex((img) => img.id === att.id);
+                  if (idx >= 0) setPreviewIndex(idx);
                 }}
                 onRemove={handleRemoveAttachment}
               />
@@ -638,10 +659,11 @@ export function ChatInputArea({ onSendMessage }: { onSendMessage: (value: string
         )}
       </div>
       <ImagePreviewModal
-        open={!!imagePreview}
-        src={imagePreview?.src ?? null}
-        alt={imagePreview?.alt ?? ''}
-        onClose={() => setImagePreview(null)}
+        open={previewIndex !== null}
+        images={previewableImages}
+        index={previewIndex ?? 0}
+        onIndexChange={setPreviewIndex}
+        onClose={() => setPreviewIndex(null)}
       />
     </div>
   );
