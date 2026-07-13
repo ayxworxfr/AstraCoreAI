@@ -5,21 +5,32 @@ methods joined with ``\n\n---\n\n`` separators.  This class centralises the logi
 behind a single API so the pipeline becomes a thin orchestrator and the prompt layout
 can be evolved (XML tags, ordering, caching) in one place.
 
-Layer layout (joined with blank lines, each layer is its own XML block):
+Prompt is split into two segments delivered to the LLM adapter separately:
 
-    <security>      — injection-guard rule (static)
-    <identity>      — AI name + owner + datetime + global instruction
+  Segment 1 — static system prompt (``build_static()``, cached):
+    <security>      — injection-guard rule
+    <identity>      — AI name + owner + global instruction  (no datetime)
     <skills>        — L1 skill manifest (one line per skill)
     <user_profile>  — Tier-1 long-term memory (user + global scope)
-    <knowledge>     — RAG retrieval results (only when enable_rag)
-    <session_context>
-        <active_skill name="…"/>     — reload reminder for in-progress skill task
-        <recalled_memory>…</recalled_memory>  — Tier-2 session/project memory
 
-The static layers (security/identity/skills/user_profile/knowledge) are produced by
-``build_static()`` during ``ChatPipeline.prepare()``.  ``<session_context>`` depends
-on the loaded message history (active-skill detection) and is assembled per-turn in
-``stream()`` via ``build_session_layer()`` + ``compose()``.
+  Segment 2 — per-turn session context (``build_session_layer()``, NOT cached):
+    <session_context>
+        <datetime …/>                        — current Beijing time (minute-precision)
+        <knowledge>…</knowledge>             — RAG retrieval results (when enable_rag)
+        <active_skill name="…"/>             — reload reminder for in-progress skill task
+        <recalled_memory>…</recalled_memory> — Tier-2 session/project memory
+
+Segment 1 is produced once in ``ChatPipeline.prepare()`` and frozen into
+``ChatContext.system_prompt``.  Segment 2 is assembled each turn in ``stream()``
+via ``build_session_layer()``.  The LLM adapter (``AnthropicAdapter``) delivers them
+as a two-block ``system`` array: the first block carries ``cache_control`` so the
+expensive static layers are cached; the second block is never cached.
+
+RAG retrieval is a separate async call (``retrieve_rag_context()``) whose result is
+stored in ``ChatContext.rag_context`` and passed to ``build_session_layer()`` at
+stream-time — no re-query on each turn.
+
+User messages always contain only the raw user text — no system-injected prefixes.
 
 Tool-specific guidance (HITL ``ask_user``, ``schedule_task``) is intentionally NOT
 injected here — it lives in the corresponding tool's ``description`` field so the
@@ -28,6 +39,7 @@ model only sees it when the tool is actually exposed.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -37,7 +49,11 @@ from astracore.infrastructure.db.session import get_session
 from astracore.infrastructure.memory.store import SQLMemoryStore
 from astracore.modules.chat.domain.message import Message, MessageRole
 from astracore.modules.memory.application.engine import MemoryEngine
-from astracore.modules.skills.prompt_utils import build_identity_layer, build_skill_manifest
+from astracore.modules.skills.prompt_utils import (
+    build_current_time_info,
+    build_identity_layer,
+    build_skill_manifest,
+)
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.security.external_data import wrap_external
 
@@ -46,6 +62,27 @@ if TYPE_CHECKING:
     from astracore.sdk.config import AstraCoreConfig
 
 logger = get_logger(__name__)
+
+# 元问题/寒暄/能力问询——应由 identity 层回答，无需查知识库
+_SKIP_RAG_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^(你|您)(是谁|是什么|叫什么|叫什么名字|什么名字|哪位|啥)$"),
+    re.compile(r"^(你好|嗨|哈喽|hello|hi|hey)$", re.IGNORECASE),
+    re.compile(r"^(你能|你会|你可以)(做|帮|干|提供)?什么(吗|呢)?$"),
+    re.compile(r"^介绍一下(你|您)(自己)?$"),
+    re.compile(r"^(你|您)有什么(功能|能力|本事|特长)(吗|呢)?$"),
+    re.compile(r"^(自我介绍|说说你自己)$"),
+)
+_SKIP_RAG_EXACT: frozenset[str] = frozenset({"嗯", "好", "行", "ok", "嗨", "在吗", "在不在"})
+
+
+def should_skip_rag_query(query: str) -> bool:
+    """Return True when the query is a meta/greeting question that needs no RAG."""
+    normalized = query.strip().rstrip("？?!！.…").strip()
+    if not normalized:
+        return True
+    if len(normalized) <= 3 and normalized.lower() in _SKIP_RAG_EXACT:
+        return True
+    return any(p.match(normalized) for p in _SKIP_RAG_PATTERNS)
 
 
 # Static security declaration — instructs the LLM that any `<external_data trust="untrusted">`
@@ -81,14 +118,14 @@ class SystemPromptBuilder:
     # Public API
     # ------------------------------------------------------------------
 
-    async def build_static(
-        self,
-        *,
-        user_id: str,
-        message: str,
-        enable_rag: bool,
-    ) -> str | None:
-        """Compose the static system-prompt layers; ``None`` when nothing applies."""
+    async def build_static(self, *, user_id: str) -> str | None:
+        """Compose the static system-prompt layers; ``None`` when nothing applies.
+
+        Excludes datetime and RAG — both are assembled per-turn into
+        ``<session_context>`` by ``build_session_layer()`` and delivered to the LLM
+        as a separate non-cached system block, keeping this output stable across turns
+        and maximising prompt-cache hit rates on the static layers.
+        """
         layers: list[str] = [
             self._security_layer(),
             await self._identity_layer(user_id),
@@ -101,25 +138,36 @@ class SystemPromptBuilder:
         if profile_layer:
             layers.append(profile_layer)
 
-        if enable_rag:
-            knowledge_layer = await self._knowledge_layer(message, user_id)
-            if knowledge_layer:
-                layers.append(knowledge_layer)
-
         return "\n\n".join(layers) or None
 
+    async def retrieve_rag_context(self, message: str, user_id: str) -> str:
+        """Retrieve RAG knowledge for the current user message.
+
+        Returns the ``<knowledge>…</knowledge>`` block ready for injection into the
+        user message, or an empty string when nothing is retrieved or RAG is disabled.
+        Callers should check truthiness before storing — an empty string means no context.
+        """
+        return await self._knowledge_layer(message, user_id)
+
     @staticmethod
-    def build_session_layer(turn_context: str, active_skill: str | None) -> str:
+    def build_session_layer(
+        turn_context: str,
+        active_skill: str | None,
+        rag_context: str | None = None,
+    ) -> str:
         """Build the per-turn ``<session_context>`` block.
 
-        Replaces the older role-polluting synthetic message pairs (``[记忆同步]`` /
-        ``[技能续接]``).  Recalled memory is wrapped with ``<external_data>`` so the
-        injection-guard rule applies — adversarial stored memories cannot hijack
-        behaviour.  Returns ``""`` when there is nothing dynamic to inject.
+        Contains all dynamic per-turn content that must not be cached:
+        datetime (always present), RAG retrieval results, active-skill reload
+        reminder, and Tier-2 recalled memory.  Delivered to the LLM adapter as a
+        separate non-cached system block so the static layers remain cacheable.
+
+        Recalled memory is wrapped with ``<external_data>`` so the injection-guard
+        rule applies — adversarial stored memories cannot hijack behaviour.
         """
-        if not turn_context and not active_skill:
-            return ""
-        inner: list[str] = []
+        inner: list[str] = [build_current_time_info()]
+        if rag_context:
+            inner.append(rag_context)
         if active_skill:
             inner.append(
                 f'<active_skill name="{active_skill}">\n'
@@ -135,13 +183,6 @@ class SystemPromptBuilder:
                 + "\n</recalled_memory>"
             )
         return "<session_context>\n" + "\n".join(inner) + "\n</session_context>"
-
-    @staticmethod
-    def compose(static_prompt: str | None, session_layer: str) -> str | None:
-        """Concatenate the static prompt and the per-turn session layer."""
-        if static_prompt and session_layer:
-            return static_prompt + "\n\n" + session_layer
-        return static_prompt or (session_layer or None)
 
     @staticmethod
     def detect_active_skill(messages: list[Message], lookback_turns: int = 3) -> str | None:
@@ -209,11 +250,14 @@ class SystemPromptBuilder:
 
     async def _knowledge_layer(self, query: str, user_id: str) -> str:
         """RAG retrieval — untrusted source; payload wrapped with <external_data>."""
-        if self._rag_pipeline is None:
+        if self._rag_pipeline is None or should_skip_rag_query(query):
             return ""
         try:
             top_k = int(await self._get_setting("rag_top_k", user_id) or "4")
-            chunks = await self._rag_pipeline.retrieve_with_citations(query=query, top_k=top_k)
+            min_score = self._config.storage.vector.rag_min_score
+            chunks = await self._rag_pipeline.retrieve_with_citations(
+                query=query, top_k=top_k, min_score=min_score
+            )
             if not chunks:
                 return ""
             parts = [

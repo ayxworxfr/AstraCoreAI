@@ -50,8 +50,8 @@ class ChatContext:
     """采样温度，由"请求参数 → DB 用户设置 → profile 默认值"三级优先级解析得出。"""
 
     system_prompt: str | None
-    """最终注入 LLM 的系统提示，由身份层 + 技能清单 + 记忆 + RAG 上下文四层拼接而成；
-    无任何内容时为 ``None``。"""
+    """最终注入 LLM 的系统提示，由 security + identity + skills + user_profile 四层拼接而成；
+    无任何内容时为 ``None``。datetime 和 RAG 内容不在此字段，参见 ``rag_context``。"""
 
     context_max_messages: int
     """传给 LLM 的历史消息条数上限，从用户设置或 profile 默认值中读取。"""
@@ -84,8 +84,14 @@ class ChatContext:
 
     turn_context: str = field(default="")
     """Tier-2 动态会话上下文，由 ``MemoryEngine.build_turn_context()`` 生成；
-    注入为 role=assistant 的合成消息对（桥接 user:[记忆同步] + assistant:[快照]），
-    不持久化到会话历史。空字符串表示无相关 session/project 记忆。"""
+    在 ``stream()`` 阶段传入 ``build_session_layer()``，作为 ``<recalled_memory>`` 注入
+    ``<session_context>`` 非缓存系统块。空字符串表示无相关 session/project 记忆。"""
+
+    rag_context: str | None = field(default=None)
+    """RAG 检索结果（``<knowledge>…</knowledge>`` 块），由 ``prepare()`` 在启用 RAG 时填充；
+    ``stream()`` 将其传入 ``build_session_layer()``，注入 ``<session_context>`` 非缓存系统块，
+    而非放入 user message 或静态 system prompt，保持静态层跨轮次不变从而命中提示缓存。
+    未启用 RAG 或检索无结果时为 ``None``。"""
 
     attachment_refs: list[AttachmentRef] = field(default_factory=list, compare=False, hash=False)
     """本轮已加载字节的附件列表，由 pipeline.prepare() 从存储中读取后注入。

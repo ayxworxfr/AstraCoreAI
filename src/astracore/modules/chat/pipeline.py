@@ -55,6 +55,7 @@ def _print_prompt_debug(
     system_prompt: str | None,
     messages: list["Message"],
     session_id: "UUID",
+    session_context: str | None = None,
 ) -> None:
     """Print the full LLM input to stdout when debug.log_prompts is enabled."""
     lines: list[str] = [
@@ -64,7 +65,9 @@ def _print_prompt_debug(
         _PROMPT_DEBUG_SEP,
     ]
     if system_prompt:
-        lines += ["  ── SYSTEM PROMPT ──", system_prompt, ""]
+        lines += ["  ── SYSTEM PROMPT (static, cached) ──", system_prompt, ""]
+    if session_context:
+        lines += ["  ── SESSION CONTEXT (dynamic, not cached) ──", session_context, ""]
     lines.append(f"  ── MESSAGES ({len(messages)}) ──")
     for msg in messages:
         role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
@@ -359,16 +362,19 @@ class ChatPipeline:
         if (opts.use_tools or opts.enable_web) and not profile.capabilities.tools:
             raise ValueError(f"LLM profile '{profile.id}' does not support tool calling")
 
-        # 1. Compose static system prompt layers (security + identity + skills + Tier-1 + RAG).
-        #    Per-turn dynamic layer (<session_context>) is appended in stream() once the
-        #    loaded message history is available for active-skill detection.
-        system_prompt = await self._prompt_builder.build_static(
-            user_id=user_id,
-            message=message,
-            enable_rag=opts.enable_rag,
-        )
+        # 1. Compose static system prompt layers (security + identity + skills + Tier-1).
+        #    datetime and RAG are excluded from the system prompt so it never changes
+        #    between turns — see _build_user_context() for where they are injected.
+        #    Per-turn <session_context> (active-skill + Tier-2) is appended in stream()
+        #    once the loaded message history is available for active-skill detection.
+        system_prompt = await self._prompt_builder.build_static(user_id=user_id)
 
-        # 1b. Tier-2: dynamic session/project context (folded into system prompt in stream())
+        # 1b. RAG retrieval — stored in context, injected into user message in stream().
+        rag_context: str | None = None
+        if opts.enable_rag:
+            rag_context = await self._prompt_builder.retrieve_rag_context(message, user_id) or None
+
+        # 1c. Tier-2: dynamic session/project context (folded into system prompt in stream())
         turn_context = await self._build_turn_context(session_id, message, user_id)
 
         # 2. Resolve temperature and context window size
@@ -473,6 +479,7 @@ class ChatPipeline:
             tool_adapter=effective_adapter,
             allowed_tools=allowed_tools,
             turn_context=turn_context,
+            rag_context=rag_context,
             attachment_refs=attachment_refs,
         )
 
@@ -511,19 +518,20 @@ class ChatPipeline:
 
         session = SessionState(session_id=ctx.session_id)
 
-        # Compose the effective system prompt: static layers (from prepare) + per-turn
-        # <session_context> (Tier-2 recalled memory + active-skill reload reminder).
-        # Folding both into the system prompt avoids the role-pollution that came from
-        # injecting synthetic [记忆同步] / [技能续接] message pairs into the chat history.
+        # Build per-turn session_context: datetime + RAG + active-skill + Tier-2 memory.
+        # Passed to the LLM adapter as a separate non-cached system block so the static
+        # layers in ctx.system_prompt remain an unchanged cached prefix across turns.
         active_skill = SystemPromptBuilder.detect_active_skill(stored)
-        session_layer = SystemPromptBuilder.build_session_layer(ctx.turn_context, active_skill)
-        effective_prompt = SystemPromptBuilder.compose(ctx.system_prompt, session_layer)
+        session_layer = SystemPromptBuilder.build_session_layer(
+            ctx.turn_context, active_skill, ctx.rag_context
+        )
 
         if ctx.mode == "tool_loop":
-            # tool_loop needs the system message inside the session so the tool loop can see it.
+            # tool_loop embeds the static system message inside the session messages list;
+            # session_layer is passed via kwarg to the LLM adapter as the dynamic block.
             initial: list[Message] = []
-            if effective_prompt:
-                initial.append(Message(role=MessageRole.SYSTEM, content=effective_prompt))
+            if ctx.system_prompt:
+                initial.append(Message(role=MessageRole.SYSTEM, content=ctx.system_prompt))
             initial.extend(stored)
             session.restore_messages(initial)
             session.add_message(
@@ -534,12 +542,18 @@ class ChatPipeline:
                 )
             )
             if self._config.debug.log_prompts:
-                # system is embedded in messages; pass None to avoid double-printing
-                _print_prompt_debug(None, session.get_messages(), ctx.session_id)
-            async for event in self._stream_tool_loop(ctx, session, extra_context=extra_context):
+                # Show static system first, then session_context, then non-system messages —
+                # matching the actual two-block order sent to the LLM adapter.
+                non_system = [m for m in session.get_messages() if m.role != MessageRole.SYSTEM]
+                _print_prompt_debug(
+                    ctx.system_prompt, non_system, ctx.session_id, session_layer or None
+                )
+            async for event in self._stream_tool_loop(
+                ctx, session, session_layer=session_layer, extra_context=extra_context
+            ):
                 yield event
         else:
-            # normal mode: system is prepended only at the LLM call site.
+            # normal mode: static system is prepended at the LLM call site.
             session.restore_messages(stored)
             session.add_message(
                 Message(
@@ -549,8 +563,12 @@ class ChatPipeline:
                 )
             )
             if self._config.debug.log_prompts:
-                _print_prompt_debug(effective_prompt, session.get_messages(), ctx.session_id)
-            async for event in self._stream_normal(ctx, session, effective_prompt):
+                _print_prompt_debug(
+                    ctx.system_prompt, session.get_messages(), ctx.session_id, session_layer or None
+                )
+            async for event in self._stream_normal(
+                ctx, session, ctx.system_prompt, session_layer=session_layer
+            ):
                 yield event
 
     async def _stream_normal(
@@ -558,15 +576,21 @@ class ChatPipeline:
         ctx: ChatContext,
         session: SessionState,
         system_prompt: str | None,
+        session_layer: str = "",
     ) -> AsyncIterator[StreamEvent]:
         """Stream a single LLM call without tool execution.
 
-        ``system_prompt`` is the **effective** prompt computed in ``stream()`` —
-        static layers from ``ctx.system_prompt`` plus the per-turn ``<session_context>``.
+        ``system_prompt`` is the static cached layer (``ctx.system_prompt``).
+        ``session_layer`` is the per-turn dynamic ``<session_context>`` block passed
+        to the adapter as a separate non-cached system block via ``session_context`` kwarg.
         """
         llm_messages = session.get_messages()
         if system_prompt:
             llm_messages = [Message(role=MessageRole.SYSTEM, content=system_prompt)] + llm_messages
+
+        call_kwargs = dict(ctx.llm_kwargs)
+        if session_layer:
+            call_kwargs["session_context"] = session_layer
 
         accumulated_content = ""
         assistant_metadata: dict[str, Any] = {}
@@ -574,7 +598,7 @@ class ChatPipeline:
             async for event in self.get_llm_adapter(ctx.profile).generate_stream(
                 messages=llm_messages,
                 temperature=ctx.temperature,
-                **ctx.llm_kwargs,
+                **call_kwargs,
             ):
                 if event.event_type == StreamEventType.TEXT_DELTA and event.content:
                     accumulated_content += event.content
@@ -597,6 +621,7 @@ class ChatPipeline:
         self,
         ctx: ChatContext,
         session: SessionState,
+        session_layer: str = "",
         extra_context: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a multi-round tool-loop execution.
@@ -621,6 +646,9 @@ class ChatPipeline:
             user_id=ctx.user_id,
             extra_context_overlay=extra_context,
         )
+        call_kwargs = dict(ctx.llm_kwargs)
+        if session_layer:
+            call_kwargs["session_context"] = session_layer
         completed = False
         total_input_tokens = 0
         total_output_tokens = 0
@@ -628,7 +656,7 @@ class ChatPipeline:
         total_cache_creation_input_tokens = 0
         try:
             async for event in tool_loop.execute_stream_with_tools(
-                session, allowed_tools=ctx.allowed_tools, **ctx.llm_kwargs
+                session, allowed_tools=ctx.allowed_tools, **call_kwargs
             ):
                 if event.event_type == StreamEventType.DONE:
                     if event.metadata.get("source") == "tool_loop":

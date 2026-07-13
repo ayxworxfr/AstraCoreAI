@@ -125,6 +125,8 @@ class VectorConfig(BaseModel):
     persist_directory: str | None = None
     embedding_model: str = "all-MiniLM-L6-v2"
     """Chroma ONNX embedding 模型名，当前仅支持 all-MiniLM-L6-v2。"""
+    rag_min_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    """RAG 检索最低相关度（0-1）。低于此分数的 chunk 不注入 prompt。"""
 
 
 class StorageConfig(BaseModel):

@@ -365,9 +365,14 @@ class OpenAIAdapter(LLMAdapter):
         reasoning_effort: str | None = None,
         verbosity: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        session_context: str | None = None,
     ) -> LLMResponse:
         client = self._get_client()
         instructions, input_messages = self._responses_input(messages)
+        if session_context:
+            instructions = (
+                (instructions + "\n\n" + session_context) if instructions else session_context
+            )
         # Responses API (GPT-5 / o-series) does not accept temperature or top_p.
         request_params: dict[str, Any] = {
             "model": model,
@@ -420,9 +425,14 @@ class OpenAIAdapter(LLMAdapter):
         reasoning_effort: str | None = None,
         verbosity: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        session_context: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         client = self._get_client()
         instructions, input_messages = self._responses_input(messages)
+        if session_context:
+            instructions = (
+                (instructions + "\n\n" + session_context) if instructions else session_context
+            )
         # Responses API (GPT-5 / o-series) does not accept temperature or top_p.
         request_params: dict[str, Any] = {
             "model": model,
@@ -508,9 +518,19 @@ class OpenAIAdapter(LLMAdapter):
                 reasoning_effort=kwargs.get("reasoning_effort"),
                 verbosity=kwargs.get("verbosity"),
                 tools=self._tools_for_responses(kwargs),
+                session_context=kwargs.get("session_context"),
             )
 
         converted_messages = self._convert_messages(messages)
+        session_context: str | None = kwargs.get("session_context")
+        if session_context:
+            # OpenAI Chat Completions does not support multi-block system; append to existing.
+            for msg in converted_messages:
+                if msg.get("role") == "system":
+                    msg["content"] = (msg.get("content") or "") + "\n\n" + session_context
+                    break
+            else:
+                converted_messages.insert(0, {"role": "system", "content": session_context})
 
         top_p: float | None = kwargs.get("top_p", None)
         stop_sequences: list[str] = kwargs.get("stop_sequences", [])
@@ -623,11 +643,21 @@ class OpenAIAdapter(LLMAdapter):
                 reasoning_effort=kwargs.get("reasoning_effort"),
                 verbosity=kwargs.get("verbosity"),
                 tools=self._tools_for_responses(kwargs),
+                session_context=kwargs.get("session_context"),
             ):
                 yield event
             return
 
         converted_messages = self._convert_messages(messages)
+        session_context: str | None = kwargs.get("session_context")
+        if session_context:
+            # OpenAI Chat Completions does not support multi-block system; append to existing.
+            for msg in converted_messages:
+                if msg.get("role") == "system":
+                    msg["content"] = (msg.get("content") or "") + "\n\n" + session_context
+                    break
+            else:
+                converted_messages.insert(0, {"role": "system", "content": session_context})
 
         top_p: float | None = kwargs.get("top_p", None)
         stop_sequences: list[str] = kwargs.get("stop_sequences", [])

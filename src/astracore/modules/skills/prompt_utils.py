@@ -38,13 +38,15 @@ def build_identity_layer(
     owner_name: str,
     global_instruction: str,
 ) -> str:
-    """Build the identity layer wrapped in <identity> XML — keeps the system prompt scannable."""
+    """Build the identity layer wrapped in <identity> XML — keeps the system prompt scannable.
+
+    datetime is intentionally omitted here; it is injected per-turn into the user message
+    via ``_build_user_context()`` in pipeline.py so the static system prompt never changes
+    between turns and can be fully cached.
+    """
     name = ai_name or "AI 助手"
     owner = owner_name or "用户"
-    inner: list[str] = [
-        f"你是 {name}，{owner} 的 AI 助手。",
-        build_current_time_info(),
-    ]
+    inner: list[str] = [f"你是 {name}，{owner} 的 AI 助手。"]
     if global_instruction:
         inner.append(global_instruction.strip())
     body = "\n".join(inner)

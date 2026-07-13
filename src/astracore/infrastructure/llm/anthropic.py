@@ -198,6 +198,39 @@ class AnthropicAdapter(LLMAdapter):
                 return msg.content
         return None
 
+    @staticmethod
+    def _build_system_param(
+        system: str | None,
+        session_context: str | None,
+        enable_prompt_cache: bool,
+    ) -> list[dict[str, Any]] | str | None:
+        """Build the Anthropic API ``system`` parameter.
+
+        When *session_context* is provided (the dynamic per-turn layer), returns a
+        two-element block array:
+          - Block 0 (static): the cached security/identity/skills/profile layers.
+            Marked with ``cache_control`` when *enable_prompt_cache* is True so the
+            Anthropic API serves this block from cache on subsequent turns.
+          - Block 1 (dynamic): session_context containing datetime, RAG, active-skill
+            reminder, and Tier-2 memory.  Never marked for caching — it changes
+            every turn by design.
+
+        When *session_context* is absent, falls back to the simpler single-string
+        system or a single cached block, preserving existing behaviour.
+        """
+        if not system and not session_context:
+            return None
+        if not system:
+            return session_context  # defensive; static layer should always be present
+        if session_context:
+            static_block: dict[str, Any] = {"type": "text", "text": system}
+            if enable_prompt_cache:
+                static_block["cache_control"] = {"type": "ephemeral"}
+            return [static_block, {"type": "text", "text": session_context}]
+        if enable_prompt_cache:
+            return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+        return system
+
     async def generate(
         self,
         messages: list[Message],
@@ -223,6 +256,7 @@ class AnthropicAdapter(LLMAdapter):
         converted_messages = self._convert_messages(messages)
 
         enable_prompt_cache: bool = kwargs.get("enable_prompt_cache", False)
+        session_context: str | None = kwargs.get("session_context")
         top_p: float | None = kwargs.get("top_p", None)
         top_k: int | None = kwargs.get("top_k", None)
         stop_sequences: list[str] = kwargs.get("stop_sequences", [])
@@ -236,12 +270,9 @@ class AnthropicAdapter(LLMAdapter):
         if self.supports_temperature and top_p is None and top_k is None:
             request_params["temperature"] = temperature
 
-        if enable_prompt_cache and system:
-            request_params["system"] = [
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-            ]
-        elif system:
-            request_params["system"] = system
+        system_param = self._build_system_param(system, session_context, enable_prompt_cache)
+        if system_param is not None:
+            request_params["system"] = system_param
 
         if top_p is not None:
             request_params["top_p"] = top_p
@@ -332,6 +363,7 @@ class AnthropicAdapter(LLMAdapter):
         thinking_mode: str | None = kwargs.get("thinking_mode", None)
         thinking_budget: int = kwargs.get("thinking_budget", 8000)
         enable_prompt_cache: bool = kwargs.get("enable_prompt_cache", False)
+        session_context: str | None = kwargs.get("session_context")
         top_p: float | None = kwargs.get("top_p", None)
         top_k: int | None = kwargs.get("top_k", None)
         stop_sequences: list[str] = kwargs.get("stop_sequences", [])
@@ -365,12 +397,9 @@ class AnthropicAdapter(LLMAdapter):
                 # 采样参数互斥：top_p > top_k > temperature
                 request_params["temperature"] = temperature
 
-        if enable_prompt_cache and system:
-            request_params["system"] = [
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-            ]
-        elif system:
-            request_params["system"] = system
+        system_param = self._build_system_param(system, session_context, enable_prompt_cache)
+        if system_param is not None:
+            request_params["system"] = system_param
 
         if top_p is not None:
             request_params["top_p"] = top_p
