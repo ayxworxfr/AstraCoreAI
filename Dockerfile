@@ -57,7 +57,8 @@ RUN useradd -m -u 1000 appuser
 
 # Pre-download ChromaDB ONNX model using urllib (no httpx read-timeout issues).
 # Failures are non-fatal: the model will fall back to runtime download.
-# Copy locally-cached model if available (run scripts/cache_chroma_model.py once to populate)
+# Copy locally-cached model if available (run `make docker-cache-model` once to populate).
+# docker/chroma_model/ is kept in git via .gitkeep so this COPY always has a source path.
 COPY docker/chroma_model/ /home/appuser/.cache/chroma/onnx_models/all-MiniLM-L6-v2/
 
 COPY scripts/predownload_chroma_model.py /tmp/predownload_chroma_model.py

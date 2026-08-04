@@ -89,6 +89,7 @@ async def test_knowledge_layer_passes_min_score_to_retriever() -> None:
     rag = AsyncMock()
     rag.retrieve_with_citations.return_value = []
     builder = _make_builder(rag_pipeline=rag, rag_min_score=0.55)
+    builder._get_setting = AsyncMock(return_value="4")  # type: ignore[method-assign]
 
     await builder.retrieve_rag_context("DAG 工作流状态怎么存", "user-1")
 
@@ -103,10 +104,27 @@ async def test_knowledge_layer_returns_empty_when_no_chunks() -> None:
     rag = AsyncMock()
     rag.retrieve_with_citations.return_value = []
     builder = _make_builder(rag_pipeline=rag)
+    builder._get_setting = AsyncMock(return_value="4")  # type: ignore[method-assign]
 
     result = await builder.retrieve_rag_context("记忆系统怎么压缩", "user-1")
 
     assert result == ""
+
+
+async def test_knowledge_layer_falls_back_top_k_when_settings_fail() -> None:
+    """settings 读取失败不得阻断检索——回退默认 top_k 后继续 retrieve。"""
+    rag = AsyncMock()
+    rag.retrieve_with_citations.return_value = []
+    builder = _make_builder(rag_pipeline=rag, rag_min_score=0.55)
+    builder._get_setting = AsyncMock(side_effect=RuntimeError("db down"))  # type: ignore[method-assign]
+
+    await builder.retrieve_rag_context("DAG 工作流状态怎么存", "user-1")
+
+    rag.retrieve_with_citations.assert_awaited_once_with(
+        query="DAG 工作流状态怎么存",
+        top_k=4,
+        min_score=0.55,
+    )
 
 
 async def test_knowledge_layer_wraps_retrieved_chunks() -> None:

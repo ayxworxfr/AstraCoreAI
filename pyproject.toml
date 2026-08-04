@@ -53,7 +53,7 @@ dev = [
     "pytest-asyncio>=0.23.7",
     "pytest-cov>=5.0.0",
     "mypy>=1.10.1",
-    "ruff>=0.5.0",
+    "ruff>=0.16.0",
     "httpx-sse>=0.4.0",
     "fastmcp>=3.0.0",
 ]
@@ -85,7 +85,7 @@ dependencies = [
     "pytest-asyncio",
     "pytest-cov",
     "mypy",
-    "ruff",
+    "ruff>=0.16.0",
     "httpx-sse>=0.4.0",
     "fastmcp>=3.0.0",
 ]
@@ -126,6 +126,12 @@ ignore_missing_imports = true
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# CLI 传入目录时也要尊重 exclude（否则 knowledge_base 仍会被扫到）
+force-exclude = true
+# RAG 知识库是内容文档，不是业务代码；保留示例里的对齐空格
+extend-exclude = [
+    "src/astracore/modules/rag/knowledge_base",
+]
 
 [tool.ruff.lint]
 select = [

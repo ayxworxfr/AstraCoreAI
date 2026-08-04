@@ -248,12 +248,20 @@ class SystemPromptBuilder:
             return ""
         return f"<user_profile>\n{content}\n</user_profile>"
 
+    async def _resolve_rag_top_k(self, user_id: str) -> int:
+        """读取用户 rag_top_k；失败时回退默认值，不阻断检索。"""
+        try:
+            return int(await self._get_setting("rag_top_k", user_id) or "4")
+        except Exception:
+            logger.exception("读取 rag_top_k 失败，使用默认 top_k=4")
+            return 4
+
     async def _knowledge_layer(self, query: str, user_id: str) -> str:
         """RAG retrieval — untrusted source; payload wrapped with <external_data>."""
         if self._rag_pipeline is None or should_skip_rag_query(query):
             return ""
+        top_k = await self._resolve_rag_top_k(user_id)
         try:
-            top_k = int(await self._get_setting("rag_top_k", user_id) or "4")
             min_score = self._config.storage.vector.rag_min_score
             chunks = await self._rag_pipeline.retrieve_with_citations(
                 query=query, top_k=top_k, min_score=min_score
@@ -265,6 +273,7 @@ class SystemPromptBuilder:
             ]
             context = "\n\n---\n\n".join(parts)
         except Exception:
+            logger.exception("RAG 检索失败，跳过本轮知识注入")
             return ""
         body = (
             "以下是从知识库检索到的相关内容，请优先基于这些内容回答用户问题，"

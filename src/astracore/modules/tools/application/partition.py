@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from astracore.modules.chat.domain.message import ToolCall
@@ -23,7 +24,7 @@ class ToolBatch:
     calls: tuple[ToolCall, ...]
     concurrent: bool
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[ToolCall]:
         return iter(self.calls)
 
     def __len__(self) -> int:
