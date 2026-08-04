@@ -88,7 +88,7 @@ storage:
     collection_name: astracore
     persist_directory: ./chroma_db
     embedding_model: all-MiniLM-L6-v2          # Chroma ONNX 默认模型，避免拉取 torch/CUDA
-    rag_min_score: 0.3                         # RAG 最低相关度，低于此分数不注入 prompt
+    rag_min_score: 0.5                         # RAG 最低相关度，低于此分数不注入 prompt
 
 skills:
   extra_dirs: []             # 额外的 skill 目录，支持绝对路径或 ~/xxx
