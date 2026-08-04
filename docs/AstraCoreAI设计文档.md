@@ -235,9 +235,9 @@ POST /chat/runs        → 创建后台 asyncio Task，立即返回 run_id
 GET  /runs/{id}/stream → SSE 订阅，浏览器断开不取消后台任务
 ```
 
-**内存热状态**：运行中的 run 以 `_ActiveRun` 保存在进程字典中，SSE 重连时优先返回内存快照。
-**完成落库**：任务完成后一次性写入 `ChatRunRow` + 消息持久化。
-**已知限制**：进程内 `_ACTIVE_RUNS` 字典在多 worker 部署时不共享，生产水平扩展需迁移到 Redis。
+**内存热状态**：运行中的 run 由 `RunRegistry` / `ActiveRun` 持有（Task、本地 SSE 队列、HITL Future）；有 Redis 时同步 state 并扇出事件。
+**完成落库**：任务完成后写入 `ChatRunRow`；对话轨迹另有 append-only transcript + short-term 物化视图。
+**多 worker**：SSE/HITL 可通过 Redis pub/sub 跨 worker 转发；无 Redis 时退化为单进程行为。
 
 ### 5.8 Hook / Callback 系统
 

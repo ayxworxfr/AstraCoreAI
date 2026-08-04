@@ -8,13 +8,20 @@ import pytest
 from astracore.infrastructure.db.session import get_engine
 from astracore.modules.memory.domain import MemoryScope, MemoryStatus, MemoryType
 from astracore.sdk.client import AstraCoreClient
-from astracore.sdk.config import AstraCoreConfig, LLMConfig, LLMProfileConfig, StorageConfig
+from astracore.sdk.config import (
+    AstraCoreConfig,
+    LLMConfig,
+    LLMProfileConfig,
+    StorageConfig,
+    VectorConfig,
+)
+from tests.support.db import prepare_test_db
 
 
 @pytest.fixture
 async def sdk_client(tmp_path):
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'sdk-memory.db'}"
-    get_engine.cache_clear()
+    # 这些用例不测 RAG；关掉 vector，避免为 setup 拉起 Chroma
+    db_url = await prepare_test_db(tmp_path, name="sdk-memory.db")
     config = AstraCoreConfig(
         llm=LLMConfig(
             default_profile="test",
@@ -28,9 +35,15 @@ async def sdk_client(tmp_path):
                 )
             ],
         ),
-        storage=StorageConfig(redis_url="redis://localhost:6379/0", db_url=db_url),
+        storage=StorageConfig(
+            redis_url="redis://localhost:6379/0",
+            db_url=db_url,
+            vector=VectorConfig(enabled=False),
+        ),
     )
     async with AstraCoreClient(config=config) as client:
+        # 测试环境不依赖 Redis；避免 delete_session 等路径卡在连接超时
+        client._memory._redis_disabled = True
         yield client
     get_engine.cache_clear()
 

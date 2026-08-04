@@ -317,6 +317,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=False,
             )
         ],
+        is_readonly=True,
+        is_concurrency_safe=True,
     )
 
     native.register_tool(
@@ -331,6 +333,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=True,
             )
         ],
+        is_readonly=True,
+        is_concurrency_safe=True,
     )
 
     native.register_tool(
@@ -357,6 +361,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         # 知识库片段量级一般 5-10 条 × 1-2 KB，单次 8000 字符足够；
         # 防止极端长文档把 context 撑爆触发 LLM API 流式超时。
         metadata={"max_output_chars": _KNOWLEDGE_BASE_MAX_OUTPUT_CHARS},
+        is_readonly=True,
+        is_concurrency_safe=True,
     )
 
     _ws_cfg = AstraCoreConfig().web_search
@@ -412,6 +418,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         # WebSearch 单条 result 平均 500-1500 字符 × 5 条 ≈ 5 KB；
         # 15000 字符上限保留充足摘要，10 次堆叠 ≈ 150K，仍可控。
         metadata={"max_output_chars": _WEB_SEARCH_MAX_OUTPUT_CHARS},
+        is_readonly=True,
+        is_concurrency_safe=True,
     )
 
     native.register_tool(
@@ -432,6 +440,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
         # 单页正文通常 5-30 KB，15000 字符约覆盖 2-3 屏主体内容；
         # 避免超长页面（法律条文、长文文章）撑爆 context。
         metadata={"max_output_chars": _FETCH_PAGE_MAX_OUTPUT_CHARS},
+        is_readonly=True,
+        is_concurrency_safe=True,
     )
 
     native.register_tool(
@@ -442,6 +452,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
             "当用户要求「压缩记忆」「整理记忆」或会话记忆条数较多时使用。"
         ),
         parameters=[],
+        is_readonly=False,
+        is_concurrency_safe=False,
     )
 
     native.register_tool(
@@ -489,6 +501,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=False,
             ),
         ],
+        is_readonly=False,
+        is_concurrency_safe=False,
     )
 
     native.register_tool(
@@ -525,6 +539,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=False,
             ),
         ],
+        is_readonly=True,
+        is_concurrency_safe=True,
     )
 
     native.register_tool(
@@ -544,6 +560,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
             ),
         ],
         requires_confirmation=True,
+        is_destructive=True,
+        is_concurrency_safe=False,
     )
 
     native.register_tool(
@@ -584,6 +602,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=False,
             ),
         ],
+        is_concurrency_safe=False,
     )
 
     # ------------------------------------------------------------------
@@ -816,6 +835,7 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=False,
             ),
         ],
+        is_concurrency_safe=False,
     )
 
     native.register_tool(
@@ -830,6 +850,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
                 required=False,
             ),
         ],
+        is_readonly=True,
+        is_concurrency_safe=True,
     )
 
     native.register_tool(
@@ -896,6 +918,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
             ),
         ],
         requires_confirmation=True,
+        is_destructive=True,
+        is_concurrency_safe=False,
     )
 
     native.register_tool(
@@ -911,6 +935,8 @@ def build_tool_adapter(db_url: str = "") -> ToolAdapter:
             ),
         ],
         requires_confirmation=True,
+        is_destructive=True,
+        is_concurrency_safe=False,
     )
 
     # 技能工具：load_skill / get_skill_reference / run_skill_script

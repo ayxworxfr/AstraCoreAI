@@ -456,6 +456,10 @@ class AstraCoreClient:
         verbosity: str | None = None,
         enable_rag: bool = False,
         enable_web: bool = False,
+        toolset: str | None = None,
+        max_input_tokens: int = 0,
+        max_output_tokens: int = 0,
+        soft_exec: bool = False,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a single-turn chat response as raw :class:`StreamEvent` objects.
 
@@ -480,6 +484,10 @@ class AstraCoreClient:
                 verbosity=verbosity,
                 enable_rag=enable_rag,
                 enable_web=enable_web,
+                toolset=toolset,
+                max_input_tokens=max_input_tokens,
+                max_output_tokens=max_output_tokens,
+                soft_exec=soft_exec,
             ),
         )
         accumulated = ""
@@ -506,6 +514,10 @@ class AstraCoreClient:
         verbosity: str | None = None,
         enable_rag: bool = False,
         enable_web: bool = False,
+        toolset: str | None = None,
+        max_input_tokens: int = 0,
+        max_output_tokens: int = 0,
+        soft_exec: bool = False,
     ) -> ChatResult:
         """Send a single-turn message and return the complete response.
 
@@ -530,6 +542,10 @@ class AstraCoreClient:
                 verbosity=verbosity,
                 enable_rag=enable_rag,
                 enable_web=enable_web,
+                toolset=toolset,
+                max_input_tokens=max_input_tokens,
+                max_output_tokens=max_output_tokens,
+                soft_exec=soft_exec,
             ),
         )
         content = await self._pipeline.execute(ctx)
@@ -601,6 +617,11 @@ class AstraCoreClient:
         func: Any,
         description: str,
         parameters: list[ToolParameter],
+        *,
+        requires_confirmation: bool = False,
+        is_concurrency_safe: bool = False,
+        is_readonly: bool = False,
+        is_destructive: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Register a custom tool available during tool-loop calls."""
@@ -610,6 +631,10 @@ class AstraCoreClient:
             func=func,
             description=description,
             parameters=parameters,
+            requires_confirmation=requires_confirmation,
+            is_concurrency_safe=is_concurrency_safe,
+            is_readonly=is_readonly,
+            is_destructive=is_destructive,
             metadata=metadata,
         )
 
@@ -810,16 +835,16 @@ class WorkflowClient:
     ) -> WorkflowState:
         """Execute a DAG workflow.
 
-        Each task is run via the chat pipeline sharing a single session so that
-        context from earlier tasks is visible to later ones through conversation
-        memory. Pass ``session_id`` to resume a previous workflow session.
+        每个 task 使用独立 session（隔离上下文预算），仅通过结构化
+        ``task_results`` 文本回传前序结果——避免共享 short-term 把主上下文撑爆。
+        传入 ``session_id`` 时作为命名空间前缀，便于审计关联。
 
         Per-task overrides can be stored in ``task.metadata``:
         - ``"use_tools"`` (bool)
         - ``"model_profile"`` (str)
         - ``"temperature"`` (float)
         """
-        workflow_session_id = session_id or uuid4()
+        workflow_ns = session_id or uuid4()
         orchestrator = NativeWorkflowOrchestrator()
         pipeline = self._client._pipeline
 
@@ -829,14 +854,23 @@ class WorkflowClient:
                 lines = [f"[Task {tid}]\n{result}" for tid, result in task_results.items()]
                 message = message + "\n\n---\n[已完成任务的结果]\n" + "\n\n".join(lines)
 
+            # 每 task 独立 session，杜绝共享短期记忆造成的上下文污染
+            task_session_id = uuid4()
+            logger.debug(
+                "workflow task=%s ns=%s session=%s",
+                task.task_id,
+                workflow_ns,
+                task_session_id,
+            )
             ctx = await pipeline.prepare(
                 message=message,
-                session_id=workflow_session_id,
+                session_id=task_session_id,
                 options=ChatOptions(
                     use_tools=bool(task.metadata.get("use_tools", use_tools)),
                     model_profile=task.metadata.get("model_profile") or model_profile,
                     temperature=task.metadata.get("temperature") or temperature,
                     enable_rag=bool(task.metadata.get("enable_rag", enable_rag)),
+                    toolset=task.metadata.get("toolset"),
                 ),
             )
             return await pipeline.execute(ctx)

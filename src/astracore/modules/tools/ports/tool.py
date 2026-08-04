@@ -49,12 +49,20 @@ class ToolParameter(BaseModel):
 
 
 class ToolDefinition(BaseModel):
-    """Tool definition for LLM."""
+    """Tool definition for LLM — 协议对象，不只是 name + call。
+
+    安全元数据默认 fail-closed：未显式声明则不可并发、非只读。
+    框架层按这些字段做并发分区与 HITL，开发者只需声明属性。
+    """
 
     name: str
     description: str
     parameters: list[ToolParameter] = Field(default_factory=list)
     requires_confirmation: bool = False
+    # 安全元数据 —— 默认保守，强迫显式声明
+    is_concurrency_safe: bool = False
+    is_readonly: bool = False
+    is_destructive: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -136,10 +144,15 @@ class MutableToolAdapter(ToolAdapter):
         description: str,
         parameters: list[ToolParameter],
         requires_confirmation: bool = False,
+        *,
+        is_concurrency_safe: bool = False,
+        is_readonly: bool = False,
+        is_destructive: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Register a new tool.
 
+        安全字段默认 fail-closed（不可并发 / 非只读）。
         ``metadata`` 用于挂载工具级别的运行时约束，常用键：
         - ``max_output_chars``: 单次工具结果截断上限（覆盖全局 ``agent.max_tool_result_chars``）
         - ``timeout_s``: 工具自身超时（覆盖全局 ``policy.timeout.tool_timeout_s``）

@@ -4,9 +4,9 @@ The executor streams a resolved ChatContext through ChatPipeline, accumulates
 results, persists them to the DB, updates conversation metadata, and triggers
 memory auto-extraction.
 
-HTTP-specific concerns (SSE broadcasting, in-memory active-run state, HITL
+HTTP-specific concerns (SSE broadcasting, RunRegistry state, HITL
 prompt/response wiring) are injected via callbacks so this module has no
-dependency on FastAPI, SSE, or ``_ACTIVE_RUNS``.
+dependency on FastAPI, SSE, or ``RunRegistry``.
 """
 
 from __future__ import annotations

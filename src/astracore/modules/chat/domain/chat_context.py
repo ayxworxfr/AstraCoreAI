@@ -96,3 +96,12 @@ class ChatContext:
     attachment_refs: list[AttachmentRef] = field(default_factory=list, compare=False, hash=False)
     """本轮已加载字节的附件列表，由 pipeline.prepare() 从存储中读取后注入。
     LLM 适配器从此字段读取 bytes 构建 image/document content blocks。"""
+
+    max_input_tokens: int = 0
+    """本轮输入 token 硬上限；0 = 不限制。"""
+
+    max_output_tokens: int = 0
+    """本轮输出 token 硬上限；0 = 不限制。"""
+
+    soft_exec: bool = False
+    """破坏性工具软执行：只返回预览，不真正修改状态。"""

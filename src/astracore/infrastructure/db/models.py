@@ -384,6 +384,33 @@ class AttachmentRow(Base):
     __table_args__ = (Index("ix_attachments_user_created", "user_id", "created_at"),)
 
 
+class TranscriptEventRow(Base):
+    """Append-only conversation transcript event (LLM-recoverable truth source)."""
+
+    __tablename__ = "transcript_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tool_input: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "seq", name="uq_transcript_events_conv_seq"),
+        Index("ix_transcript_events_conv_seq", "conversation_id", "seq"),
+    )
+
+
 class UserRow(Base):
     """Application user account."""
 

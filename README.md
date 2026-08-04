@@ -1,7 +1,7 @@
 # AstraCoreAI
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
-![Tests](https://img.shields.io/badge/Tests-240%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-344%20passed-brightgreen)
 ![License](https://img.shields.io/badge/License-PolyForm%20NC-orange)
 
 > Enterprise-grade Python AI agent framework built with Clean Architecture and Ports & Adapters.
@@ -38,10 +38,13 @@ HITL support is built into the tool loop:
 
 ### Tool System
 
-- Native Python tools with schema validation, JSON repair, and timeout isolation
-- Built-in MCP filesystem and shell integrations
-- Custom MCP server support
-- Robust tool-loop handling for dangling tool calls, empty responses, and final summaries
+- Native Python tools with Schema validation (errors return to the model), JSON repair, and timeout isolation
+- Declarative concurrency: `is_concurrency_safe` / `is_readonly` / `is_destructive` on `ToolDefinition`, plus path-scoped batching (unsafe / conflicting paths run serially)
+- Named **Toolsets** (`default` / `readonly` / `memory_ops` / `worker`…) via `ChatOptions.toolset`
+- Unified agent loop: streaming and non-streaming share one `_run_loop`; only the LLM round strategy differs
+- `soft_exec` previews destructive tools without applying side effects; optional per-turn token budgets (`max_input_tokens` / `max_output_tokens`)
+- Built-in MCP filesystem and shell integrations, plus custom MCP servers
+- Robust handling for dangling tool calls, empty responses, and closing summaries
 - Parallel sub-agent execution through `spawn_agents` when enabled
 
 ### Scheduled Tasks
@@ -107,7 +110,9 @@ Adding a new model only requires updating `infer_model_capabilities()` — no fr
 
 ### Additional Features
 
-- **HistoryCompactor**: summarizes old conversation history and persists the summary as session memory
+- **HistoryCompactor**: summarizes old history and reinjects it as a `USER` message with `metadata.compacted=True` (survives save filters)
+- **Append-only transcript**: SQL event log + short-term materialization; empty short-term triggers transcript replay
+- **RunRegistry**: process-local run ownership with Redis state/event fan-out for multi-worker SSE and HITL (falls back in-process if Redis is down)
 - **RAG**: ChromaDB-backed retrieval with idempotent upsert and citations
 - **TTS**: text-to-speech synthesis endpoint
 - **Evaluation Framework**: LLM-as-judge, tool-call matching, and CLI execution through `python -m astracore.eval`
@@ -131,11 +136,12 @@ flowchart TD
 
     subgraph Application
         ME["MemoryEngine\nTier-1 profile / Tier-2 recall"]
-        TL["ToolLoopUseCase\nNative · MCP · spawn_agents"]
+        TL["ToolLoopUseCase\n_run_loop + LLMRoundStrategy\npartition · Schema · HITL"]
         RP["RAGPipeline\nChroma · chunking · citations"]
+        TR["Transcript + history\nappend-only · replay"]
     end
 
-    CP --> ME & TL & RP
+    CP --> ME & TL & RP & TR
 
     subgraph Ports["shared/ports"]
         LLMPort["LLMAdapter"]
@@ -146,18 +152,21 @@ flowchart TD
     ME --> MemPort
     TL --> ToolPort & LLMPort
     RP --> LLMPort
+    TR --> MemPort
 
     subgraph Infrastructure
         INF_LLM["Anthropic · OpenAI-compatible\nDeepSeek / GLM / GPT-5 Responses API"]
         INF_MEM["SQLite · ChromaDB\nRedis optional"]
         INF_ATT["LocalFS Attachments\nimage / PDF"]
+        INF_RUN["RunRegistry\nRedis fan-out for SSE / HITL"]
     end
 
     LLMPort & ToolPort --> INF_LLM
     MemPort --> INF_MEM
+    CP --> INF_RUN
 ```
 
-`ChatPipeline.prepare()` performs batched database reads and returns an immutable `ChatContext`. `stream()` then executes the turn through either the normal LLM path or the tool-loop path. SDK and HTTP modes share the same pipeline, so behavior stays consistent across embedding and service deployments.
+`ChatPipeline.prepare()` batches DB reads into an immutable `ChatContext`. `stream()` loads history (short-term, else transcript replay), optionally compacts, then runs the normal or tool-loop path. Streaming and blocking tool loops share one orchestrator. SDK and HTTP use the same pipeline for behavioral parity.
 
 ---
 
@@ -467,6 +476,8 @@ async with AstraCoreClient(hooks=registry) as client:
 | Document | Path |
 |----------|------|
 | Chinese README | [`README.zh-CN.md`](./README.zh-CN.md) |
+| **Cursor / agent coding skill** (preferred for day-to-day work) | [`.cursor/skills/developing-astracore/`](./.cursor/skills/developing-astracore/SKILL.md) |
+| Agent SDK patterns refactor (design + landing status) | [`docs/astra/2026-08-04-agent-sdk-patterns-refactor.md`](./docs/astra/2026-08-04-agent-sdk-patterns-refactor.md) |
 | System design | `docs/AstraCoreAI设计文档.md` |
 | Development roadmap | `docs/开发进度规划.md` |
 | Frontend design | `docs/前端设计方案.md` |
@@ -486,8 +497,12 @@ async with AstraCoreClient(hooks=registry) as client:
 - [x] Dynamic model controls descriptor (`controls` list per profile)
 - [x] Multi-provider LLM support: Anthropic, OpenAI Responses API (GPT-5), OpenAI Chat Completions (DeepSeek, GLM), custom endpoints
 - [x] TTS synthesis
+- [x] Declarative tool concurrency, Toolsets, unified stream/blocking agent loop
+- [x] Append-only transcript + short-term replay recovery
+- [x] Redis-backed multi-worker run fan-out (`RunRegistry`; in-process fallback)
+- [x] Per-turn token budgets and `soft_exec` for destructive tools
 - [ ] Rate limiting
-- [ ] Redis-backed multi-worker run state
+- [ ] Full undo / transactional rollback for tool side effects
 - [ ] OpenTelemetry-compatible tracing, SLOs, and metrics
 - [ ] Release engineering, rollback playbooks, and operational documentation
 

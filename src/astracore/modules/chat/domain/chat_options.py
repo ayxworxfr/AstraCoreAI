@@ -68,6 +68,14 @@ class ChatOptions:
     verbosity: str | None = None
     enable_rag: bool = False
     enable_web: bool = False
+    toolset: str | None = None
+    """命名 Toolset（``default`` / ``readonly`` / ``memory_ops`` 等）。``None`` = default。"""
+    max_input_tokens: int = 0
+    """本轮输入 token 硬上限；0 = 不限制。"""
+    max_output_tokens: int = 0
+    """本轮输出 token 硬上限；0 = 不限制。"""
+    soft_exec: bool = False
+    """破坏性工具只预览不落盘（软执行）。"""
     attachments: list[AttachmentRef] = dataclasses.field(default_factory=list)
     """Attachment references to include in this turn. Pipeline loads bytes before LLM call."""
 

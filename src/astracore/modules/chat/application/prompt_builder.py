@@ -253,13 +253,7 @@ class SystemPromptBuilder:
         if self._rag_pipeline is None or should_skip_rag_query(query):
             return ""
         try:
-            raw_top_k = await self._get_setting("rag_top_k", user_id)
-            top_k = int(raw_top_k or "4")
-        except Exception:
-            # 设置读取失败不应阻断知识库检索，回退默认 top_k
-            logger.warning("读取 rag_top_k 失败，回退默认 top_k=4", exc_info=True)
-            top_k = 4
-        try:
+            top_k = int(await self._get_setting("rag_top_k", user_id) or "4")
             min_score = self._config.storage.vector.rag_min_score
             chunks = await self._rag_pipeline.retrieve_with_citations(
                 query=query, top_k=top_k, min_score=min_score
@@ -271,7 +265,6 @@ class SystemPromptBuilder:
             ]
             context = "\n\n---\n\n".join(parts)
         except Exception:
-            logger.warning("RAG 知识库检索失败", exc_info=True)
             return ""
         body = (
             "以下是从知识库检索到的相关内容，请优先基于这些内容回答用户问题，"

@@ -365,6 +365,10 @@ class MCPToolAdapter(ToolAdapter):
         description: str,
         parameters: list[ToolParameter],
         requires_confirmation: bool = False,
+        *,
+        is_concurrency_safe: bool = False,
+        is_readonly: bool = False,
+        is_destructive: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         raise NotImplementedError(

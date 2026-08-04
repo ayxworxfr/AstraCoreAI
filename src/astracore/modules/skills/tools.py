@@ -188,6 +188,8 @@ def build_skill_tools_adapter(db_url: str) -> NativeToolAdapter:
                 required=True,
             )
         ],
+        is_readonly=True,
+        is_concurrency_safe=True,
     )
 
     adapter.register_tool(
@@ -211,6 +213,8 @@ def build_skill_tools_adapter(db_url: str) -> NativeToolAdapter:
                 required=True,
             ),
         ],
+        is_readonly=True,
+        is_concurrency_safe=True,
     )
 
     adapter.register_tool(
@@ -239,6 +243,7 @@ def build_skill_tools_adapter(db_url: str) -> NativeToolAdapter:
                 required=False,
             ),
         ],
+        is_concurrency_safe=False,
     )
 
     return adapter

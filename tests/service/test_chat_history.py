@@ -7,10 +7,11 @@ from uuid import uuid4
 import pytest
 
 from astracore.infrastructure.db.models import ChatRunRow
-from astracore.infrastructure.db.session import get_engine, get_session, init_db
+from astracore.infrastructure.db.session import get_engine, get_session
 from astracore.modules.chat import api as chat
 from astracore.modules.chat.domain.chat_context import ChatContext
 from astracore.modules.chat.domain.message import Message, MessageRole
+from tests.support.db import prepare_test_db
 
 
 class _MemoryStub:
@@ -26,9 +27,7 @@ class _MemoryStub:
 
 @pytest.fixture
 async def chat_history_db(tmp_path, monkeypatch):
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'history.db'}"
-    get_engine.cache_clear()
-    await init_db(db_url)
+    db_url = await prepare_test_db(tmp_path, name="history.db")
 
     monkeypatch.setattr(
         chat,
@@ -37,7 +36,6 @@ async def chat_history_db(tmp_path, monkeypatch):
     )
 
     yield db_url
-
     get_engine.cache_clear()
 
 

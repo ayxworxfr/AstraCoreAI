@@ -103,9 +103,13 @@ class HistoryCompactor:
 
         await self._persist_summary(summary, len(to_compact), session_id)
 
+        # 用 USER 角色承载摘要：role 交替友好，且 _prepare_for_save 对 compacted 放行。
+        # 不再使用 SYSTEM+synthetic（会被保存路径丢弃，导致跨轮 reinject 失效）。
         summary_msg = Message(
-            role=MessageRole.SYSTEM,
-            content=f"【对话摘要】\n{summary}",
+            role=MessageRole.USER,
+            content=(
+                f"[记忆同步]\n以下是较早对话的压缩摘要，请视为已确认的上下文继续工作：\n{summary}"
+            ),
             metadata={"synthetic": True, "compacted": True},
         )
         result = system_msgs + [summary_msg] + to_keep
@@ -141,9 +145,13 @@ class HistoryCompactor:
                     role=MessageRole.SYSTEM,
                     content=(
                         "你是 AstraCoreAI 的对话历史压缩器。"
-                        "把以下多轮对话压缩为一段简洁的中文摘要，"
-                        "保留关键事实、用户意图、重要决策和当前状态。"
-                        "不要输出 Markdown 标题，直接给出摘要段落。"
+                        "把以下多轮对话压缩为一段简洁的中文摘要。"
+                        "必须覆盖这四块（用分号连接成连贯段落，不要 Markdown 标题）："
+                        "1) 当前任务进度；"
+                        "2) 已确认但未实现的决策；"
+                        "3) 待处理的 pending 项；"
+                        "4) 关键事实与用户意图。"
+                        "不要输出列表符号，直接给出摘要段落。"
                     ),
                 ),
                 Message(

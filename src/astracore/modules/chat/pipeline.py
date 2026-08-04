@@ -11,30 +11,36 @@ Both the HTTP service and the embedded SDK use this module; HTTP-specific concer
 """
 
 import asyncio
-import base64
-import dataclasses
 import json
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from astracore.infrastructure.chat.transcript_store import SQLTranscriptStore
 from astracore.infrastructure.db.models import UserSettingsRow
 from astracore.infrastructure.db.session import get_session
-from astracore.infrastructure.llm.anthropic import AnthropicAdapter
-from astracore.infrastructure.llm.openai import OpenAIAdapter
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
 from astracore.infrastructure.memory.store import SQLMemoryStore
-from astracore.modules.attachments.domain import AttachmentCapabilityError, AttachmentRef
+from astracore.modules.attachments.domain import AttachmentRef
 from astracore.modules.attachments.ports import AttachmentStoragePort
+from astracore.modules.chat.application.attachment_loader import (
+    attachment_metadata,
+    load_attachment_refs,
+)
 from astracore.modules.chat.application.compactor import HistoryCompactor
+from astracore.modules.chat.application.history import load_history, prepare_for_save
+from astracore.modules.chat.application.llm_factory import LLMAdapterFactory
 from astracore.modules.chat.application.prompt_builder import SystemPromptBuilder
 from astracore.modules.chat.application.tool_loop import ToolLoopUseCase
+from astracore.modules.chat.application.tool_loop_config import ToolLoopConfig
+from astracore.modules.chat.domain.budget import BudgetExceeded
 from astracore.modules.chat.domain.chat_context import ChatContext
 from astracore.modules.chat.domain.chat_options import ChatOptions
 from astracore.modules.chat.domain.message import Message, MessageRole
 from astracore.modules.chat.domain.session import SessionState
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.modules.rag.application.pipeline import RAGPipeline
+from astracore.modules.tools.application.toolset import get_toolset
 from astracore.modules.tools.ports.tool import ToolAdapter
 from astracore.sdk.config import AstraCoreConfig, LLMProfileConfig
 from astracore.shared.observability.hooks import HookRegistry
@@ -92,62 +98,9 @@ def _trim_history(messages: list[Message], limit: int) -> list[Message]:
     return messages
 
 
-def _strip_dangling_tool_calls(messages: list[Message]) -> list[Message]:
-    """Remove trailing ASSISTANT messages that have tool_calls but no following results."""
-    msgs = list(messages)
-    while msgs and msgs[-1].role == MessageRole.ASSISTANT and msgs[-1].tool_calls:
-        msgs.pop()
-    return msgs
-
-
-def _attachment_metadata(refs: list["AttachmentRef"]) -> dict[str, Any]:
-    """Encode loaded AttachmentRef list as JSON-serialisable metadata for a user message."""
-    if not refs:
-        return {}
-    return {
-        "attachment_refs": [
-            {
-                "id": r.id,
-                "mime_type": r.mime_type,
-                "filename": r.filename,
-                "storage_key": r.storage_key,
-                "data_b64": base64.b64encode(r.data).decode("ascii") if r.data else None,
-            }
-            for r in refs
-        ]
-    }
-
-
-def _prepare_for_save(messages: list[Message]) -> list[Message]:
-    """Drop SYSTEM / tool-loop-internal / synthetic messages before persisting chat history.
-
-    Exception: assistant messages that contain a ``load_skill`` tool call are replaced with a
-    thin text record (``metadata["skill_loaded"] = skill_id``) so the skill-state tracker can
-    detect an active skill even after the full tool-call pair is stripped.
-    """
-    msgs: list[Message] = []
-    for m in messages:
-        if m.role == MessageRole.SYSTEM:
-            continue
-        if m.role == MessageRole.TOOL:
-            continue
-        if m.metadata.get("synthetic"):
-            continue
-        if m.role == MessageRole.ASSISTANT and m.tool_calls:
-            load_skill_calls = [tc for tc in m.tool_calls if tc.name == "load_skill"]
-            if load_skill_calls:
-                skill_id = str(load_skill_calls[-1].arguments.get("skill_id", "")).strip()
-                if skill_id:
-                    msgs.append(
-                        Message(
-                            role=MessageRole.ASSISTANT,
-                            content=m.content,
-                            metadata={"skill_loaded": skill_id},
-                        )
-                    )
-            continue
-        msgs.append(m)
-    return _strip_dangling_tool_calls(msgs)
+# 测试与外部模块仍可能从 pipeline 导入
+_prepare_for_save = prepare_for_save
+_attachment_metadata = attachment_metadata
 
 
 # ------------------------------------------------------------------
@@ -178,6 +131,7 @@ class ChatPipeline:
         vector_adapter: "MemoryVectorAdapter | None" = None,
         hooks: HookRegistry | None = None,
         attachment_storage: AttachmentStoragePort | None = None,
+        transcript_store: SQLTranscriptStore | None = None,
     ) -> None:
         self._config = config
         self._memory = memory
@@ -188,7 +142,8 @@ class ChatPipeline:
         self._vector_adapter = vector_adapter
         self._hooks = hooks
         self._attachment_storage = attachment_storage
-        self._llm_adapters: dict[str, LLMAdapter] = {}
+        self._transcript = transcript_store or SQLTranscriptStore(config.storage.db_url)
+        self._llm_factory = LLMAdapterFactory(config)
         # All system-prompt composition is delegated to a dedicated builder so this
         # class can stay focused on orchestration (DB → context → stream).
         self._prompt_builder = SystemPromptBuilder(
@@ -202,34 +157,12 @@ class ChatPipeline:
     # ------------------------------------------------------------------
 
     def get_llm_adapter(self, profile: LLMProfileConfig) -> LLMAdapter:
-        if profile.id not in self._llm_adapters:
-            if profile.protocol == "anthropic":
-                self._llm_adapters[profile.id] = AnthropicAdapter(
-                    api_key=profile.api_key,
-                    default_model=profile.model,
-                    base_url=profile.base_url,
-                    extra_headers=profile.extra_headers,
-                    max_tokens=profile.max_tokens,
-                    supports_temperature=profile.capabilities.temperature,
-                    use_anthropic_blocks=profile.capabilities.anthropic_blocks,
-                    structured_output_via_tools=profile.capabilities.structured_output_via_tools,
-                    timeout=self._config.policy.timeout.build_llm_httpx_timeout(
-                        overall_override=profile.timeout_s
-                    ),
-                )
-            else:
-                self._llm_adapters[profile.id] = OpenAIAdapter(
-                    api_key=profile.api_key,
-                    default_model=profile.model,
-                    base_url=profile.base_url,
-                    extra_headers=profile.extra_headers,
-                    protocol=profile.protocol,
-                    max_tokens=profile.max_tokens,
-                    timeout=self._config.policy.timeout.build_llm_httpx_timeout(
-                        overall_override=profile.timeout_s
-                    ),
-                )
-        return self._llm_adapters[profile.id]
+        return self._llm_factory.get(profile)
+
+    @property
+    def _llm_adapters(self) -> dict[str, LLMAdapter]:
+        """测试注入兼容：直接写入 factory 缓存，跳过真实建连。"""
+        return self._llm_factory._adapters
 
     def _make_tool_loop(
         self,
@@ -246,12 +179,14 @@ class ChatPipeline:
             extra_context["allowed_tools"] = allowed_tools
         extra_context["tool_adapter"] = tool_adapter
         extra_context["user_id"] = user_id
+        extra_context["hitl"] = self._config.hitl
         if session_id is not None:
             extra_context["session_id"] = str(session_id)
             extra_context["llm_adapter"] = self.get_llm_adapter(profile)
             extra_context["model"] = profile.model
         if extra_context_overlay:
             extra_context.update(extra_context_overlay)
+        # soft_exec 由 stream 层按 ChatContext 注入，避免 prepare 时丢标志
         policy = self._policy
         if profile.timeout_s is not None or profile.max_retries is not None:
             # Per-profile overrides: create a derived PolicyEngine without mutating the shared one.
@@ -275,11 +210,13 @@ class ChatPipeline:
             llm_adapter=self.get_llm_adapter(profile),
             tool_adapter=tool_adapter,
             policy_engine=policy,
-            max_iterations=cfg.max_tool_iterations,
-            max_tool_result_chars=cfg.max_tool_result_chars,
-            tool_timeout_s=self._config.policy.timeout.tool_timeout_s,
-            profile_id=profile.id,
-            extra_context=extra_context or None,
+            config=ToolLoopConfig(
+                max_iterations=cfg.max_tool_iterations,
+                max_tool_result_chars=cfg.max_tool_result_chars,
+                tool_timeout_s=self._config.policy.timeout.tool_timeout_s,
+                profile_id=profile.id,
+                extra_context=extra_context,
+            ),
             hooks=self._hooks,
         )
 
@@ -299,24 +236,9 @@ class ChatPipeline:
         vision_capable: bool,
     ) -> list[AttachmentRef]:
         """Capability-check then load bytes for each AttachmentRef."""
-        if not refs:
-            return []
-        if not vision_capable:
-            raise AttachmentCapabilityError(
-                f"LLM profile '{profile_id}' does not support vision/document attachments"
-            )
-        if self._attachment_storage is None:
-            return list(refs)
-        loaded: list[AttachmentRef] = []
-        for ref in refs:
-            try:
-                data = await self._attachment_storage.load(ref.storage_key)
-            except FileNotFoundError:
-                # Placeholder for deleted attachments — adapters must handle data=None.
-                loaded.append(ref)
-                continue
-            loaded.append(dataclasses.replace(ref, data=data))
-        return loaded
+        return await load_attachment_refs(
+            self._attachment_storage, refs, profile_id, vision_capable
+        )
 
     # ------------------------------------------------------------------
     # Prompt composition helpers
@@ -452,14 +374,16 @@ class ChatPipeline:
         # 5. Determine execution mode and allowed tools
         # Tool loop always active: skill tools (load_skill etc.) are available by default.
         # use_tools or enable_web additionally expose those specific tools.
+        # Toolset 先裁剪角色可见工具，再按 enable_rag/enable_web 排除。
         needs_tool_loop = True
-        all_tools = frozenset(d.name for d in effective_adapter.get_definitions())
+        toolset = get_toolset(opts.toolset)
+        base_tools = toolset.resolve(effective_adapter)
         excluded: set[str] = set()
         if not opts.enable_rag:
             excluded.add("search_knowledge_base")
         if not opts.enable_web:
             excluded.add("web_search")
-        allowed_tools = all_tools - excluded
+        allowed_tools = base_tools - excluded
 
         # 6. Load attachment bytes (capability guard + storage read)
         attachment_refs = await self._load_attachments(
@@ -481,6 +405,9 @@ class ChatPipeline:
             turn_context=turn_context,
             rag_context=rag_context,
             attachment_refs=attachment_refs,
+            max_input_tokens=opts.max_input_tokens,
+            max_output_tokens=opts.max_output_tokens,
+            soft_exec=opts.soft_exec,
         )
 
     # ------------------------------------------------------------------
@@ -496,11 +423,8 @@ class ChatPipeline:
         context (e.g. ``hitl_callback``).  These supplement but never override the context
         built by ``_make_tool_loop()``.
         """
-        loaded = [
-            m
-            for m in await self._memory.load_short_term(ctx.session_id)
-            if m.role != MessageRole.SYSTEM
-        ]
+        # short-term 优先；为空则 transcript replay 重建（崩溃恢复闭环）
+        loaded = await load_history(self._memory, self._transcript, ctx.session_id)
         _memory_engine = self._injected_memory_engine or MemoryEngine(
             SQLMemoryStore(self._config.storage.db_url), user_id=ctx.user_id
         )
@@ -538,7 +462,7 @@ class ChatPipeline:
                 Message(
                     role=MessageRole.USER,
                     content=ctx.message,
-                    metadata=_attachment_metadata(ctx.attachment_refs),
+                    metadata=attachment_metadata(ctx.attachment_refs),
                 )
             )
             if self._config.debug.log_prompts:
@@ -559,7 +483,7 @@ class ChatPipeline:
                 Message(
                     role=MessageRole.USER,
                     content=ctx.message,
-                    metadata=_attachment_metadata(ctx.attachment_refs),
+                    metadata=attachment_metadata(ctx.attachment_refs),
                 )
             )
             if self._config.debug.log_prompts:
@@ -638,13 +562,21 @@ class ChatPipeline:
         knowledge of tool-loop internals.
         """
         assert ctx.tool_adapter is not None, "tool_adapter must be set for tool_loop mode"
+        overlay = dict(extra_context or {})
+        if ctx.soft_exec:
+            overlay["soft_exec"] = True
+        if ctx.max_input_tokens or ctx.max_output_tokens:
+            overlay["budget"] = {
+                "max_input_tokens": ctx.max_input_tokens,
+                "max_output_tokens": ctx.max_output_tokens,
+            }
         tool_loop = self._make_tool_loop(
             ctx.profile,
             ctx.tool_adapter,
             allowed_tools=ctx.allowed_tools,
             session_id=ctx.session_id,
             user_id=ctx.user_id,
-            extra_context_overlay=extra_context,
+            extra_context_overlay=overlay,
         )
         call_kwargs = dict(ctx.llm_kwargs)
         if session_layer:
@@ -674,6 +606,18 @@ class ChatPipeline:
                         )
                     continue
                 yield event
+            completed = True
+        except BudgetExceeded as exc:
+            logger.warning("本轮预算耗尽 session=%s: %s", ctx.session_id, exc)
+            yield StreamEvent(
+                event_type=StreamEventType.ERROR,
+                error=str(exc),
+                metadata={
+                    "budget_kind": exc.kind,
+                    "budget_used": exc.used,
+                    "budget_limit": exc.limit,
+                },
+            )
             completed = True
         finally:
             if not completed:
@@ -710,7 +654,13 @@ class ChatPipeline:
 
     async def _save_session_safe(self, session_id: UUID, messages: list[Message]) -> None:
         """Persist session, shielding against cancellation during cleanup."""
-        to_save = _prepare_for_save(messages)
+        # Append-only transcript 先于物化视图写入，保留完整工具轨迹供审计/恢复
+        try:
+            await asyncio.shield(self._transcript.append_messages(session_id, messages))
+        except Exception:
+            logger.warning("transcript 追加失败，继续写短期快照", exc_info=True)
+
+        to_save = prepare_for_save(messages)
         logger.info("保存会话: session_id=%s, messages=%d", session_id, len(to_save))
         try:
             await asyncio.shield(

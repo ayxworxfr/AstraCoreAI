@@ -11,6 +11,7 @@ from astracore.infrastructure.llm.anthropic import AnthropicAdapter
 from astracore.infrastructure.llm.openai import OpenAIAdapter
 from astracore.infrastructure.tools._coerce import coerce_tool_arguments
 from astracore.modules.chat.application.tool_loop import ToolLoopUseCase
+from astracore.modules.chat.application.tool_loop_config import ToolLoopConfig
 from astracore.modules.chat.domain.message import Message, MessageRole
 from astracore.modules.chat.domain.session import SessionState
 from astracore.modules.tools.ports.tool import (
@@ -107,6 +108,7 @@ class ParallelAgentTool(ToolAdapter):
                         required=True,
                     ),
                 ],
+                is_concurrency_safe=False,
             )
         ]
 
@@ -341,7 +343,9 @@ class ParallelAgentTool(ToolAdapter):
             llm_adapter=self._get_llm_adapter(profile_id),
             tool_adapter=tool_adapter,
             policy_engine=self._policy,
-            max_iterations=_WORKER_MAX_ITERATIONS,
-            max_tool_result_chars=self._config.agent.max_tool_result_chars,
-            tool_timeout_s=self._config.policy.timeout.tool_timeout_s,
+            config=ToolLoopConfig(
+                max_iterations=_WORKER_MAX_ITERATIONS,
+                max_tool_result_chars=self._config.agent.max_tool_result_chars,
+                tool_timeout_s=self._config.policy.timeout.tool_timeout_s,
+            ),
         )

@@ -1,12 +1,14 @@
 # AstraCoreAI
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
-![Tests](https://img.shields.io/badge/Tests-240%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-344%20passed-brightgreen)
 ![License](https://img.shields.io/badge/License-PolyForm%20NC-orange)
 
 > 企业级 Python AI Agent 框架，基于 Clean Architecture + Ports & Adapters。
 
 AstraCoreAI 为 LLM 应用提供完整的生产级基础设施：按需加载的 Skill 系统、两级记忆注入、HITL 审批流、多模态附件、并行多 Agent 与 DAG 工作流，以及覆盖可观测性、安全与评估的完整工具链。同一套业务逻辑可通过 Python SDK 嵌入，或以 FastAPI 服务独立部署。
+
+[English README](./README.md)
 
 ---
 
@@ -31,9 +33,13 @@ Claude 通过 `load_skill` 工具按需加载专业能力包（SKILL.md 格式�
 
 ### 工具系统
 
-- Native Python 工具：并行 / 串行执行，JSON 自修复，单次超时隔离
-- MCP 工具：内置 filesystem（10 个工具）和 shell server，支持任意自定义 MCP 进程
-- 工具循环健壮性：悬空 `tool_use` 清理、空响应引导、总结收尾兜底
+- Native Python 工具：Schema 校验（错误回流模型）、JSON 自修复、单次超时隔离
+- 声明式并发：`ToolDefinition` 上的 `is_concurrency_safe` / `is_readonly` / `is_destructive`，以及 path-scoped 分批（不安全或路径冲突的调用串行）
+- 命名 **Toolset**（`default` / `readonly` / `memory_ops` / `worker`…），经 `ChatOptions.toolset` 裁剪
+- 统一 Agent 循环：流式 / 非流式共用 `_run_loop`，仅 LLM 轮次策略不同
+- `soft_exec` 预览破坏性工具（不落盘）；可选本轮 token 预算（`max_input_tokens` / `max_output_tokens`）
+- MCP：内置 filesystem / shell，支持自定义 MCP 进程
+- 健壮性：悬空 `tool_use` 清理、空响应引导、总结收尾；`spawn_agents` 并行子 Agent
 
 ### 计划任务（Scheduled Tasks）
 
@@ -93,7 +99,9 @@ Claude 通过 `load_skill` 工具按需加载专业能力包（SKILL.md 格式�
 
 ### 其他能力
 
-- **HistoryCompactor**：context_window 50% 触发，LLM 摘要 + MemoryEngine 持久化
+- **HistoryCompactor**：摘要以 `USER` + `metadata.compacted=True` 回注（不会被保存过滤丢掉）
+- **Append-only Transcript**：SQL 事件日志 + short-term 物化视图；short-term 为空时 transcript replay 重建
+- **RunRegistry**：本机持有 Task/HITL，Redis 做状态与 SSE/HITL 扇出（Redis 不可用则退化为进程内）
 - **RAG**：ChromaDB 向量检索，幂等 upsert，引用支持
 - **TTS**：文本转语音合成
 - **Eval 框架**：EvalRunner，LLM-as-judge，工具精确匹配，CLI（`python -m astracore.eval`）
@@ -117,11 +125,12 @@ flowchart TD
 
     subgraph 应用层
         ME["MemoryEngine\nTier-1 画像注入 / Tier-2 语义召回"]
-        TL["ToolLoopUseCase\nNative · MCP · spawn_agents"]
+        TL["ToolLoopUseCase\n_run_loop + LLMRoundStrategy\n分区 · Schema · HITL"]
         RP["RAGPipeline\nChroma · 分块 · 引用"]
+        TR["Transcript + history\nappend-only · replay"]
     end
 
-    CP --> ME & TL & RP
+    CP --> ME & TL & RP & TR
 
     subgraph 端口层["shared/ports（抽象接口）"]
         LLMPort["LLMAdapter"]
@@ -132,18 +141,21 @@ flowchart TD
     ME --> MemPort
     TL --> ToolPort & LLMPort
     RP --> LLMPort
+    TR --> MemPort
 
     subgraph 基础设施层
         INF_LLM["Anthropic · OpenAI\nDeepSeek / GLM / GPT-5"]
         INF_MEM["SQLite · ChromaDB\nRedis（可选）"]
         INF_ATT["本地文件系统附件\n图片 / PDF"]
+        INF_RUN["RunRegistry\nRedis 扇出 SSE / HITL"]
     end
 
     LLMPort & ToolPort --> INF_LLM
     MemPort --> INF_MEM
+    CP --> INF_RUN
 ```
 
-`ChatPipeline.prepare()` 一次性完成所有 DB 查询，返回不可变 `ChatContext`；`stream()` 纯执行，无分支歧义。SDK 与 HTTP Service 共享同一管道，行为完全一致。
+`ChatPipeline.prepare()` 批量读库得到不可变 `ChatContext`。`stream()` 先加载历史（short-term 优先，空则 transcript replay），可选 compact，再走 normal 或 tool_loop。流式 / 非流式工具循环共用同一编排器。SDK 与 HTTP 共享管道，行为对等。
 
 ---
 
@@ -429,9 +441,14 @@ async with AstraCoreClient(hooks=registry) as client:
 - [x] 模型控件描述符（每个 profile 自动生成 controls 列表，前端动态渲染）
 - [x] 多供应商完整支持：Anthropic Claude、DeepSeek、GLM、OpenAI Responses API（GPT-5）
 - [x] TTS 文本转语音
-- [ ] M6 剩余：限流、多 worker Redis 状态共享
-- [ ] M7：OpenTelemetry 标准 tracing、SLO / 指标
-- [ ] M8：发布工程化（版本策略、回滚预案、运维文档）
+- [x] 声明式工具并发、Toolset、流式/非流式统一 Agent 循环
+- [x] Append-only transcript + short-term replay 崩溃恢复
+- [x] 多 worker RunRegistry（Redis 扇出；无 Redis 退化为进程内）
+- [x] 本轮 token 预算与破坏性工具 `soft_exec` 预览
+- [ ] 限流（rate limiting）
+- [ ] 完整 undo / 工具副作用事务回滚
+- [ ] OpenTelemetry 标准 tracing、SLO / 指标
+- [ ] 发布工程化（版本策略、回滚预案、运维文档）
 
 ---
 
@@ -439,6 +456,9 @@ async with AstraCoreClient(hooks=registry) as client:
 
 | 文档 | 路径 |
 |------|------|
+| English README | [`README.md`](./README.md) |
+| **Cursor / Agent 开发 Skill**（日常改代码优先加载） | [`.cursor/skills/developing-astracore/`](./.cursor/skills/developing-astracore/SKILL.md) |
+| Agent SDK 模式重构设计卡（含落地状态） | [`docs/astra/2026-08-04-agent-sdk-patterns-refactor.md`](./docs/astra/2026-08-04-agent-sdk-patterns-refactor.md) |
 | 系统设计文档 | `docs/AstraCoreAI设计文档.md` |
 | 开发进度规划 | `docs/开发进度规划.md` |
 | 前端设计方案 | `docs/前端设计方案.md` |

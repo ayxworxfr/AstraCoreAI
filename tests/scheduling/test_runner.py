@@ -8,17 +8,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import astracore.modules.scheduling.runner as runner_module
-from astracore.infrastructure.db.session import get_engine, init_db
+from astracore.infrastructure.db.session import get_engine
 from astracore.modules.scheduling.application.task_service import ScheduledTaskService
 from astracore.modules.scheduling.domain.task import CreateTaskRequest, TriggerType
 from astracore.modules.scheduling.runner import _fire, _sync_fire_job, init_runner
+from tests.support.db import prepare_test_db
 
 
 @pytest.fixture
 async def db_url(tmp_path):
-    url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
-    get_engine.cache_clear()
-    await init_db(url)
+    url = await prepare_test_db(tmp_path)
     yield url
     get_engine.cache_clear()
 
@@ -143,9 +142,7 @@ async def test_fire_skips_when_previous_run_still_active(manual_test, active_tas
 
 async def test_semaphore_limits_concurrency(manual_test, tmp_path) -> None:
     """F6: semaphore caps concurrent runs — excess tasks wait, not fail."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'sem.db'}"
-    get_engine.cache_clear()
-    await init_db(db_url)
+    db_url = await prepare_test_db(tmp_path, name="sem.db")
 
     svc = ScheduledTaskService(db_url, "Asia/Shanghai")
     tasks = []

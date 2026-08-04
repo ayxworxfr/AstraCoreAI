@@ -11,9 +11,10 @@ from sqlalchemy import select
 
 from astracore.infrastructure.attachments.local_fs import LocalFSAttachmentStorage
 from astracore.infrastructure.db.models import AttachmentRow, UserRow
-from astracore.infrastructure.db.session import get_engine, get_session, init_db
+from astracore.infrastructure.db.session import get_engine, get_session
 from astracore.modules.attachments import api as attachments_api
 from astracore.modules.auth.dependencies import get_current_user
+from tests.support.db import prepare_test_db
 
 # Smallest valid PNG (1×1 px, 67 bytes)
 _PNG_1PX = (
@@ -37,9 +38,7 @@ def _make_app(db_url: str, storage: LocalFSAttachmentStorage, current_user: User
 
 @pytest.fixture
 async def env(tmp_path):
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
-    get_engine.cache_clear()
-    await init_db(db_url)
+    db_url = await prepare_test_db(tmp_path)
     storage = LocalFSAttachmentStorage(base_path=tmp_path / "attachments")
     user_a = UserRow(id="user-a", username="alice", role="user", hashed_password="x")
     user_b = UserRow(id="user-b", username="bob", role="user", hashed_password="x")

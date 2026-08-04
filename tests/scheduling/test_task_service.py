@@ -6,20 +6,19 @@ from datetime import UTC, datetime
 
 import pytest
 
-from astracore.infrastructure.db.session import get_engine, init_db
+from astracore.infrastructure.db.session import get_engine
 from astracore.modules.scheduling.application.task_service import ScheduledTaskService
 from astracore.modules.scheduling.domain.task import (
     CreateTaskRequest,
     TriggerType,
     UpdateTaskRequest,
 )
+from tests.support.db import prepare_test_db
 
 
 @pytest.fixture
 async def svc(tmp_path):
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
-    get_engine.cache_clear()
-    await init_db(db_url)
+    db_url = await prepare_test_db(tmp_path)
     yield ScheduledTaskService(db_url, default_timezone="Asia/Shanghai")
     get_engine.cache_clear()
 

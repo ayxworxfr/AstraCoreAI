@@ -7,9 +7,10 @@ from pathlib import Path
 import pytest
 
 from astracore.infrastructure.attachments.local_fs import LocalFSAttachmentStorage
-from astracore.infrastructure.db.session import get_engine, init_db
+from astracore.infrastructure.db.session import get_engine
 from astracore.modules.attachments.domain import AttachmentRef
 from astracore.sdk.client import AttachmentClient
+from tests.support.db import prepare_test_db
 
 _PNG_1PX = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
@@ -21,9 +22,7 @@ _PNG_1PX = (
 
 @pytest.fixture
 async def client(tmp_path: Path) -> AttachmentClient:
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
-    get_engine.cache_clear()
-    await init_db(db_url)
+    db_url = await prepare_test_db(tmp_path)
     storage = LocalFSAttachmentStorage(base_path=tmp_path / "attachments")
     yield AttachmentClient(storage=storage, db_url=db_url)
     get_engine.cache_clear()

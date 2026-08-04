@@ -30,7 +30,6 @@ ENV/
 .hatch/
 .idea/
 .claude/
-.cursor/
 .cache/
 *.swp
 *.swo

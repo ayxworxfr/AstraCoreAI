@@ -5,9 +5,10 @@ from uuid import uuid4
 
 import pytest
 
-from astracore.infrastructure.db.session import get_engine, init_db
+from astracore.infrastructure.db.session import get_engine
 from astracore.modules.chat.domain.message import Message
 from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent
+from tests.support.db import prepare_test_db
 
 
 class _ExtractionBatchLLM(LLMAdapter):
@@ -46,12 +47,8 @@ class _ExtractionBatchLLM(LLMAdapter):
 
 @pytest.fixture
 async def memory_db(tmp_path):
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'memory.db'}"
-    get_engine.cache_clear()
-    await init_db(db_url)
-
+    db_url = await prepare_test_db(tmp_path, name="memory.db")
     yield db_url
-
     get_engine.cache_clear()
 
 

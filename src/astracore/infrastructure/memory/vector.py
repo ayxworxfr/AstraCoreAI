@@ -7,8 +7,10 @@ initialization fails, all methods degrade to no-ops / empty results.
 
 import asyncio
 import logging
+import threading
 from typing import Any
 
+from astracore.infrastructure.retrieval.chroma_client import get_chroma_client
 from astracore.infrastructure.retrieval.embedding import build_chroma_embedding_function
 from astracore.modules.memory.domain import StructuredMemory
 
@@ -37,37 +39,35 @@ class MemoryVectorAdapter:
         self._client: Any = None
         self._collection: Any = None
         self._available: bool | None = None  # None = not yet attempted
+        self._init_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Lazy initialisation (runs once in executor on first call)
     # ------------------------------------------------------------------
 
     def _init_sync(self) -> None:
-        try:
-            import chromadb
-
-            if self._persist_directory:
-                client: Any = chromadb.PersistentClient(path=self._persist_directory)
-            else:
-                client = chromadb.Client()
-
-            ef = build_chroma_embedding_function(self._embedding_model)
-            self._collection = client.get_or_create_collection(
-                name=self._COLLECTION_NAME,
-                embedding_function=ef,
-                metadata={"hnsw:space": "cosine"},
-            )
-            self._client = client
-            self._available = True
-        except ImportError:
-            logger.warning(
-                "chromadb not installed; MemoryVectorAdapter degraded to no-op. "
-                "Install with: pip install chromadb"
-            )
-            self._available = False
-        except Exception:
-            logger.exception("MemoryVectorAdapter init failed; degrading to no-op")
-            self._available = False
+        with self._init_lock:
+            if self._available is not None:
+                return
+            try:
+                client = get_chroma_client(self._persist_directory)
+                ef = build_chroma_embedding_function(self._embedding_model)
+                self._collection = client.get_or_create_collection(
+                    name=self._COLLECTION_NAME,
+                    embedding_function=ef,
+                    metadata={"hnsw:space": "cosine"},
+                )
+                self._client = client
+                self._available = True
+            except ImportError:
+                logger.warning(
+                    "chromadb not installed; MemoryVectorAdapter degraded to no-op. "
+                    "Install with: pip install chromadb"
+                )
+                self._available = False
+            except Exception:
+                logger.exception("MemoryVectorAdapter init failed; degrading to no-op")
+                self._available = False
 
     async def _ensure_init(self) -> None:
         if self._available is None:

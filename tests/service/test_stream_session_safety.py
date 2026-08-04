@@ -8,11 +8,11 @@ from uuid import uuid4
 
 from sqlalchemy.pool import NullPool
 
+from astracore.infrastructure.chat.run_registry import ActiveRun
 from astracore.infrastructure.db.session import get_engine
 from astracore.modules.chat.api import (
-    _ACTIVE_RUNS,
-    _ActiveRun,
     _broadcast_run_event,
+    _get_run_registry,
 )
 from astracore.modules.chat.domain.chat_context import ChatContext
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
@@ -66,9 +66,10 @@ def test_broadcast_keeps_subscriber_when_queue_is_full() -> None:
     queue.put_nowait(("message", '{"text":"old-1"}'))
     queue.put_nowait(("message", '{"text":"old-2"}'))
 
-    active = _ActiveRun(row)
+    active = ActiveRun(row)
     active.subscribers.add(queue)
-    _ACTIVE_RUNS[run_id] = active
+    registry = _get_run_registry()
+    registry.register(run_id, active)
     try:
         _broadcast_run_event(run_id, "run_state", {"assistant_content": "完整内容"})
         _broadcast_run_event(run_id, "done", {})
@@ -77,7 +78,7 @@ def test_broadcast_keeps_subscriber_when_queue_is_full() -> None:
         assert queue in active.subscribers
         assert queued_events == ["run_state", "done"]
     finally:
-        _ACTIVE_RUNS.pop(run_id, None)
+        registry.pop(run_id, None)
 
 
 def test_get_engine_uses_null_pool_for_sqlite() -> None:

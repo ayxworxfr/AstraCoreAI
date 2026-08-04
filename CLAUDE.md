@@ -25,7 +25,7 @@ cd frontend && npm run build        # Type-check + build
 cd frontend && npm run typecheck    # Type-check only
 ```
 
-The test suite has 240 passing tests. Run `make check` before every commit.
+Run `make check` before every commit. Prefer the Cursor skill `.cursor/skills/developing-astracore/` for day-to-day coding guidance (self-contained; does not require reading `docs/`).
 
 ## Architecture
 
@@ -36,14 +36,21 @@ AstraCoreAI is an AI assistant platform with a FastAPI backend and React SPA fro
 
 ### Core Chat Execution (most important file)
 
-`src/astracore/modules/chat/pipeline.py` — `ChatPipeline` runs all chat:
+`src/astracore/modules/chat/pipeline.py` — `ChatPipeline` orchestrates chat (HTTP + SDK share it):
 
-1. `prepare()` — batch DB queries → immutable `ChatContext` (zero side-effects)
-2. `stream()` — pure execution, two paths:
-   - `tool_loop` mode: `ToolLoopUseCase` drives iterative tool execution
-   - `normal` mode: single LLM call, streamed
+1. `prepare()` — batch DB queries → immutable `ChatContext`
+2. `stream()` — load history (short-term, else transcript replay) → compact → execute:
+   - `tool_loop`: single `_run_loop()` in `ToolLoopUseCase`; streaming vs blocking only swaps `LLMRoundStrategy`
+   - `normal`: one streamed LLM call
 
-`stream()` accepts a `hitl_callback` kwarg (injected by the HTTP layer) that tools use to pause execution and send a `PendingQuestion` to the frontend. The callback resolves when the user submits their answer.
+Supporting modules (prefer extending these over growing `pipeline.py`):
+- `application/tool_loop.py` + `tool_executor.py` + `tool_scheduler.py` + `llm_round.py`
+- `application/history.py` — `prepare_for_save` / `load_history` (transcript replay)
+- `application/attachment_loader.py`, `application/llm_factory.py`, `application/prompt_builder.py`
+- `domain/transcript.py` + `infrastructure/chat/transcript_store.py` — append-only event log
+- `infrastructure/chat/run_registry.py` — ActiveRun + Redis fanout for multi-worker SSE/HITL
+
+`stream()` accepts `extra_context` (e.g. HTTP `hitl_callback`). Tool confirmation without a callback is fail-closed.
 
 ### Module Map
 
@@ -51,11 +58,11 @@ AstraCoreAI is an AI assistant platform with a FastAPI backend and React SPA fro
 src/astracore/
 ├── modules/          # Business capabilities (Clean Architecture per module)
 │   ├── auth/         # JWT auth: register/login/me, bcrypt, jose, admin/user roles
-│   ├── chat/         # Pipeline, session, conversation CRUD, HistoryCompactor
+│   ├── chat/         # Pipeline, history/transcript, tool loop, runs/SSE API
 │   ├── memory/       # MemoryEngine: Tier-1/Tier-2 injection, extraction, promotion
 │   ├── rag/          # RAG pipeline: retrieve → citations, knowledge base docs
 │   ├── skills/       # Skill CRUD, SKILL.md loader, skill tools
-│   ├── tools/        # Native tool registration (builtin.py)
+│   ├── tools/        # builtin + toolset/partition/validate + ToolDefinition protocol
 │   ├── agent/        # Multi-agent DAG workflow
 │   ├── scheduling/   # APScheduler-backed cron/interval/date task scheduling
 │   ├── projects/     # Project CRUD and conversation bindings
@@ -66,6 +73,7 @@ src/astracore/
 ├── infrastructure/   # External adapters (never imported by modules directly)
 │   ├── llm/          # AnthropicAdapter, OpenAIAdapter
 │   ├── attachments/  # LocalFSAttachmentStorage (image/PDF)
+│   ├── chat/         # SQLTranscriptStore, RunRegistry (Redis-backed run fanout)
 │   ├── memory/       # SQLMemoryStore, HybridMemoryAdapter, MemoryVectorAdapter (Chroma)
 │   ├── retrieval/    # ChromaDB retrieval adapter
 │   ├── tools/        # NativeToolAdapter, MCPToolAdapter, ParallelAgentTool
@@ -103,7 +111,9 @@ The injection_guard in the system prompt instructs the LLM to treat tagged conte
 - **Tier-2** (synthetic message pair): session/project memories retrieved via Chroma vector search, injected as `[记忆同步]`/`[记忆快照]` synthetic messages before the real user message. These are filtered out before persisting (`_prepare_for_save`).
 - Auto-extraction runs post-turn: LLM extracts 0-N structured memories; high-value session memories are promoted to user/project scope after LLM judgment. Promotion requires user approval when `hitl.require_memory_promotion_approval = true` (creates a `pending_promotion` record instead of promoting immediately).
 
-**HistoryCompactor** (`modules/chat/application/compactor.py`): Called at `stream()` entry. Estimates token count; triggers at 50% of `context_window` (200k chars default). Summarizes oldest 60% of messages via LLM, persists the summary to MemoryEngine, falls back to tail-truncation on LLM failure.
+**HistoryCompactor** (`modules/chat/application/compactor.py`): Called at `stream()` entry. Summaries persist as `USER` messages with `metadata.compacted=True` so `prepare_for_save` keeps them for reinjection (do not use SYSTEM+synthetic).
+
+**Tool protocol / scheduling**: `ToolDefinition` carries `is_concurrency_safe` / `is_readonly` / `is_destructive` (fail-closed defaults). `partition_tool_calls` batches by safety + path conflict. Named `toolset` on `ChatOptions` trims tools in `prepare()`. `soft_exec` previews destructive tools; `max_input_tokens` / `max_output_tokens` enforce `TurnBudget`.
 
 **HITL (Human-in-the-Loop)**:
 - Tools declare `requires_confirmation=True` in `register_tool()` → execution pauses for user approval
@@ -121,7 +131,7 @@ The injection_guard in the system prompt instructs the LLM to treat tagged conte
 
 **Active Skill Enforcement**: `_detect_active_skill()` scans recent messages for `load_skill` calls (via `metadata["skill_loaded"]` after save, or live `tool_calls` in-session). If found, appends a mandatory reload instruction to the system prompt.
 
-**Backend Run + SSE Subscribe**: Each generation creates a `ChatRunRow`. The asyncio Task runs independently; the `/stream` SSE endpoint subscribes to an in-process event store. Browser reconnect → same `run_id`, no data loss. **Known limitation**: `_ACTIVE_RUNS` is in-process; breaks with multiple gunicorn workers.
+**Backend Run + SSE Subscribe**: Each generation creates a `ChatRunRow`. Ownership (Task / HITL Future / local SSE queues) stays process-local via `RunRegistry`; state snapshots and event/HITL/cancel signals fan out over Redis when available (silent fallback to in-process if Redis is down).
 
 ### Configuration
 
@@ -149,7 +159,7 @@ Skills are YAML-frontmatter + Markdown files in `src/astracore/modules/skills/bu
 
 ### Adding New Built-in Tools
 
-Register in `src/astracore/modules/tools/builtin.py` → `build_tool_adapter()`. Tools with a `_context` parameter receive session/user context automatically (includes `session_id`, `user_id`, `llm_adapter`, `hitl_callback`). Add `requires_confirmation=True` to pause for user approval before execution.
+Register in `src/astracore/modules/tools/builtin.py` → `build_tool_adapter()`. Set `is_concurrency_safe` / `is_readonly` / `is_destructive` explicitly. Tools with a `_context` parameter receive session/user context automatically (includes `session_id`, `user_id`, `llm_adapter`, `hitl_callback`). Add `requires_confirmation=True` to pause for user approval before execution. Update `modules/tools/application/toolset.py` when the tool belongs in a named subset.
 
 ### API and SDK Parity
 

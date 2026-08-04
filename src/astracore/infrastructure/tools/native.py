@@ -30,6 +30,10 @@ class NativeToolAdapter(MutableToolAdapter):
         description: str,
         parameters: list[ToolParameter],
         requires_confirmation: bool = False,
+        *,
+        is_concurrency_safe: bool = False,
+        is_readonly: bool = False,
+        is_destructive: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Register a new tool."""
@@ -39,6 +43,9 @@ class NativeToolAdapter(MutableToolAdapter):
             description=description,
             parameters=parameters,
             requires_confirmation=requires_confirmation,
+            is_concurrency_safe=is_concurrency_safe,
+            is_readonly=is_readonly,
+            is_destructive=is_destructive,
             metadata=metadata or {},
         )
 
@@ -76,12 +83,13 @@ class NativeToolAdapter(MutableToolAdapter):
 
             execution_time = (time.time() - start_time) * 1000
 
+            # 禁止把执行 context 写入 metadata：其中含 frozenset/适配器等不可 JSON 序列化对象，
+            # 会在 transcript / short-term 持久化时炸穿。
             return ToolExecutionResult(
                 tool_name=tool_name,
                 ok=True,
                 data=str(result),
                 execution_time_ms=execution_time,
-                metadata={"context": context} if context else {},
             )
 
         except TimeoutError as e:

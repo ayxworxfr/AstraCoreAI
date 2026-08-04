@@ -9,9 +9,10 @@ from httpx import ASGITransport, AsyncClient
 
 from astracore.infrastructure.attachments.local_fs import LocalFSAttachmentStorage
 from astracore.infrastructure.db.models import AttachmentRow, ChatRunRow, ConversationRow, UserRow
-from astracore.infrastructure.db.session import get_engine, get_session, init_db
+from astracore.infrastructure.db.session import get_engine, get_session
 from astracore.modules.auth.dependencies import get_current_user
 from astracore.modules.chat import conversations_api
+from tests.support.db import prepare_test_db
 
 
 async def _noop_delete_memories(self, conversation_id):
@@ -40,9 +41,7 @@ def _make_app(
 
 @pytest.fixture
 async def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
-    get_engine.cache_clear()
-    await init_db(db_url)
+    db_url = await prepare_test_db(tmp_path)
     storage = LocalFSAttachmentStorage(base_path=tmp_path / "attachments")
     user = UserRow(id="user-a", username="alice", role="user", hashed_password="x")
     app = _make_app(monkeypatch, db_url, storage, user)

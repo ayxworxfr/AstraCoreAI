@@ -1,5 +1,7 @@
 # 开发指南
 
+> **优先加载**：用 Cursor / Agent 改本仓库时，加载 [`.cursor/skills/developing-astracore/`](../.cursor/skills/developing-astracore/SKILL.md)。该 skill 自包含架构与约定，不必先读完本文或 `docs/`。
+
 ## 目录
 
 - [环境准备](#环境准备)

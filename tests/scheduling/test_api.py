@@ -7,11 +7,12 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from astracore.infrastructure.db.models import UserRow
-from astracore.infrastructure.db.session import get_engine, init_db
+from astracore.infrastructure.db.session import get_engine
 from astracore.modules.auth.dependencies import get_current_user
 from astracore.modules.scheduling import api as scheduling_api
 from astracore.modules.scheduling.application.task_service import ScheduledTaskService
 from astracore.modules.scheduling.domain.task import CreateTaskRequest, TriggerType
+from tests.support.db import prepare_test_db
 
 
 def _make_app(svc: ScheduledTaskService, current_user: UserRow) -> FastAPI:
@@ -28,9 +29,7 @@ def _make_app(svc: ScheduledTaskService, current_user: UserRow) -> FastAPI:
 
 @pytest.fixture
 async def api_env(tmp_path):
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'api_test.db'}"
-    get_engine.cache_clear()
-    await init_db(db_url)
+    db_url = await prepare_test_db(tmp_path, name="api_test.db")
     svc = ScheduledTaskService(db_url, "Asia/Shanghai")
     user = UserRow(id="user-1", username="testuser", role="user", hashed_password="x")
     app = _make_app(svc, user)
@@ -82,9 +81,7 @@ async def test_create_task_valid_cron_returns_201(manual_test, api_env) -> None:
 
 async def test_get_task_cross_user_returns_404(manual_test, tmp_path) -> None:
     """F7: a user cannot read another user's task — service returns None → 404."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'cross.db'}"
-    get_engine.cache_clear()
-    await init_db(db_url)
+    db_url = await prepare_test_db(tmp_path, name="cross.db")
 
     owner_svc = ScheduledTaskService(db_url, "Asia/Shanghai")
     task = await owner_svc.create_task(

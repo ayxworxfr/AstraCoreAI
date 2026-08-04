@@ -1,8 +1,10 @@
 """ChromaDB retriever adapter — all sync calls wrapped in run_in_executor."""
 
 import asyncio
+import threading
 from typing import Any
 
+from astracore.infrastructure.retrieval.chroma_client import get_chroma_client
 from astracore.infrastructure.retrieval.embedding import build_chroma_embedding_function
 from astracore.modules.rag.domain import Citation, RetrievalQuery, RetrievedChunk
 from astracore.modules.rag.ports.retriever import IndexResult, RetrieverAdapter
@@ -26,18 +28,17 @@ class ChromaRetrieverAdapter(RetrieverAdapter):
         self.embedding_model = embedding_model
         self._client: Any = None
         self._collection: Any = None
+        self._init_lock = threading.Lock()
 
     def _get_client(self) -> Any:
-        """Lazy load ChromaDB client."""
-        if self._client is None:
+        """Lazy load ChromaDB client（进程内按 path 复用 PersistentClient）。"""
+        if self._client is not None:
+            return self._client
+        with self._init_lock:
+            if self._client is not None:
+                return self._client
             try:
-                import chromadb
-
-                if self.persist_directory:
-                    self._client = chromadb.PersistentClient(path=self.persist_directory)
-                else:
-                    self._client = chromadb.Client()
-
+                self._client = get_chroma_client(self.persist_directory)
                 ef = build_chroma_embedding_function(self.embedding_model)
                 self._collection = self._client.get_or_create_collection(
                     name=self.collection_name,
@@ -54,7 +55,7 @@ class ChromaRetrieverAdapter(RetrieverAdapter):
                 self._client = None
                 self._collection = None
                 raise
-        return self._client
+            return self._client
 
     def _chunk_text(self, text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
         """按 Markdown 结构分块：优先在标题/段落边界切割，超长段落再按句子细切。"""

@@ -133,7 +133,7 @@ async def test_compact_triggered_reduces_message_count(mock_llm, mock_engine):
 
 @pytest.mark.asyncio
 async def test_compact_first_message_is_summary(mock_llm, mock_engine):
-    """After compaction the first non-system message must be the SYSTEM summary."""
+    """压缩后摘要以 USER + compacted 形态出现，以便 _prepare_for_save 跨轮保留。"""
     c = HistoryCompactor(
         llm_adapter=mock_llm,
         memory_engine=mock_engine,
@@ -141,11 +141,10 @@ async def test_compact_first_message_is_summary(mock_llm, mock_engine):
     )
     msgs = [_user("x" * 500)] * 20
     result = await c.maybe_compact(msgs, uuid4())
-    summary_msgs = [
-        m for m in result if m.role == MessageRole.SYSTEM and m.metadata.get("compacted")
-    ]
-    assert summary_msgs, "Expected a compacted summary system message"
-    assert "【对话摘要】" in summary_msgs[0].content
+    summary_msgs = [m for m in result if m.metadata.get("compacted")]
+    assert summary_msgs, "Expected a compacted summary message"
+    assert summary_msgs[0].role == MessageRole.USER
+    assert "[记忆同步]" in summary_msgs[0].content
 
 
 @pytest.mark.asyncio

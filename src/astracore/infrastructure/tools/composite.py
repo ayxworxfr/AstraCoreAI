@@ -137,6 +137,10 @@ class CompositeToolAdapter(MutableToolAdapter):
         description: str,
         parameters: list[ToolParameter],
         requires_confirmation: bool = False,
+        *,
+        is_concurrency_safe: bool = False,
+        is_readonly: bool = False,
+        is_destructive: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Delegate registration to the first NativeToolAdapter in the chain."""
@@ -150,6 +154,9 @@ class CompositeToolAdapter(MutableToolAdapter):
                     description,
                     parameters,
                     requires_confirmation,
+                    is_concurrency_safe=is_concurrency_safe,
+                    is_readonly=is_readonly,
+                    is_destructive=is_destructive,
                     metadata=metadata,
                 )
                 self._routing[name] = adapter

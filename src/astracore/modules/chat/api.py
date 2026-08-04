@@ -15,6 +15,7 @@ from sqlalchemy.orm.attributes import flag_modified as _flag_modified
 from sse_starlette.sse import EventSourceResponse
 
 from astracore.infrastructure.attachments.local_fs import LocalFSAttachmentStorage
+from astracore.infrastructure.chat.run_registry import ActiveRun, RunRegistry
 from astracore.infrastructure.db.models import AttachmentRow, ChatRunRow, ChatSessionRow, UserRow
 from astracore.infrastructure.db.session import get_session
 from astracore.infrastructure.memory.hybrid import HybridMemoryAdapter
@@ -48,71 +49,16 @@ logger = get_logger(__name__)
 _RUN_TERMINAL_STATUSES = {"done", "error", "cancelled"}
 
 
-class _ActiveRun:
-    """In-process run state and subscriber queues; hot token path writes here, not the DB."""
-
-    def __init__(self, row: ChatRunRow):
-        self.task: asyncio.Task[None] | None = None
-        self.subscribers: set[asyncio.Queue[tuple[str, str]]] = set()
-        # HITL: one pending question at a time per run; future resolved by POST /answer
-        self._hitl_futures: dict[str, asyncio.Future[dict[str, Any]]] = {}
-        self.state: dict[str, Any] = {
-            "run_id": row.id,
-            "session_id": row.session_id,
-            "status": row.status,
-            "user_message": row.user_message,
-            "assistant_content": row.assistant_content,
-            "thinking_blocks": row.thinking_blocks or [],
-            "tool_activity": row.tool_activity or [],
-            "error": row.error,
-            "created_at": _utc_iso(row.created_at),
-            "updated_at": _utc_iso(row.updated_at),
-            "completed_at": _utc_iso(row.completed_at) if row.completed_at else None,
-            "pending_question": None,
-        }
-
-    def update(self, **patch: Any) -> None:
-        self.state.update(patch)
-        self.state["updated_at"] = datetime.now(UTC).isoformat()
-
-    def payload(self) -> dict[str, Any]:
-        return dict(self.state)
-
-
-_ACTIVE_RUNS: dict[str, _ActiveRun] = {}
-
-
 def _json_event(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, default=str)
 
 
-def _enqueue_run_event(queue: asyncio.Queue[tuple[str, str]], item: tuple[str, str]) -> None:
-    """Write to subscriber queue; drop oldest entry when full to keep latest state."""
-    while True:
-        try:
-            queue.put_nowait(item)
-            return
-        except asyncio.QueueFull:
-            try:
-                queue.get_nowait()
-            except asyncio.QueueEmpty:
-                return
-
-
 def _broadcast_run_event(run_id: str, event: str, data: dict[str, Any]) -> None:
-    active = _ACTIVE_RUNS.get(run_id)
-    if active is None:
-        return
-    payload = _json_event(data)
-    for queue in active.subscribers:
-        _enqueue_run_event(queue, (event, payload))
+    _get_run_registry().broadcast(run_id, event, data)
 
 
 def _update_active_run_state(run_id: str, **patch: Any) -> None:
-    active = _ACTIVE_RUNS.get(run_id)
-    if active is None:
-        return
-    active.update(**patch)
+    _get_run_registry().update_state(run_id, **patch)
 
 
 def _broadcast_snapshot(run_id: str, row: ChatRunRow) -> None:
@@ -127,6 +73,11 @@ def _broadcast_snapshot(run_id: str, row: ChatRunRow) -> None:
 @lru_cache(maxsize=1)
 def _get_settings() -> AstraCoreConfig:
     return AstraCoreConfig()
+
+
+@lru_cache(maxsize=1)
+def _get_run_registry() -> RunRegistry:
+    return RunRegistry(redis_url=_get_settings().storage.redis_url)
 
 
 @lru_cache(maxsize=1)
@@ -268,6 +219,10 @@ class ChatRequest(BaseModel):
     verbosity: str | None = None
     enable_rag: bool = False
     enable_web: bool = False
+    toolset: str | None = None
+    max_input_tokens: int = Field(default=0, ge=0)
+    max_output_tokens: int = Field(default=0, ge=0)
+    soft_exec: bool = False
     attachment_ids: list[str] = Field(default_factory=list)
 
     def to_options(self) -> ChatOptions:
@@ -283,6 +238,10 @@ class ChatRequest(BaseModel):
             verbosity=self.verbosity,
             enable_rag=self.enable_rag,
             enable_web=self.enable_web,
+            toolset=self.toolset,
+            max_input_tokens=self.max_input_tokens,
+            max_output_tokens=self.max_output_tokens,
+            soft_exec=self.soft_exec,
         )
 
 
@@ -498,16 +457,20 @@ async def _rebuild_short_term_from_runs(session_id: UUID) -> None:
 # ------------------------------------------------------------------
 
 
-def _build_cancel_patch(active: _ActiveRun | None) -> dict[str, Any]:
-    """Build ChatRunRow update fields for a cancelled run, preserving accumulated output."""
+def _build_cancel_patch(state: dict[str, Any] | None) -> dict[str, Any]:
+    """Build ChatRunRow update fields for a cancelled run, preserving accumulated output.
+
+    ``state`` is an ActiveRun/Redis 状态快照 dict（见 ``ActiveRun.payload()``），而非对象本身，
+    这样本机持有 run 与该 run 由其他 worker 持有（此时只能拿到 Redis 快照）可以复用同一逻辑。
+    """
     patch: dict[str, Any] = {"status": "cancelled", "error": "用户已停止生成"}
-    if active is None:
+    if state is None:
         return patch
-    if content := active.state.get("assistant_content"):
+    if content := state.get("assistant_content"):
         patch["assistant_content"] = content
-    if thinking := active.state.get("thinking_blocks"):
+    if thinking := state.get("thinking_blocks"):
         patch["thinking_blocks"] = thinking
-    if tools := active.state.get("tool_activity"):
+    if tools := state.get("tool_activity"):
         patch["tool_activity"] = [{**item, "done": True} for item in tools]
     return patch
 
@@ -515,16 +478,21 @@ def _build_cancel_patch(active: _ActiveRun | None) -> dict[str, Any]:
 async def _execute_run(*, run_id: str, ctx: ChatContext, user_id: str = "default") -> None:
     """Stream a fully-resolved ChatContext and broadcast SSE events for the run."""
     cfg = _get_settings()
+    registry = _get_run_registry()
 
     async def _hitl_callback(q: PendingQuestion) -> dict[str, Any]:
         """Suspend the run, broadcast a question to the frontend, and await the answer."""
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
-        active = _ACTIVE_RUNS.get(run_id)
+        active = registry.get_local(run_id)
         if active is None:
             raise RuntimeError("run not found in active runs")
         active._hitl_futures[q.question_id] = fut
-        active.update(status="awaiting_input", pending_question=q.model_dump(mode="json"))
+        registry.update_state(
+            run_id,
+            status="awaiting_input",
+            pending_question=q.model_dump(mode="json"),
+        )
         _broadcast_run_event(
             run_id,
             "user_input_required",
@@ -539,7 +507,7 @@ async def _execute_run(*, run_id: str, ctx: ChatContext, user_id: str = "default
             return {"selected": [], "freeform": None, "error": "timeout"}
         finally:
             active._hitl_futures.pop(q.question_id, None)
-            active.update(status="running", pending_question=None)
+            registry.update_state(run_id, status="running", pending_question=None)
             _broadcast_run_event(run_id, "user_input_resolved", {"question_id": q.question_id})
         return answer
 
@@ -585,7 +553,8 @@ async def _run_chat_in_background(
         _broadcast_run_event(run_id, "error", {"message": str(e)})
         return
     except asyncio.CancelledError:
-        patch = _build_cancel_patch(_ACTIVE_RUNS.get(run_id))
+        active = _get_run_registry().get_local(run_id)
+        patch = _build_cancel_patch(active.payload() if active is not None else None)
         row = await _update_run_row(run_id, **patch)
         if row:
             _broadcast_snapshot(run_id, row)
@@ -598,7 +567,7 @@ async def _run_chat_in_background(
             _broadcast_snapshot(run_id, row)
         _broadcast_run_event(run_id, "error", {"message": str(e)})
     finally:
-        _ACTIVE_RUNS.pop(run_id, None)
+        _get_run_registry().pop(run_id, None)
 
 
 # ------------------------------------------------------------------
@@ -684,13 +653,18 @@ async def get_active_run(
     session_id: UUID,
     current_user: UserRow = Depends(get_current_user),
 ) -> ChatRunStateResponse | None:
-    for active in _ACTIVE_RUNS.values():
+    registry = _get_run_registry()
+    for active in registry.values_local():
         if active.state.get("session_id") == str(session_id):
             return ChatRunStateResponse(**active.payload())
 
     row = await _get_active_run_row(session_id)
     if row is None:
         return None
+    # 其他 worker 上的 run：优先 Redis 快照
+    redis_state = await registry.load_state(row.id)
+    if redis_state is not None:
+        return ChatRunStateResponse(**redis_state)
     return _run_row_to_state(row)
 
 
@@ -701,16 +675,23 @@ async def create_chat_run(
     current_user: UserRow = Depends(get_current_user),
 ) -> ChatRunResponse:
     session_id = request.session_id or uuid4()
+    registry = _get_run_registry()
     active = await _get_active_run_row(session_id)
-    if active is not None and active.id in _ACTIVE_RUNS:
+    if active is not None and registry.get_local(active.id) is not None:
         return ChatRunResponse(run_id=active.id, session_id=active.session_id, status=active.status)
     if active is not None:
+        # 本机无 Task 但 DB 仍 running：可能在别的 worker；有 Redis state 则复用
+        remote = await registry.load_state(active.id)
+        if remote is not None and remote.get("status") not in _RUN_TERMINAL_STATUSES:
+            return ChatRunResponse(
+                run_id=active.id, session_id=active.session_id, status=str(remote.get("status"))
+            )
         await _update_run_row(active.id, status="error", error="服务重启导致生成任务中断")
 
     row = await _create_run_row(request, session_id, user_id=current_user.id)
     tool_adapter = _resolve_tool_adapter(http_request)
-    active_run = _ActiveRun(row)
-    _ACTIVE_RUNS[row.id] = active_run
+    active_run = ActiveRun(row)
+    registry.register(row.id, active_run)
     active_run.task = asyncio.create_task(
         _run_chat_in_background(
             run_id=row.id,
@@ -731,6 +712,7 @@ async def stream_chat_run(
 ) -> EventSourceResponse:
     async def event_generator() -> AsyncIterator[dict[str, str]]:
         rid = str(run_id)
+        registry = _get_run_registry()
         row = await _get_run_row(rid)
         if row is None:
             yield {"event": "error", "data": _json_event({"message": "Run not found"})}
@@ -739,11 +721,19 @@ async def stream_chat_run(
             yield {"event": "error", "data": _json_event({"message": "Access denied"})}
             return
 
-        active = _ACTIVE_RUNS.get(rid)
+        active = registry.get_local(rid)
+        remote: dict[str, Any] | None = None
         if active is not None:
             yield {"event": "run_state", "data": _json_event(active.payload())}
         else:
-            yield {"event": "run_state", "data": _json_event(_run_row_to_state(row).model_dump())}
+            remote = await registry.load_state(rid)
+            if remote is not None:
+                yield {"event": "run_state", "data": _json_event(remote)}
+            else:
+                yield {
+                    "event": "run_state",
+                    "data": _json_event(_run_row_to_state(row).model_dump()),
+                }
 
         if row.status in _RUN_TERMINAL_STATUSES:
             yield {
@@ -752,26 +742,32 @@ async def stream_chat_run(
             }
             return
 
-        if active is None:
-            row = await _update_run_row(rid, status="error", error="生成任务已中断，请重新发送")
-            if row:
-                yield {
-                    "event": "run_state",
-                    "data": _json_event(_run_row_to_state(row).model_dump()),
-                }
-            yield {"event": "error", "data": _json_event({"message": "生成任务已中断，请重新发送"})}
+        if active is not None:
+            queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(maxsize=200)
+            active.subscribers.add(queue)
+            try:
+                while True:
+                    event, data = await queue.get()
+                    yield {"event": event, "data": data}
+                    if event in {"done", "error"}:
+                        break
+            finally:
+                active.subscribers.discard(queue)
             return
 
-        queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(maxsize=200)
-        active.subscribers.add(queue)
-        try:
-            while True:
-                event, data = await queue.get()
+        # 本机无 Task：remote 已在上面 load 过，若仍在运行则订阅其他 worker 的 Redis 事件扇出
+        if remote is not None and remote.get("status") not in _RUN_TERMINAL_STATUSES:
+            async for event, data in registry.subscribe_remote_events(rid):
                 yield {"event": event, "data": data}
-                if event in {"done", "error"}:
-                    break
-        finally:
-            active.subscribers.discard(queue)
+            return
+
+        row = await _update_run_row(rid, status="error", error="生成任务已中断，请重新发送")
+        if row:
+            yield {
+                "event": "run_state",
+                "data": _json_event(_run_row_to_state(row).model_dump()),
+            }
+        yield {"event": "error", "data": _json_event({"message": "生成任务已中断，请重新发送"})}
 
     return EventSourceResponse(event_generator())
 
@@ -784,15 +780,24 @@ async def answer_hitl_question(
 ) -> dict[str, bool]:
     """Submit the user's answer to a pending HITL question, unblocking the run."""
     rid = str(run_id)
-    active = _ACTIVE_RUNS.get(rid)
-    if active is None:
+    registry = _get_run_registry()
+    payload = {"selected": answer.selected, "freeform": answer.freeform}
+    active = registry.get_local(rid)
+    if active is not None:
+        fut = active._hitl_futures.get(answer.question_id)
+        if fut is None:
+            raise HTTPException(status_code=409, detail="No pending question with that question_id")
+        if fut.done():
+            raise HTTPException(status_code=409, detail="Question already answered or timed out")
+        fut.set_result(payload)
+        return {"ok": True}
+
+    remote = await registry.load_state(rid)
+    if remote is None or remote.get("status") in _RUN_TERMINAL_STATUSES:
         raise HTTPException(status_code=404, detail="Run not found or not in active state")
-    fut = active._hitl_futures.get(answer.question_id)
-    if fut is None:
-        raise HTTPException(status_code=409, detail="No pending question with that question_id")
-    if fut.done():
-        raise HTTPException(status_code=409, detail="Question already answered or timed out")
-    fut.set_result({"selected": answer.selected, "freeform": answer.freeform})
+    delivered = await registry.publish_hitl_answer(rid, answer.question_id, payload)
+    if not delivered:
+        raise HTTPException(status_code=404, detail="Run not found or not in active state")
     return {"ok": True}
 
 
@@ -807,18 +812,21 @@ async def cancel_chat_run(
         raise HTTPException(status_code=404, detail="Run not found")
     if row.user_id != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
-    active = _ACTIVE_RUNS.get(rid)
+    registry = _get_run_registry()
+    active = registry.get_local(rid)
     if active is not None:
-        patch = _build_cancel_patch(active)
-        if active.task is not None:
-            active.task.cancel()
-        active.update(
+        patch = _build_cancel_patch(active.payload())
+        registry.request_cancel(rid)
+        registry.update_state(
+            rid,
             status="cancelled",
             error="用户已停止生成",
             completed_at=datetime.now(UTC).isoformat(),
         )
     else:
-        patch = _build_cancel_patch(None)
+        # run 可能由其他 worker 持有：从 Redis 快照取累积内容，再投递取消信号
+        patch = _build_cancel_patch(await registry.load_state(rid))
+        registry.request_cancel(rid)
     row = await _update_run_row(rid, **patch)
     if row is None:
         raise HTTPException(status_code=404, detail="Run not found")
