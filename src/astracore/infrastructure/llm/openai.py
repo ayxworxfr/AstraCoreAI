@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from astracore.modules.attachments.domain import AttachmentProcessingError
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall
+from astracore.modules.chat.domain.session_context import as_openai_session_message_content
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
 from astracore.shared.utils.json_utils import repair_json
@@ -234,6 +235,25 @@ class OpenAIAdapter(LLMAdapter):
 
         return converted
 
+    @staticmethod
+    def _append_session_context(
+        messages: list[dict[str, Any]],
+        session_context: Any,
+    ) -> list[dict[str, Any]]:
+        """Place dynamic session_context at the end of the message list.
+
+        OpenAI / DeepSeek automatic prompt caching matches from the start of the
+        prompt. Appending datetime / RAG / tool-progress onto ``system`` (or
+        Responses ``instructions``) destroys the entire prefix every round.
+        Trailing user content keeps system + prior turns byte-stable.
+        """
+        content = as_openai_session_message_content(session_context)
+        if not content:
+            return messages
+        out = list(messages)
+        out.append({"role": "user", "content": content})
+        return out
+
     def _responses_input(self, messages: list[Message]) -> tuple[str | None, list[dict[str, Any]]]:
         """转为 Responses API input，并将 system 消息提取为 instructions。"""
         instructions: list[str] = []
@@ -366,13 +386,12 @@ class OpenAIAdapter(LLMAdapter):
         verbosity: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         session_context: str | None = None,
+        prompt_cache_key: str | None = None,
     ) -> LLMResponse:
         client = self._get_client()
         instructions, input_messages = self._responses_input(messages)
-        if session_context:
-            instructions = (
-                (instructions + "\n\n" + session_context) if instructions else session_context
-            )
+        # 动态上下文挂 input 末尾，instructions 只保留静态 system（前缀缓存友好）
+        input_messages = self._append_session_context(input_messages, session_context)
         # Responses API (GPT-5 / o-series) does not accept temperature or top_p.
         request_params: dict[str, Any] = {
             "model": model,
@@ -387,6 +406,8 @@ class OpenAIAdapter(LLMAdapter):
             request_params["text"] = {"format": {"verbosity": verbosity, "type": "text"}}
         if tools:
             request_params["tools"] = tools
+        if prompt_cache_key:
+            request_params["prompt_cache_key"] = prompt_cache_key
 
         response = await client.responses.create(**request_params)
 
@@ -426,13 +447,12 @@ class OpenAIAdapter(LLMAdapter):
         verbosity: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         session_context: str | None = None,
+        prompt_cache_key: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         client = self._get_client()
         instructions, input_messages = self._responses_input(messages)
-        if session_context:
-            instructions = (
-                (instructions + "\n\n" + session_context) if instructions else session_context
-            )
+        # 动态上下文挂 input 末尾，instructions 只保留静态 system（前缀缓存友好）
+        input_messages = self._append_session_context(input_messages, session_context)
         # Responses API (GPT-5 / o-series) does not accept temperature or top_p.
         request_params: dict[str, Any] = {
             "model": model,
@@ -447,6 +467,8 @@ class OpenAIAdapter(LLMAdapter):
             request_params["text"] = {"format": {"verbosity": verbosity, "type": "text"}}
         if tools:
             request_params["tools"] = tools
+        if prompt_cache_key:
+            request_params["prompt_cache_key"] = prompt_cache_key
 
         usage: dict[str, int] = {}
         async with client.responses.stream(**request_params) as stream:
@@ -519,18 +541,13 @@ class OpenAIAdapter(LLMAdapter):
                 verbosity=kwargs.get("verbosity"),
                 tools=self._tools_for_responses(kwargs),
                 session_context=kwargs.get("session_context"),
+                prompt_cache_key=kwargs.get("prompt_cache_key"),
             )
 
-        converted_messages = self._convert_messages(messages)
-        session_context: str | None = kwargs.get("session_context")
-        if session_context:
-            # OpenAI Chat Completions does not support multi-block system; append to existing.
-            for msg in converted_messages:
-                if msg.get("role") == "system":
-                    msg["content"] = (msg.get("content") or "") + "\n\n" + session_context
-                    break
-            else:
-                converted_messages.insert(0, {"role": "system", "content": session_context})
+        converted_messages = self._append_session_context(
+            self._convert_messages(messages),
+            kwargs.get("session_context"),
+        )
 
         top_p: float | None = kwargs.get("top_p", None)
         stop_sequences: list[str] = kwargs.get("stop_sequences", [])
@@ -551,6 +568,10 @@ class OpenAIAdapter(LLMAdapter):
         service_tier: str | None = kwargs.get("service_tier")
         if service_tier:
             request_params["service_tier"] = service_tier
+
+        prompt_cache_key: str | None = kwargs.get("prompt_cache_key")
+        if prompt_cache_key:
+            request_params["prompt_cache_key"] = prompt_cache_key
 
         reasoning_effort_gen: str | None = kwargs.get("reasoning_effort")
         if reasoning_effort_gen:
@@ -644,20 +665,15 @@ class OpenAIAdapter(LLMAdapter):
                 verbosity=kwargs.get("verbosity"),
                 tools=self._tools_for_responses(kwargs),
                 session_context=kwargs.get("session_context"),
+                prompt_cache_key=kwargs.get("prompt_cache_key"),
             ):
                 yield event
             return
 
-        converted_messages = self._convert_messages(messages)
-        session_context: str | None = kwargs.get("session_context")
-        if session_context:
-            # OpenAI Chat Completions does not support multi-block system; append to existing.
-            for msg in converted_messages:
-                if msg.get("role") == "system":
-                    msg["content"] = (msg.get("content") or "") + "\n\n" + session_context
-                    break
-            else:
-                converted_messages.insert(0, {"role": "system", "content": session_context})
+        converted_messages = self._append_session_context(
+            self._convert_messages(messages),
+            kwargs.get("session_context"),
+        )
 
         top_p: float | None = kwargs.get("top_p", None)
         stop_sequences: list[str] = kwargs.get("stop_sequences", [])
@@ -680,6 +696,10 @@ class OpenAIAdapter(LLMAdapter):
         service_tier_s: str | None = kwargs.get("service_tier")
         if service_tier_s:
             request_params["service_tier"] = service_tier_s
+
+        prompt_cache_key_s: str | None = kwargs.get("prompt_cache_key")
+        if prompt_cache_key_s:
+            request_params["prompt_cache_key"] = prompt_cache_key_s
 
         tools = self._tools_for_openai(kwargs)
         if tools:

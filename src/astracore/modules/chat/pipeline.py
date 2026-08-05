@@ -38,6 +38,7 @@ from astracore.modules.chat.domain.chat_context import ChatContext
 from astracore.modules.chat.domain.chat_options import ChatOptions
 from astracore.modules.chat.domain.message import Message, MessageRole
 from astracore.modules.chat.domain.session import SessionState
+from astracore.modules.chat.domain.session_context import SessionContext, as_session_text
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.modules.rag.application.pipeline import RAGPipeline
 from astracore.modules.tools.application.toolset import get_toolset
@@ -61,7 +62,7 @@ def _print_prompt_debug(
     system_prompt: str | None,
     messages: list["Message"],
     session_id: "UUID",
-    session_context: str | None = None,
+    session_context: SessionContext | str | None = None,
 ) -> None:
     """Print the full LLM input to stdout when debug.log_prompts is enabled."""
     lines: list[str] = [
@@ -72,8 +73,9 @@ def _print_prompt_debug(
     ]
     if system_prompt:
         lines += ["  ── SYSTEM PROMPT (static, cached) ──", system_prompt, ""]
-    if session_context:
-        lines += ["  ── SESSION CONTEXT (dynamic, not cached) ──", session_context, ""]
+    session_text = as_session_text(session_context)
+    if session_text:
+        lines += ["  ── SESSION CONTEXT (dynamic, not cached) ──", session_text, ""]
     lines.append(f"  ── MESSAGES ({len(messages)}) ──")
     for msg in messages:
         role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
@@ -362,6 +364,10 @@ class ChatPipeline:
         if profile.enable_prompt_cache and profile.capabilities.prompt_cache:
             llm_kwargs["enable_prompt_cache"] = True
 
+        # OpenAI / Responses：稳定 prompt_cache_key 提升同前缀路由命中（自动缓存无 cache_control）
+        if profile.protocol in ("openai", "responses"):
+            llm_kwargs["prompt_cache_key"] = f"{user_id}:{profile.id}"
+
         # Slice C: service_tier (OpenAI 'auto'/'default'/'flex'; Anthropic priority tiers)
         if profile.service_tier:
             llm_kwargs["service_tier"] = profile.service_tier
@@ -442,17 +448,16 @@ class ChatPipeline:
 
         session = SessionState(session_id=ctx.session_id)
 
-        # Build per-turn session_context: datetime + RAG + active-skill + Tier-2 memory.
-        # Passed to the LLM adapter as a separate non-cached system block so the static
-        # layers in ctx.system_prompt remain an unchanged cached prefix across turns.
+        # Build per-turn SessionContext: datetime + RAG + active-skill + Tier-2 memory.
+        # Adapters place it off the cache prefix so ctx.system_prompt stays byte-stable.
         active_skill = SystemPromptBuilder.detect_active_skill(stored)
-        session_layer = SystemPromptBuilder.build_session_layer(
+        session_ctx = SystemPromptBuilder.build_session_context(
             ctx.turn_context, active_skill, ctx.rag_context
         )
 
         if ctx.mode == "tool_loop":
             # tool_loop embeds the static system message inside the session messages list;
-            # session_layer is passed via kwarg to the LLM adapter as the dynamic block.
+            # session_ctx is passed via kwarg and may gain <tool_progress> each round.
             initial: list[Message] = []
             if ctx.system_prompt:
                 initial.append(Message(role=MessageRole.SYSTEM, content=ctx.system_prompt))
@@ -469,11 +474,9 @@ class ChatPipeline:
                 # Show static system first, then session_context, then non-system messages —
                 # matching the actual two-block order sent to the LLM adapter.
                 non_system = [m for m in session.get_messages() if m.role != MessageRole.SYSTEM]
-                _print_prompt_debug(
-                    ctx.system_prompt, non_system, ctx.session_id, session_layer or None
-                )
+                _print_prompt_debug(ctx.system_prompt, non_system, ctx.session_id, session_ctx)
             async for event in self._stream_tool_loop(
-                ctx, session, session_layer=session_layer, extra_context=extra_context
+                ctx, session, session_ctx=session_ctx, extra_context=extra_context
             ):
                 yield event
         else:
@@ -488,10 +491,10 @@ class ChatPipeline:
             )
             if self._config.debug.log_prompts:
                 _print_prompt_debug(
-                    ctx.system_prompt, session.get_messages(), ctx.session_id, session_layer or None
+                    ctx.system_prompt, session.get_messages(), ctx.session_id, session_ctx
                 )
             async for event in self._stream_normal(
-                ctx, session, ctx.system_prompt, session_layer=session_layer
+                ctx, session, ctx.system_prompt, session_ctx=session_ctx
             ):
                 yield event
 
@@ -500,21 +503,20 @@ class ChatPipeline:
         ctx: ChatContext,
         session: SessionState,
         system_prompt: str | None,
-        session_layer: str = "",
+        session_ctx: SessionContext | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a single LLM call without tool execution.
 
         ``system_prompt`` is the static cached layer (``ctx.system_prompt``).
-        ``session_layer`` is the per-turn dynamic ``<session_context>`` block passed
-        to the adapter as a separate non-cached system block via ``session_context`` kwarg.
+        ``session_ctx`` is the per-turn dynamic block passed via ``session_context`` kwarg.
         """
         llm_messages = session.get_messages()
         if system_prompt:
             llm_messages = [Message(role=MessageRole.SYSTEM, content=system_prompt)] + llm_messages
 
         call_kwargs = dict(ctx.llm_kwargs)
-        if session_layer:
-            call_kwargs["session_context"] = session_layer
+        if session_ctx is not None:
+            call_kwargs["session_context"] = session_ctx
 
         accumulated_content = ""
         assistant_metadata: dict[str, Any] = {}
@@ -545,7 +547,7 @@ class ChatPipeline:
         self,
         ctx: ChatContext,
         session: SessionState,
-        session_layer: str = "",
+        session_ctx: SessionContext | None = None,
         extra_context: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a multi-round tool-loop execution.
@@ -579,8 +581,8 @@ class ChatPipeline:
             extra_context_overlay=overlay,
         )
         call_kwargs = dict(ctx.llm_kwargs)
-        if session_layer:
-            call_kwargs["session_context"] = session_layer
+        if session_ctx is not None:
+            call_kwargs["session_context"] = session_ctx
         completed = False
         total_input_tokens = 0
         total_output_tokens = 0

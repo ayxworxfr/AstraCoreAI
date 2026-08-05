@@ -84,12 +84,12 @@ class ChatContext:
 
     turn_context: str = field(default="")
     """Tier-2 动态会话上下文，由 ``MemoryEngine.build_turn_context()`` 生成；
-    在 ``stream()`` 阶段传入 ``build_session_layer()``，作为 ``<recalled_memory>`` 注入
-    ``<session_context>`` 非缓存系统块。空字符串表示无相关 session/project 记忆。"""
+    在 ``stream()`` 阶段传入 ``SessionContext.build()``，作为 ``<recalled_memory>`` 注入
+    非缓存动态段。空字符串表示无相关 session/project 记忆。"""
 
     rag_context: str | None = field(default=None)
     """RAG 检索结果（``<knowledge>…</knowledge>`` 块），由 ``prepare()`` 在启用 RAG 时填充；
-    ``stream()`` 将其传入 ``build_session_layer()``，注入 ``<session_context>`` 非缓存系统块，
+    ``stream()`` 将其传入 ``SessionContext.build()``，注入非缓存动态段，
     而非放入 user message 或静态 system prompt，保持静态层跨轮次不变从而命中提示缓存。
     未启用 RAG 或检索无结果时为 ``None``。"""
 

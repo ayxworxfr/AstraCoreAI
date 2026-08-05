@@ -156,48 +156,45 @@ DAG"]
 
 ```
 prepare(user_msg, options)
-  ├─ _build_system_prompt()     # 四层叠加：身份 + Skill清单 + Tier-1记忆 + RAG
-  ├─ _build_turn_context()      # Tier-2：向量召回 session/project 记忆
-  ├─ 解析温度 / 上下文窗口 / 工具白名单
+  ├─ SystemPromptBuilder.build_static()      # 静态：security + identity + skills + Tier-1
+  ├─ retrieve_rag_context() / _build_turn_context()  # 结果进 ChatContext，stream 再装 SessionContext
+  ├─ 解析温度 / 上下文窗口 / 工具白名单 / prompt_cache 相关 kwargs
   └─ return ChatContext（frozen dataclass）
 
 stream(ctx)
-  ├─ 加载历史消息（短期记忆）
-  ├─ 组装消息栈：[system, history, tier2-pair, skill-reminder, user-msg]
+  ├─ 加载历史消息（short-term / transcript replay）
+  ├─ SessionContext = build_session_context(turn_context, active_skill, rag)
+  ├─ 消息栈：[static system, history, user-msg] + session_context kwarg
   └─ _stream_tool_loop() / _stream_normal()
 ```
 
-**核心约束**：`stream()` 不访问数据库，`prepare()` 不生成任何流式输出。
+**核心约束**：`prepare()` 做决策与 IO；`stream()` 编排执行。动态提示一律 `SessionContext`，不拼进静态 system。详设见 `docs/系统提示词设计.md`。
 
 ### 5.2 工具循环
 
 - 始终开启（`mode = "tool_loop"`），统一 Agent 与普通对话的执行路径
-- 每轮：LLM 生成 → 并行执行工具 → 追加结果 → 下一轮
-- 收尾轮：末尾为工具结果时，注入禁止继续调用工具的指令，强制 LLM 返回文本
-- 并行 Agent：`spawn_agents` 工具将任务拆分，每个 Worker 独立执行（最多 5 轮）
+- 每轮：LLM 生成 → 分区执行工具 → 追加结果 → 下一轮
+- 进度文案：`SessionContext.with_tool_round()`（不改写静态 system；主循环保持 tools 列表稳定）
+- 收尾轮：`tools=None` + closing 文案进 SessionContext，强制文本回复
+- 并行 Agent：`spawn_agents` 工具将任务拆分，每个 Worker 独立执行
 
 ### 5.3 System Prompt 组装
 
-| 层次 | 内容 | 注入时机 |
-|------|------|---------|
-| 注入安全声明 | `<external_data>` 标签说明，禁止将外部数据视为指令 | 每次请求，最顶部 |
-| 身份层 | AI 名称、主人、时间、全局指令 | 每次请求 |
-| Skill 摘要清单 | 所有 Skill 的 name + description | 每次请求 |
-| HITL 使用指南 | `ask_user` 工具使用场景说明（hitl.enabled 时注入） | 按配置 |
-| Tier-1 记忆 | USER + GLOBAL 范围的长期记忆 | 每次请求 |
-| RAG 召回 | 知识库检索结果（可关闭） | 按需 |
+| 层次 | 内容 | 位置 |
+|------|------|------|
+| `<security>` | `<external_data>` 元规则 | 静态 system（可缓存） |
+| `<identity>` | AI 名称、主人、全局指令（无时间） | 静态 system |
+| `<skills>` | L1 skill manifest | 静态 system |
+| `<user_profile>` | Tier-1 USER + GLOBAL 记忆 | 静态 system |
+| `<session_context>` | datetime / RAG / active_skill / Tier-2 / tool_progress | `SessionContext`（非缓存前缀） |
 
-各层以 `"
-
----
-
-"` 分隔，合并为单一 system 字段。
+HITL 工具用法在 tool `description`，不进 system。Anthropic：第二 system block；OpenAI：消息末尾 framed user。
 
 ### 5.4 记忆系统
 
 **注入方式**：
-- Tier-1（USER/GLOBAL）→ System Prompt，稳定，不受上下文截断影响
-- Tier-2（SESSION/PROJECT）→ 合成消息对，每轮重新向量召回，不写入持久化历史
+- Tier-1（USER/GLOBAL）→ 静态 system `<user_profile>`，稳定，利于 prompt cache
+- Tier-2（SESSION/PROJECT）→ `SessionContext.<recalled_memory>`，每轮向量召回，不写入对话历史
 
 **提取与晋升**（对话结束后异步执行）：
 1. LLM 识别可存储事实（`_ExtractionBatch` schema）

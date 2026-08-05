@@ -2,16 +2,32 @@
 
 import json as _json_stdlib
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel
 
+from astracore.infrastructure.llm.prompt_cache import (
+    allocate_message_cache_slots,
+    mark_messages_cache_breakpoints,
+    mark_tools_cache_breakpoint,
+)
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall
+from astracore.modules.chat.domain.session_context import as_session_text
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
 from astracore.shared.utils.json_utils import repair_json
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class CachedRequestParts:
+    """Anthropic request pieces after prompt-cache breakpoints are applied."""
+
+    system: list[dict[str, Any]] | str | None
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]] | None
 
 
 def _build_anthropic_attachment_blocks(
@@ -212,11 +228,11 @@ class AnthropicAdapter(LLMAdapter):
             Marked with ``cache_control`` when *enable_prompt_cache* is True so the
             Anthropic API serves this block from cache on subsequent turns.
           - Block 1 (dynamic): session_context containing datetime, RAG, active-skill
-            reminder, and Tier-2 memory.  Never marked for caching — it changes
-            every turn by design.
+            reminder, Tier-2 memory, and tool-loop progress notes.  Never marked for
+            caching — it changes every turn/round by design.
 
         When *session_context* is absent, falls back to the simpler single-string
-        system or a single cached block, preserving existing behaviour.
+        system or a single cached block.
         """
         if not system and not session_context:
             return None
@@ -230,6 +246,43 @@ class AnthropicAdapter(LLMAdapter):
         if enable_prompt_cache:
             return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
         return system
+
+    def _prepare_cached_request_parts(
+        self,
+        *,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None,
+        session_context: Any,
+        enable_prompt_cache: bool,
+    ) -> CachedRequestParts:
+        """Assemble system / messages / tools with prompt-cache breakpoints.
+
+        Breakpoint budget (max 4): last tool → static system → message blocks.
+        Dynamic ``session_context`` is a separate system text block without
+        ``cache_control``, so per-round notes never invalidate the static prefix.
+        """
+        system = self._get_system_message(messages)
+        session_text = as_session_text(session_context)
+        system_param = self._build_system_param(system, session_text, enable_prompt_cache)
+        converted = self._convert_messages(messages)
+        prepared_tools = tools
+
+        if enable_prompt_cache:
+            prepared_tools = mark_tools_cache_breakpoint(tools)
+            has_cached_system = isinstance(system_param, list) and any(
+                isinstance(b, dict) and "cache_control" in b for b in system_param
+            )
+            slots = allocate_message_cache_slots(
+                has_tools=bool(prepared_tools),
+                has_cached_system=has_cached_system,
+            )
+            converted = mark_messages_cache_breakpoints(converted, remaining_slots=slots)
+
+        return CachedRequestParts(
+            system=system_param,
+            messages=converted,
+            tools=prepared_tools,
+        )
 
     async def generate(
         self,
@@ -252,27 +305,31 @@ class AnthropicAdapter(LLMAdapter):
         model = model or self.default_model
         max_tokens = max_tokens or self.max_tokens
 
-        system = self._get_system_message(messages)
-        converted_messages = self._convert_messages(messages)
-
         enable_prompt_cache: bool = kwargs.get("enable_prompt_cache", False)
         session_context: str | None = kwargs.get("session_context")
         top_p: float | None = kwargs.get("top_p", None)
         top_k: int | None = kwargs.get("top_k", None)
         stop_sequences: list[str] = kwargs.get("stop_sequences", [])
+        raw_tools: list[dict[str, Any]] | None = kwargs.get("tools")
+
+        parts = self._prepare_cached_request_parts(
+            messages=messages,
+            tools=raw_tools,
+            session_context=session_context,
+            enable_prompt_cache=enable_prompt_cache,
+        )
 
         request_params: dict[str, Any] = {
             "model": model,
-            "messages": converted_messages,
+            "messages": parts.messages,
             "max_tokens": max_tokens,
         }
         # 采样参数互斥：top_p > top_k > temperature
         if self.supports_temperature and top_p is None and top_k is None:
             request_params["temperature"] = temperature
 
-        system_param = self._build_system_param(system, session_context, enable_prompt_cache)
-        if system_param is not None:
-            request_params["system"] = system_param
+        if parts.system is not None:
+            request_params["system"] = parts.system
 
         if top_p is not None:
             request_params["top_p"] = top_p
@@ -302,8 +359,8 @@ class AnthropicAdapter(LLMAdapter):
                 )
                 existing = request_params.get("system", "")
                 request_params["system"] = f"{existing}\n\n{json_hint}" if existing else json_hint
-        elif "tools" in kwargs:
-            request_params["tools"] = kwargs["tools"]
+        elif parts.tools is not None:
+            request_params["tools"] = parts.tools
 
         response = await client.messages.create(**request_params)
 
@@ -367,17 +424,22 @@ class AnthropicAdapter(LLMAdapter):
         top_p: float | None = kwargs.get("top_p", None)
         top_k: int | None = kwargs.get("top_k", None)
         stop_sequences: list[str] = kwargs.get("stop_sequences", [])
+        raw_tools: list[dict[str, Any]] | None = kwargs.get("tools")
 
         client = self._get_client()
         model = model or self.default_model
         max_tokens = max_tokens or self.max_tokens
 
-        system = self._get_system_message(messages)
-        converted_messages = self._convert_messages(messages)
+        parts = self._prepare_cached_request_parts(
+            messages=messages,
+            tools=raw_tools,
+            session_context=session_context,
+            enable_prompt_cache=enable_prompt_cache,
+        )
 
         request_params: dict[str, Any] = {
             "model": model,
-            "messages": converted_messages,
+            "messages": parts.messages,
             "max_tokens": max_tokens,
         }
         # Anthropic: thinking 模式下 top_p 必须 ≥ 0.95 或不发送
@@ -397,9 +459,8 @@ class AnthropicAdapter(LLMAdapter):
                 # 采样参数互斥：top_p > top_k > temperature
                 request_params["temperature"] = temperature
 
-        system_param = self._build_system_param(system, session_context, enable_prompt_cache)
-        if system_param is not None:
-            request_params["system"] = system_param
+        if parts.system is not None:
+            request_params["system"] = parts.system
 
         if top_p is not None:
             request_params["top_p"] = top_p
@@ -408,8 +469,8 @@ class AnthropicAdapter(LLMAdapter):
         if stop_sequences:
             request_params["stop_sequences"] = stop_sequences
 
-        if "tools" in kwargs:
-            request_params["tools"] = kwargs["tools"]
+        if parts.tools is not None:
+            request_params["tools"] = parts.tools
 
         if thinking_mode == "on":
             # Anthropic: max_tokens is the *total* budget (thinking + text output).

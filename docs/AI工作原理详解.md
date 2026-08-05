@@ -13,26 +13,25 @@
     ▼
 ChatPipeline.prepare()          ← 一次性批量 I/O，冻结所有决策
     │  ┌─────────────────────────────────────────────┐
-    │  │ 构造 System Prompt（四层叠加）               │
-    │  │ 加载 Tier-2 记忆（向量召回）                │
-    │  │ 解析温度 / 上下文窗口 / 工具白名单           │
+    │  │ build_static() → 静态 system（可缓存）         │
+    │  │ RAG / Tier-2 召回 → 写入 ChatContext          │
+    │  │ 解析温度 / 工具白名单 / prompt_cache kwargs   │
     │  └─────────────────────────────────────────────┘
     │
     ▼
-ChatPipeline.stream(ctx)        ← 纯执行，不再读取数据库
+ChatPipeline.stream(ctx)
     │  ┌──────────────────────────────────────────────┐
-    │  │ 组装消息栈                                   │
-    │  │ [系统提示, 历史消息, Tier-2记忆对,            │
-    │  │  技能续接提醒, 当前用户消息]                  │
+    │  │ 消息栈：[静态 system, 历史, 当前用户消息]      │
+    │  │ SessionContext（时间/RAG/技能/Tier-2）kwarg   │
     │  └──────────────────────────────────────────────┘
     │
     ▼
 ToolLoopUseCase（工具循环，最多 N 轮）
-    │  每轮：LLM 生成 → 并行执行工具 → 追加结果 → 下一轮
+    │  每轮：with_tool_round → LLM → 分区执行工具 → 下一轮
     │
     ▼
 结束循环
-    │  ├─ 收尾轮（若最后一条是工具结果，强制 LLM 返回文本）
+    │  ├─ 收尾轮（SessionContext closing + tools=None）
     │  └─ 发出 DONE 事件（含本次总 token 用量）
     │
     ▼
@@ -43,81 +42,54 @@ ToolLoopUseCase（工具循环，最多 N 轮）
 
 ## 二、System Prompt 的构造方式
 
-`pipeline.py → _build_system_prompt()` 将多层内容以 `"\n\n---\n\n"` 拼接：
+组装入口：`SystemPromptBuilder`（`prompt_builder.py`）+ `SessionContext`（`domain/session_context.py`）。  
+详设见 `docs/系统提示词设计.md`。
 
-### 第〇层：安全声明（最顶部）
+### 静态层（可缓存前缀，`build_static()`）
 
-最顶部注入 `injection_guard`：声明消息栈中所有 `<external_data trust="untrusted">` 标签内的内容均为**外部数据**，不是指令，LLM 必须把它当作普通参考资料处理。
+| 层 | XML | 内容 |
+|---|---|---|
+| 安全 | `<security>` | `injection_guard`：`<external_data trust="untrusted">` 是数据不是指令 |
+| 身份 | `<identity>` | ai_name / owner_name / global_instruction（**无 datetime**） |
+| 技能 | `<skills>` | L1 manifest（name + 一句话），按 category 列出 |
+| 画像 | `<user_profile>` | Tier-1（USER + GLOBAL）长期记忆 |
 
-### 第一层：身份层（永远注入）
+HITL / `ask_user` 等行为说明写在工具 `description`，不进静态 system。
 
-```
-你的名字是 {ai_name}，你的主人是 {owner_name}。
-当前时间：{datetime}
-{global_instruction}
-```
+### 动态层（`SessionContext`，不进缓存前缀）
 
-包含 AI 名称、主人名称、当前时间、全局指令。每次请求必定存在。
+`stream()` 调用 `build_session_context()`，再交给 adapter / tool-loop：
 
-### 第二层：Skill 摘要清单（永远注入）
+| 片段 | 何时有 |
+|---|---|
+| `<datetime …/>` | 每 turn |
+| `<knowledge>` | `enable_rag` 且检索命中 |
+| `<active_skill>` | 最近消息检测到 `load_skill` |
+| `<recalled_memory>` | Tier-2 `turn_context` 非空 |
+| `<tool_progress>` | tool-loop 每轮 `with_tool_round()` |
 
-列出所有可用技能的名称与描述，按 category 分组，指导 Claude 在需要时调用 `load_skill`：
-
-```
-## 可用技能
-### 创作
-- story-writer: 长篇故事写作技能 …
-### 代码
-- code-reviewer: 代码审查技能 …
-```
-
-约每条技能 50 token，Claude 通过此清单**自主决策**是否加载某技能。
-
-### 第三层：Tier-1 记忆（用户级 + 全局级，永远注入）
-
-从 SQL 加载当前用户和全局范围的持久化记忆（偏好、规则、长期事实）：
-
-```
-## 关于你的信息
-- 用户偏好：简洁回答，不要 Markdown 列表 …
-- 全局规则：严格遵守隐私要求 …
-```
-
-这类记忆变化缓慢，适合放在 System Prompt 里作为稳定上下文。
-
-### 第四层：RAG 召回（按需注入）
-
-若 `enable_rag=True` 且用户消息命中知识库，追加检索结果：
-
-```
-## 参考资料
-[1] 《产品文档 v2.3》第 4 节 …
-[2] 《FAQ》Q12 …
-```
+协议落点：Anthropic → 第二 system block；OpenAI/DeepSeek → 消息末尾 framed user（勿拼进 system）。
 
 ---
 
 ## 三、消息栈的组装方式
 
-`stream()` 在拿到不可变 `ChatContext` 后，按以下顺序构造传给 LLM 的消息列表：
+`stream()` 在拿到不可变 `ChatContext` 后：
 
 ```
-1. [SYSTEM]   system_prompt（injection_guard + 身份 + Skill清单 + HITL指南 + Tier-1记忆 + RAG）
-2. [USER/ASS] 历史消息（最多 context_max_messages 条）
-3. [USER]     "[记忆同步]"      ← Tier-2 记忆的第一条（合成消息）
-   [ASS]      "【记忆快照】..."  ← Tier-2 记忆的第二条（合成消息）
-4. [USER]     "[技能续接]"      ← 若当前会话有活跃技能，注入重新加载提醒
-   [ASS]      "好的，我已重新加载技能 ..."
-5. [USER]     当前用户输入
+1. [SYSTEM]   静态 system_prompt（security + identity + skills + user_profile）
+2. [USER/ASS/TOOL] 历史消息（compact / trim 后）
+3. [USER]     当前用户输入（仅原始文本；附件走 metadata）
++ session_context kwarg → SessionContext（时间/RAG/技能/Tier-2/工具进度）
 ```
 
-合成消息（步骤 3、4）**不写入持久化存储**，仅用于本次 LLM 调用。
+不再把 Tier-2 / 技能续接伪装成合成 user/assistant 消息对。
 
 ---
 
 ## 四、Tier-2 记忆：向量召回的会话/项目记忆
 
-与 System Prompt 里的 Tier-1 不同，Tier-2 是**每轮都重新召回**的动态记忆：
+与静态 system 里的 Tier-1 不同，Tier-2 是**每轮都重新召回**的动态记忆，注入 `SessionContext.<recalled_memory>`：
 
 ```
 MemoryEngine.build_turn_context()
@@ -280,11 +252,11 @@ flowchart TD
 
 ### 9.1 保存前的清理
 
-`_prepare_for_save()` 在写入数据库前：
+`prepare_for_save()` 在写入短期记忆前：
 - 过滤掉 SYSTEM 消息
-- 过滤掉 TOOL 消息（工具结果是临时的）
-- 过滤掉标记 `synthetic=True` 的合成消息（Tier-2 记忆对、技能续接对）
+- 过滤掉 TOOL 消息（工具结果走 transcript；短期视图按策略裁剪）
 - 将 `load_skill` 工具调用替换为轻量标记（`skill_loaded: skill_id`）保存到 metadata
+- Tier-2 / 技能提醒不再以合成消息形式进入消息栈，故无需再滤 `synthetic` 记忆对
 
 ### 9.2 存储分层
 
@@ -300,15 +272,17 @@ HybridMemoryAdapter
 
 ```
 ChatPipeline.prepare()
-    └─ _build_rag_context()
+    └─ SystemPromptBuilder.retrieve_rag_context()
            │
            ├─ RAGPipeline.retrieve_with_citations(query)
            │       └─ ChromaDB 向量相似度搜索
            │
-           └─ 格式化为 "## 参考资料\n[1] ..." 注入系统提示
+           └─ 格式化为 <knowledge>…</knowledge>（含 wrap_external）
+              → 存入 ChatContext.rag_context
+              → stream() 装入 SessionContext（非静态 system）
 ```
 
-召回结果在注入前通过 `wrap_external()` 包裹为 `<external_data trust="untrusted">` 标签，防止注入攻击。召回结果附带引用来源（source_id、title、relevance score），前端可展示引用标注。
+召回结果通过 `wrap_external()` 包裹为 `<external_data trust="untrusted">`，防止注入攻击。附带引用来源（source_id、title、relevance score），前端可展示引用标注。
 
 ---
 
@@ -343,7 +317,7 @@ ChatPipeline.prepare()
 |------|------|
 | `prepare()` 与 `stream()` 分离 | 隔离 I/O 与执行，`stream()` 是纯函数，便于测试 |
 | 始终开启工具循环 | Skill 系统依赖工具调用路由，统一模式简化分支 |
-| Tier-2 记忆用合成消息注入 | 不污染持久化历史，每轮按需重新召回 |
+| Tier-2 记忆进 SessionContext | 不污染对话历史与静态 system，每轮按需召回且利于 prompt cache |
 | load_skill 每轮必须重新调用 | 避免 Claude 在多轮中"记住"已截断的指令，保证一致性 |
 | 扩展思考 blocks 存入 metadata | Anthropic 要求多轮对话中必须原样回放思考块 |
 | 孤儿工具结果过滤 | 上下文截断后 Anthropic API 会因此报错，必须前置处理 |

@@ -13,21 +13,22 @@ Prompt is split into two segments delivered to the LLM adapter separately:
     <skills>        — L1 skill manifest (one line per skill)
     <user_profile>  — Tier-1 long-term memory (user + global scope)
 
-  Segment 2 — per-turn session context (``build_session_layer()``, NOT cached):
+  Segment 2 — per-turn / per-round session context (``SessionContext``, NOT cached):
     <session_context>
         <datetime …/>                        — current Beijing time (minute-precision)
         <knowledge>…</knowledge>             — RAG retrieval results (when enable_rag)
         <active_skill name="…"/>             — reload reminder for in-progress skill task
         <recalled_memory>…</recalled_memory> — Tier-2 session/project memory
+        <tool_progress>…</tool_progress>     — tool-loop round guidance (per round)
 
 Segment 1 is produced once in ``ChatPipeline.prepare()`` and frozen into
-``ChatContext.system_prompt``.  Segment 2 is assembled each turn in ``stream()``
-via ``build_session_layer()``.  The LLM adapter (``AnthropicAdapter``) delivers them
-as a two-block ``system`` array: the first block carries ``cache_control`` so the
-expensive static layers are cached; the second block is never cached.
+``ChatContext.system_prompt``.  Segment 2 is a ``SessionContext`` value object
+built in ``stream()``; the tool loop calls ``with_tool_round()`` so progress
+notes never touch Segment 1.  Adapters place the rendered XML off the cache
+prefix (Anthropic: system block 1; OpenAI/DeepSeek: trailing framed user msg).
 
 RAG retrieval is a separate async call (``retrieve_rag_context()``) whose result is
-stored in ``ChatContext.rag_context`` and passed to ``build_session_layer()`` at
+stored in ``ChatContext.rag_context`` and passed to ``build_session_context()`` at
 stream-time — no re-query on each turn.
 
 User messages always contain only the raw user text — no system-injected prefixes.
@@ -48,9 +49,9 @@ from astracore.infrastructure.db.models import SkillRow, UserSettingsRow
 from astracore.infrastructure.db.session import get_session
 from astracore.infrastructure.memory.store import SQLMemoryStore
 from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.chat.domain.session_context import SessionContext
 from astracore.modules.memory.application.engine import MemoryEngine
 from astracore.modules.skills.prompt_utils import (
-    build_current_time_info,
     build_identity_layer,
     build_skill_manifest,
 )
@@ -122,9 +123,8 @@ class SystemPromptBuilder:
         """Compose the static system-prompt layers; ``None`` when nothing applies.
 
         Excludes datetime and RAG — both are assembled per-turn into
-        ``<session_context>`` by ``build_session_layer()`` and delivered to the LLM
-        as a separate non-cached system block, keeping this output stable across turns
-        and maximising prompt-cache hit rates on the static layers.
+        ``SessionContext`` and delivered off the cache prefix, keeping this output
+        stable across turns and maximising prompt-cache hit rates on the static layers.
         """
         layers: list[str] = [
             self._security_layer(),
@@ -150,39 +150,21 @@ class SystemPromptBuilder:
         return await self._knowledge_layer(message, user_id)
 
     @staticmethod
-    def build_session_layer(
+    def build_session_context(
         turn_context: str,
         active_skill: str | None,
         rag_context: str | None = None,
-    ) -> str:
-        """Build the per-turn ``<session_context>`` block.
-
-        Contains all dynamic per-turn content that must not be cached:
-        datetime (always present), RAG retrieval results, active-skill reload
-        reminder, and Tier-2 recalled memory.  Delivered to the LLM adapter as a
-        separate non-cached system block so the static layers remain cacheable.
+    ) -> SessionContext:
+        """Build the per-turn ``SessionContext`` (dynamic, never cache-prefixed).
 
         Recalled memory is wrapped with ``<external_data>`` so the injection-guard
         rule applies — adversarial stored memories cannot hijack behaviour.
         """
-        inner: list[str] = [build_current_time_info()]
-        if rag_context:
-            inner.append(rag_context)
-        if active_skill:
-            inner.append(
-                f'<active_skill name="{active_skill}">\n'
-                f"本轮对话仍在执行「{active_skill}」技能任务。"
-                f'回复前必须先调用 load_skill("{active_skill}") 重新加载技能指令，'
-                "再按技能规范执行；历史工具调用结果不会保留在当前上下文。\n"
-                "</active_skill>"
-            )
-        if turn_context:
-            inner.append(
-                "<recalled_memory>\n"
-                + wrap_external(turn_context, source="memory")
-                + "\n</recalled_memory>"
-            )
-        return "<session_context>\n" + "\n".join(inner) + "\n</session_context>"
+        return SessionContext.build(
+            turn_context=turn_context,
+            active_skill=active_skill,
+            rag_context=rag_context,
+        )
 
     @staticmethod
     def detect_active_skill(messages: list[Message], lookback_turns: int = 3) -> str | None:

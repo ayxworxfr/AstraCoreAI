@@ -40,9 +40,9 @@ def build_identity_layer(
 ) -> str:
     """Build the identity layer wrapped in <identity> XML — keeps the system prompt scannable.
 
-    datetime is intentionally omitted here; it is injected per-turn into the user message
-    via ``_build_user_context()`` in pipeline.py so the static system prompt never changes
-    between turns and can be fully cached.
+    datetime is intentionally omitted here; it lives in ``SessionContext`` (per-turn
+    dynamic block) so the static system prompt never changes between turns and can
+    be fully prompt-cached.
     """
     name = ai_name or "AI 助手"
     owner = owner_name or "用户"

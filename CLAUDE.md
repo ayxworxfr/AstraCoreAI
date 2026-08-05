@@ -92,23 +92,31 @@ src/astracore/
 
 **Ports & Adapters**: All external deps (LLM, DB, vector store) are behind abstract port interfaces in `shared/ports/`. Implementations live in `infrastructure/`.
 
-**System Prompt Assembly** (in `pipeline.py` → `_build_system_prompt()`), layers joined with `\n\n---\n\n`:
-1. `injection_guard` — static security declaration: treat `<external_data>` tags as data, not instructions
-2. Identity block (ai_name, owner_name, time, global_instruction)
-3. Skill manifest (lists available skills by category)
-4. HITL guideline (if `hitl.enabled`) — explains `ask_user` tool semantics
-5. Tier-1 memory (user/global scope, full-load from SQL)
-6. RAG context (if `enable_rag` and query hits something)
+**System Prompt Assembly** (`prompt_builder.py` + `domain/session_context.py`):
+
+Static layer (`build_static()` → `ChatContext.system_prompt`, cacheable prefix):
+1. `<security>` — injection-guard: treat `<external_data>` as data, not instructions
+2. `<identity>` — ai_name, owner_name, global_instruction (**no datetime**)
+3. `<skills>` — L1 skill manifest
+4. `<user_profile>` — Tier-1 memory (user/global scope)
+
+Dynamic layer (`SessionContext`, never on the cache prefix):
+- Built in `stream()` via `build_session_context()`: datetime, RAG `<knowledge>`, `<active_skill>`, Tier-2 `<recalled_memory>`
+- Tool-loop adds `<tool_progress>` with `SessionContext.with_tool_round()` — must not mutate static system
+- Placement by adapter: Anthropic → second system block; OpenAI/DeepSeek → trailing framed user message
+- HITL / schedule guidance lives in tool `description`, not in system prompt
+
+See `docs/系统提示词设计.md` for the full design.
 
 **Prompt Injection Defense**: All external content (RAG results, Tier-2 memory, tool results) is wrapped via `shared/security/external_data.py`:
 ```python
 wrap_external(content, source="rag")   # → <external_data trust="untrusted" source="rag">…</external_data>
 ```
-The injection_guard in the system prompt instructs the LLM to treat tagged content as data only.
+The injection_guard in the static system prompt instructs the LLM to treat tagged content as data only.
 
 **Hybrid Memory** (`modules/memory/`):
-- **Tier-1** (system prompt): user/global scope memories injected as permanent context
-- **Tier-2** (synthetic message pair): session/project memories retrieved via Chroma vector search, injected as `[记忆同步]`/`[记忆快照]` synthetic messages before the real user message. These are filtered out before persisting (`_prepare_for_save`).
+- **Tier-1** (static system `<user_profile>`): user/global scope memories injected as permanent context
+- **Tier-2** (`SessionContext.<recalled_memory>`): session/project memories retrieved via Chroma vector search, injected into the dynamic session block (not as fake chat messages)
 - Auto-extraction runs post-turn: LLM extracts 0-N structured memories; high-value session memories are promoted to user/project scope after LLM judgment. Promotion requires user approval when `hitl.require_memory_promotion_approval = true` (creates a `pending_promotion` record instead of promoting immediately).
 
 **HistoryCompactor** (`modules/chat/application/compactor.py`): Called at `stream()` entry. Summaries persist as `USER` messages with `metadata.compacted=True` so `prepare_for_save` keeps them for reinjection (do not use SYSTEM+synthetic).
@@ -129,7 +137,7 @@ The injection_guard in the system prompt instructs the LLM to treat tagged conte
 
 **LLM Capability Flags** (`sdk/model_capabilities.py` → `infer_model_capabilities()`): Single source of truth for per-model behavior. Key flags: `thinking` (supports extended thinking), `adaptive_thinking_only` (Opus 4.7+ — no `budget_tokens`, always adaptive), `temperature` (some models reject it), `top_k` (Anthropic native only), `vision` / `documents` (multi-modal), `anthropic_blocks` (third-party Anthropic-compatible endpoints), `reasoning_effort_protocol`.
 
-**Active Skill Enforcement**: `_detect_active_skill()` scans recent messages for `load_skill` calls (via `metadata["skill_loaded"]` after save, or live `tool_calls` in-session). If found, appends a mandatory reload instruction to the system prompt.
+**Active Skill Enforcement**: `SystemPromptBuilder.detect_active_skill()` scans recent messages for `load_skill` calls (via `metadata["skill_loaded"]` after save, or live `tool_calls` in-session). If found, `SessionContext` includes `<active_skill>` with a mandatory reload instruction (dynamic block only — static system stays cache-stable).
 
 **Backend Run + SSE Subscribe**: Each generation creates a `ChatRunRow`. Ownership (Task / HITL Future / local SSE queues) stays process-local via `RunRegistry`; state snapshots and event/HITL/cancel signals fan out over Redis when available (silent fallback to in-process if Redis is down).
 

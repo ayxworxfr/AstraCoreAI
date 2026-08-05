@@ -65,10 +65,12 @@ HTTP 后台 run：`modules/chat/api.py` + `infrastructure/chat/run_registry.py`
 
 ## 6. 系统提示分层（概念）
 
-静态层（可缓存）：injection_guard → 身份 → skill 清单 → HITL 指南 → Tier-1 记忆  
-动态层（每轮）：`<session_context>`（时间 / RAG / active-skill / Tier-2）
+静态层（可缓存前缀）：`<security>` → `<identity>`（无 datetime）→ `<skills>` → `<user_profile>`（Tier-1）  
+动态层（`SessionContext`，不进缓存前缀）：datetime / RAG / active-skill / Tier-2 / `<tool_progress>`  
+协议落点：Anthropic = 第二 system block；OpenAI/DeepSeek = 消息末尾 framed user  
+组装入口：`prompt_builder.py` + `domain/session_context.py`；详设见 `docs/系统提示词设计.md`
 
-外部内容一律 `wrap_external(...)`，禁止当指令。
+外部内容一律 `wrap_external(...)`，禁止当指令。HITL / 工具用法写在 tool `description`，不进 system。
 
 ## 7. 配置
 

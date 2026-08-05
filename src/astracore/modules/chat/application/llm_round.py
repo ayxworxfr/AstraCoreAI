@@ -103,12 +103,13 @@ class BlockingLLMRound(_HookedRoundBase):
             return
 
         t0 = time.monotonic()
-        # 非流式路径不透传 llm_kwargs（历史契约：retry 包一层 generate）
+        # 与流式路径对齐：透传 session_context / enable_prompt_cache 等
         response = await self._policy.apply_retry_policy(
             self._llm.generate,
             messages=messages,
             model=model,
             tools=tools,
+            **llm_kwargs,
         )
         duration_ms = int((time.monotonic() - t0) * 1000)
         meta: dict[str, Any] = {}

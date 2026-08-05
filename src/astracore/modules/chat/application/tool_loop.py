@@ -18,6 +18,7 @@ from astracore.modules.chat.application.tool_scheduler import ToolScheduler
 from astracore.modules.chat.domain.budget import BudgetExceeded, TurnBudget
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
 from astracore.modules.chat.domain.session import SessionState
+from astracore.modules.chat.domain.session_context import SessionContext, coerce_session_context
 from astracore.modules.tools.ports.tool import ToolAdapter
 from astracore.shared.observability.hooks import HookRegistry
 from astracore.shared.observability.logger import get_logger
@@ -91,35 +92,26 @@ class ToolLoopUseCase:
     # Guidance / definitions / closing
     # ------------------------------------------------------------------
 
-    def _build_tool_guidance(self, iteration: int) -> str:
-        """每轮注入给 LLM 的工具使用进度提示（不存入 session）。"""
-        common = [
-            "工具使用规范：",
-            "- 搜索文件时避免 **/* 等宽泛模式，优先指定具体目录和文件扩展名",
-            "- 先用少量调用探索目录结构，再针对性深入",
-            "- 单次工具结果过长时，使用 offset/page 参数分页读取",
-        ]
-        if self.unlimited:
-            return "\n".join([f"[工具调用进度] 第 {iteration} 轮（无轮次限制）。", *common])
-        remaining = self.max_iterations - iteration + 1
-        lines = [
-            f"[工具调用进度] 第 {iteration}/{self.max_iterations} 轮，剩余 {remaining} 次机会。",
-            *common,
-        ]
-        if remaining == 1:
-            lines.append("⚠️ 本轮不提供工具调用，请基于以上已获取的工具结果直接给出最终回答。")
-        return "\n".join(lines)
+    def _prepare_round_prompt(
+        self,
+        messages: list[Message],
+        *,
+        iteration: int,
+        session_context: SessionContext,
+        closing: bool = False,
+    ) -> tuple[list[Message], SessionContext]:
+        """Return (messages, session_context) for one LLM round.
 
-    def _inject_guidance(self, messages: list[Message], iteration: int) -> list[Message]:
-        """将工具进度提示注入消息列表，供本次 LLM 调用使用，不修改 session。"""
-        guidance = self._build_tool_guidance(iteration)
-        msgs = list(messages)
-        if msgs and msgs[0].role == MessageRole.SYSTEM:
-            merged = msgs[0].model_copy(
-                update={"content": f"{msgs[0].content}\n\n---\n\n{guidance}"}
-            )
-            return [merged] + msgs[1:]
-        return [Message(role=MessageRole.SYSTEM, content=guidance)] + msgs
+        Messages keep the static SYSTEM content untouched so prompt-cache prefixes
+        stay byte-stable. Per-round guidance is ``SessionContext.with_tool_round``.
+        """
+        round_ctx = session_context.with_tool_round(
+            iteration=iteration,
+            max_iterations=self.max_iterations,
+            unlimited=self.unlimited,
+            closing=closing,
+        )
+        return list(messages), round_ctx
 
     def _truncate_tool_result(self, content: str, limit: int | None = None) -> str:
         """Truncate oversized tool results（测试与外部仍可能直接调用）。"""
@@ -159,14 +151,6 @@ class ToolLoopUseCase:
             return defs
         return [t for t in defs if t["name"] in allowed_tools]
 
-    def _tools_for_round(
-        self, iteration: int, tool_definitions: list[dict[str, Any]]
-    ) -> list[dict[str, Any]] | None:
-        is_last = (not self.unlimited) and (iteration == self.max_iterations)
-        if is_last:
-            return None
-        return tool_definitions or None
-
     def _should_stop_after_tools(self, iterations: int) -> bool:
         return (not self.unlimited) and iterations >= self.max_iterations
 
@@ -179,16 +163,6 @@ class ToolLoopUseCase:
         return (last.role == MessageRole.TOOL and last.has_tool_results()) or (
             last.role == MessageRole.ASSISTANT and not last.content.strip()
         )
-
-    def _build_closing_messages(self, messages: list[Message]) -> list[Message]:
-        """Inject a closing instruction so the LLM must respond without calling tools."""
-        note = "工具调用阶段已结束。请直接基于以上工具结果给出最终回答，禁止继续调用工具。"
-        msgs = list(messages)
-        if msgs and msgs[0].role == MessageRole.SYSTEM:
-            msgs[0] = msgs[0].model_copy(update={"content": f"{msgs[0].content}\n\n---\n\n{note}"})
-        else:
-            msgs.insert(0, Message(role=MessageRole.SYSTEM, content=note))
-        return msgs
 
     # ------------------------------------------------------------------
     # 测试兼容薄包装
@@ -223,13 +197,15 @@ class ToolLoopUseCase:
     ) -> AsyncIterator[StreamEvent]:
         """唯一的 ReAct 循环：策略决定 LLM 怎么调，工具调度共用 ToolScheduler。"""
         tool_definitions = self._filter_tool_defs(self._build_tool_definitions(), allowed_tools)
+        # 同一 tool 列表贯穿主循环，保证 tools→system 缓存前缀不被末轮卸工具打穿
+        tools_for_llm = tool_definitions or None
+        base_session = coerce_session_context(llm_kwargs.get("session_context"))
         iterations = 0
         budget = self._build_budget()
 
         while self.unlimited or iterations < self.max_iterations:
             iterations += 1
             budget.check_iteration(iterations)
-            tools_for_llm = self._tools_for_round(iterations, tool_definitions)
 
             if emit_round_start:
                 yield StreamEvent(
@@ -237,10 +213,17 @@ class ToolLoopUseCase:
                     metadata={"round": iterations},
                 )
 
-            injected = self._inject_guidance(session.get_messages(), iterations)
+            round_messages, round_session_ctx = self._prepare_round_prompt(
+                session.get_messages(),
+                iteration=iterations,
+                session_context=base_session,
+            )
+            round_kwargs = {**llm_kwargs, "session_context": round_session_ctx}
             outcome: RoundOutcome | None = None
             try:
-                async for item in round_strategy.run(injected, model, tools_for_llm, **llm_kwargs):
+                async for item in round_strategy.run(
+                    round_messages, model, tools_for_llm, **round_kwargs
+                ):
                     if isinstance(item, RoundOutcome):
                         outcome = item
                     else:
@@ -299,9 +282,17 @@ class ToolLoopUseCase:
             if emit_round_start:
                 # Phase boundary: resets in_tool_round in the API layer.
                 yield StreamEvent(event_type=StreamEventType.DONE, metadata={"source": "tool_loop"})
-            msgs = self._build_closing_messages(session.get_messages())
+            # Closing: tools=None forces a text reply; progress note stays in SessionContext
+            # so the static SYSTEM prefix stays cache-stable for the next user turn.
+            closing_messages, closing_session_ctx = self._prepare_round_prompt(
+                session.get_messages(),
+                iteration=iterations,
+                session_context=base_session,
+                closing=True,
+            )
+            closing_kwargs = {**llm_kwargs, "session_context": closing_session_ctx}
             closing: RoundOutcome | None = None
-            async for item in round_strategy.run(msgs, model, None, **llm_kwargs):
+            async for item in round_strategy.run(closing_messages, model, None, **closing_kwargs):
                 if isinstance(item, RoundOutcome):
                     closing = item
                 else:
@@ -372,6 +363,7 @@ class ToolLoopUseCase:
         session: SessionState,
         model: str | None = None,
         allowed_tools: set[str] | None = None,
+        **llm_kwargs: Any,
     ) -> SessionState:
         """非流式工具循环 —— 与 stream 共用同一编排，仅换 BlockingLLMRound。"""
         strategy = BlockingLLMRound(self.llm, self.policy, self._hooks)
@@ -382,6 +374,7 @@ class ToolLoopUseCase:
             allowed_tools=allowed_tools,
             emit_round_start=False,
             stream_tools=False,
+            **llm_kwargs,
         ):
             pass
         return session

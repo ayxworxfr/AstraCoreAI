@@ -280,3 +280,88 @@ def test_build_openai_user_content_pdf_error_propagates(monkeypatch):
     ref = _make_ref("application/pdf", b"%PDF-1.4\n", "secret.pdf")
     with pytest.raises(AttachmentProcessingError, match="已加密"):
         _build_openai_user_content("summarize", [ref])
+
+
+# ---------- prompt-cache friendly session_context placement ----------
+
+
+def test_append_session_context_keeps_system_stable(adapter):
+    """动态 session_context 必须挂在末尾 user，不能污染 system 前缀。"""
+    base = [
+        {"role": "system", "content": "STATIC"},
+        {"role": "user", "content": "hello"},
+    ]
+    round1 = adapter._append_session_context(base, "<session_context>\nround 1\n</session_context>")
+    round2 = adapter._append_session_context(base, "<session_context>\nround 2\n</session_context>")
+    assert round1[0] == {"role": "system", "content": "STATIC"}
+    assert round2[0] == {"role": "system", "content": "STATIC"}
+    assert round1[0] == round2[0]
+    assert round1[1] == round2[1] == {"role": "user", "content": "hello"}
+    assert round1[-1]["role"] == "user"
+    assert "round 1" in round1[-1]["content"]
+    assert "round 2" in round2[-1]["content"]
+
+
+def test_append_session_context_noop_when_empty(adapter):
+    msgs = [{"role": "user", "content": "hi"}]
+    assert adapter._append_session_context(msgs, None) == msgs
+    assert adapter._append_session_context(msgs, "   ") == msgs
+
+
+def test_responses_input_keeps_instructions_static_with_session_at_end(adapter):
+    """Responses：instructions=静态 system；session_context 进 input 末尾。"""
+    msgs = [
+        Message(role=MessageRole.SYSTEM, content="STATIC_SYS"),
+        Message(role=MessageRole.USER, content="q"),
+    ]
+    instructions, input_messages = adapter._responses_input(msgs)
+    with_ctx = adapter._append_session_context(
+        input_messages, "<session_context>dyn</session_context>"
+    )
+    assert instructions == "STATIC_SYS"
+    assert with_ctx[-1] == {
+        "role": "user",
+        "content": "<session_context>dyn</session_context>",
+    }
+    # instructions 本身不被 session 污染
+    assert "dyn" not in (instructions or "")
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_passes_prompt_cache_key(adapter, monkeypatch):
+    pytest.importorskip("openai")
+    captured: dict = {}
+
+    class FakeStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            return FakeStream()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(adapter, "_get_client", lambda: FakeClient())
+    _ = [
+        e
+        async for e in adapter.generate_stream(
+            [
+                Message(role=MessageRole.SYSTEM, content="S"),
+                Message(role=MessageRole.USER, content="u"),
+            ],
+            session_context="<session_context>x</session_context>",
+            prompt_cache_key="user1:deepseek-v4-pro",
+        )
+    ]
+    assert captured["prompt_cache_key"] == "user1:deepseek-v4-pro"
+    assert captured["messages"][0] == {"role": "system", "content": "S"}
+    assert captured["messages"][-1]["content"] == "<session_context>x</session_context>"

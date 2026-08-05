@@ -44,7 +44,7 @@ ASTRACORE_CONFIG=config/config.local.yaml
 |------|------|--------|------|
 | `top_p` | float \| null | null | 核采样概率截断（0.0–1.0）。与 `temperature` 二选一调整；null = 不发送，使用 provider 默认值。 |
 | `stop_sequences` | list[str] | [] | 强终止序列，最多 4 条。遇到列表中任意字符串时强制停止输出。OpenAI 和 Anthropic 均支持。 |
-| `enable_prompt_cache` | bool | true | 仅 `protocol: anthropic` 生效。为 system prompt 注入 `cache_control: ephemeral`，缓存命中后输入 token 成本降低约 90%。时间戳精确到分钟以保证缓存稳定性。 |
+| `enable_prompt_cache` | bool | true | 仅 `protocol: anthropic` 且 `capabilities.prompt_cache=true` 时生效。为**静态** system / 末 tool / messages 前缀注入 `cache_control: ephemeral`；动态内容走 `SessionContext`（datetime/RAG/工具进度），不进缓存前缀。OpenAI/Responses 走自动前缀缓存 + `prompt_cache_key`，不读此开关。 |
 
 ### 推理控制（可选）
 
