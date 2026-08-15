@@ -13,7 +13,7 @@ from astracore.infrastructure.llm.prompt_cache import (
     mark_tools_cache_breakpoint,
 )
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall
-from astracore.modules.chat.domain.session_context import as_session_text
+from astracore.modules.chat.domain.session_context import as_openai_session_message_content
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
 from astracore.shared.utils.json_utils import repair_json
@@ -215,34 +215,31 @@ class AnthropicAdapter(LLMAdapter):
         return None
 
     @staticmethod
+    def _extract_cache_tokens(usage: Any) -> tuple[int, int]:
+        """Return (cache_read, cache_creation) from Anthropic or DeepSeek-compat usage."""
+        if usage is None:
+            return 0, 0
+        read = getattr(usage, "cache_read_input_tokens", None)
+        create = getattr(usage, "cache_creation_input_tokens", None)
+        if read is not None or create is not None:
+            return int(read or 0), int(create or 0)
+        hit = getattr(usage, "prompt_cache_hit_tokens", None)
+        if hit is not None:
+            return int(hit), 0
+        return 0, 0
+
+    @staticmethod
     def _build_system_param(
         system: str | None,
-        session_context: str | None,
         enable_prompt_cache: bool,
     ) -> list[dict[str, Any]] | str | None:
-        """Build the Anthropic API ``system`` parameter.
+        """Build the Anthropic API ``system`` parameter (static layer only).
 
-        When *session_context* is provided (the dynamic per-turn layer), returns a
-        two-element block array:
-          - Block 0 (static): the cached security/identity/skills/profile layers.
-            Marked with ``cache_control`` when *enable_prompt_cache* is True so the
-            Anthropic API serves this block from cache on subsequent turns.
-          - Block 1 (dynamic): session_context containing datetime, RAG, active-skill
-            reminder, Tier-2 memory, and tool-loop progress notes.  Never marked for
-            caching — it changes every turn/round by design.
-
-        When *session_context* is absent, falls back to the simpler single-string
-        system or a single cached block.
+        Session context must not live here. Message-level cache prefixes include
+        every system block; a per-turn datetime block would invalidate history.
         """
-        if not system and not session_context:
-            return None
         if not system:
-            return session_context  # defensive; static layer should always be present
-        if session_context:
-            static_block: dict[str, Any] = {"type": "text", "text": system}
-            if enable_prompt_cache:
-                static_block["cache_control"] = {"type": "ephemeral"}
-            return [static_block, {"type": "text", "text": session_context}]
+            return None
         if enable_prompt_cache:
             return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
         return system
@@ -257,13 +254,14 @@ class AnthropicAdapter(LLMAdapter):
     ) -> CachedRequestParts:
         """Assemble system / messages / tools with prompt-cache breakpoints.
 
-        Breakpoint budget (max 4): last tool → static system → message blocks.
-        Dynamic ``session_context`` is a separate system text block without
-        ``cache_control``, so per-round notes never invalidate the static prefix.
+        Breakpoint budget (max 4): last tool → static system → history blocks.
+        Dynamic ``session_context`` is appended as a trailing user message
+        *after* breakpoints, so datetime / RAG / tool-progress never enter
+        the cached prefix. DeepSeek automatic prefix cache relies on the
+        same layout even when ``enable_prompt_cache`` is False.
         """
         system = self._get_system_message(messages)
-        session_text = as_session_text(session_context)
-        system_param = self._build_system_param(system, session_text, enable_prompt_cache)
+        system_param = self._build_system_param(system, enable_prompt_cache)
         converted = self._convert_messages(messages)
         prepared_tools = tools
 
@@ -277,6 +275,10 @@ class AnthropicAdapter(LLMAdapter):
                 has_cached_system=has_cached_system,
             )
             converted = mark_messages_cache_breakpoints(converted, remaining_slots=slots)
+
+        session_content = as_openai_session_message_content(session_context)
+        if session_content:
+            converted = [*converted, {"role": "user", "content": session_content}]
 
         return CachedRequestParts(
             system=system_param,
@@ -382,6 +384,7 @@ class AnthropicAdapter(LLMAdapter):
                         )
                     )
 
+        cache_read, cache_creation = self._extract_cache_tokens(response.usage)
         return LLMResponse(
             content=content_text,
             tool_calls=tool_calls,
@@ -389,12 +392,8 @@ class AnthropicAdapter(LLMAdapter):
             usage={
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
-                "cache_creation_input_tokens": getattr(
-                    response.usage, "cache_creation_input_tokens", 0
-                )
-                or 0,
-                "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0)
-                or 0,
+                "cache_read_input_tokens": cache_read,
+                "cache_creation_input_tokens": cache_creation,
             },
         )
 
@@ -508,11 +507,8 @@ class AnthropicAdapter(LLMAdapter):
                         usage = getattr(msg, "usage", None)
                         if usage:
                             _input_tokens = getattr(usage, "input_tokens", 0) or 0
-                            _cache_creation_input_tokens = (
-                                getattr(usage, "cache_creation_input_tokens", 0) or 0
-                            )
-                            _cache_read_input_tokens = (
-                                getattr(usage, "cache_read_input_tokens", 0) or 0
+                            _cache_read_input_tokens, _cache_creation_input_tokens = (
+                                self._extract_cache_tokens(usage)
                             )
                 elif event.type == "message_delta":
                     usage = getattr(event, "usage", None)

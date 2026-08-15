@@ -77,20 +77,28 @@ def test_mark_messages_adds_intermediate_breakpoints_for_long_prefix():
     assert marked[-1][0] == 15  # 最后一条必有断点
 
 
-def test_build_system_param_caches_static_not_session():
-    system = AnthropicAdapter._build_system_param(
-        "STATIC",
-        "<session_context>\n<datetime/>\n</session_context>",
-        True,
-    )
+def test_extract_cache_tokens_reads_anthropic_and_deepseek_fields():
+    class AnthropicUsage:
+        cache_read_input_tokens = 120
+        cache_creation_input_tokens = 40
+
+    class DeepSeekUsage:
+        prompt_cache_hit_tokens = 88
+
+    assert AnthropicAdapter._extract_cache_tokens(AnthropicUsage()) == (120, 40)
+    assert AnthropicAdapter._extract_cache_tokens(DeepSeekUsage()) == (88, 0)
+    assert AnthropicAdapter._extract_cache_tokens(None) == (0, 0)
+
+
+def test_build_system_param_is_static_only():
+    system = AnthropicAdapter._build_system_param("STATIC", True)
     assert isinstance(system, list)
-    assert system[0]["text"] == "STATIC"
-    assert system[0]["cache_control"] == {"type": "ephemeral"}
-    assert "cache_control" not in system[1]
+    assert system == [{"type": "text", "text": "STATIC", "cache_control": {"type": "ephemeral"}}]
+    assert AnthropicAdapter._build_system_param("STATIC", False) == "STATIC"
 
 
-def test_prepare_request_parts_keeps_cached_system_stable_with_session_notes():
-    """session 侧动态文案不得污染带 cache_control 的 system block。"""
+def test_prepare_request_parts_keeps_prefix_stable_with_session_notes():
+    """session 必须挂消息末尾，且不能带 cache_control；历史断点仍在上一轮。"""
     adapter = AnthropicAdapter(api_key="test-key")
     msgs = [
         Message(role=MessageRole.SYSTEM, content="<security>guard</security>"),
@@ -115,11 +123,36 @@ def test_prepare_request_parts_keeps_cached_system_stable_with_session_notes():
         session_context="<session_context>\nround 2\n</session_context>",
         enable_prompt_cache=True,
     )
-    assert a.system[0]["text"] == b.system[0]["text"] == "<security>guard</security>"
-    assert a.system[0]["cache_control"] == b.system[0]["cache_control"]
-    assert a.system[1]["text"] != b.system[1]["text"]
+    assert a.system == b.system
+    assert a.system[0]["text"] == "<security>guard</security>"
+    assert a.system[0]["cache_control"] == {"type": "ephemeral"}
+    assert isinstance(a.system, list) and len(a.system) == 1
     assert a.tools[-1]["cache_control"] == {"type": "ephemeral"}
-    assert a.messages[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert a.messages[0]["content"][0]["text"] == "hi"
+    assert a.messages[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert a.messages[0] == b.messages[0]
+    assert "cache_control" not in a.messages[-1]
+    assert "round 1" in a.messages[-1]["content"]
+    assert "round 2" in b.messages[-1]["content"]
+
+
+def test_prepare_request_parts_appends_session_without_cache_flag():
+    """DeepSeek 自动前缀缓存：即使不打 cache_control，session 也必须在末尾。"""
+    adapter = AnthropicAdapter(api_key="test-key")
+    msgs = [
+        Message(role=MessageRole.SYSTEM, content="STATIC"),
+        Message(role=MessageRole.USER, content="q"),
+    ]
+    parts = adapter._prepare_cached_request_parts(
+        messages=msgs,
+        tools=None,
+        session_context="<session_context>\nnow\n</session_context>",
+        enable_prompt_cache=False,
+    )
+    assert parts.system == "STATIC"
+    assert parts.messages[0] == {"role": "user", "content": "q"}
+    assert parts.messages[-1]["role"] == "user"
+    assert "now" in parts.messages[-1]["content"]
 
 
 def test_prepare_request_parts_message_breakpoint_moves_with_history():

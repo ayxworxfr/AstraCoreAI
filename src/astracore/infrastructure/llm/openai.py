@@ -225,7 +225,7 @@ class OpenAIAdapter(LLMAdapter):
                         "type": "function",
                         "function": {
                             "name": tc.name,
-                            "arguments": json.dumps(tc.arguments),
+                            "arguments": json.dumps(tc.arguments, sort_keys=True),
                         },
                     }
                     for tc in msg.tool_calls
@@ -290,7 +290,7 @@ class OpenAIAdapter(LLMAdapter):
                             "type": "function_call",
                             "call_id": tc.id,
                             "name": tc.name,
-                            "arguments": json.dumps(tc.arguments),
+                            "arguments": json.dumps(tc.arguments, sort_keys=True),
                         }
                     )
                 continue

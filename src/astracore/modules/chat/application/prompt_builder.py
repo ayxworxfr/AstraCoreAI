@@ -24,8 +24,8 @@ Prompt is split into two segments delivered to the LLM adapter separately:
 Segment 1 is produced once in ``ChatPipeline.prepare()`` and frozen into
 ``ChatContext.system_prompt``.  Segment 2 is a ``SessionContext`` value object
 built in ``stream()``; the tool loop calls ``with_tool_round()`` so progress
-notes never touch Segment 1.  Adapters place the rendered XML off the cache
-prefix (Anthropic: system block 1; OpenAI/DeepSeek: trailing framed user msg).
+notes never touch Segment 1.  Adapters append the rendered XML as a trailing
+user message so the cached prefix stays tools + static system + history.
 
 RAG retrieval is a separate async call (``retrieve_rag_context()``) whose result is
 stored in ``ChatContext.rag_context`` and passed to ``build_session_context()`` at

@@ -1,8 +1,9 @@
 """SessionContext — 每轮/每轮次动态提示片段（永不进入 prompt-cache 静态前缀）。
 
 与静态 system（security / identity / skills / user_profile）相对：本对象只承载
-会随 turn 或 tool-loop round 变化的内容，由各 LLM adapter 按协议放到
-非缓存位置（Anthropic system block 1；OpenAI/DeepSeek 消息末尾）。
+会随 turn 或 tool-loop round 变化的内容。两类协议都把它挂在 **messages 末尾**
+（user 消息），绝不能插进 system：Anthropic 的消息级 cache 前缀包含全部
+system blocks，system[1] 一变，历史缓存整段失效；DeepSeek 自动前缀缓存同理。
 """
 
 from __future__ import annotations

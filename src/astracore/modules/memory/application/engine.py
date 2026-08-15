@@ -364,7 +364,7 @@ class MemoryEngine:
             lines.extend(["", f"### {title}"])
             ordered = sorted(
                 grouped[memory_type],
-                key=lambda m: (-m.importance, m.updated_at.isoformat()),
+                key=lambda m: (-m.importance, m.created_at.isoformat(), m.id),
             )
             for memory in ordered:
                 lines.append(f"- {memory.content}")
@@ -372,7 +372,7 @@ class MemoryEngine:
         context = "\n".join(lines).strip()
         if len(context) > max_chars:
             context = context[:max_chars].rsplit("\n", 1)[0].rstrip()
-        await self._store.touch_memories([m.id for m in all_memories])
+        # 不 touch：画像是缓存前缀的一部分，写 updated_at 会打乱排序、弄脏 system 字节
         return context
 
     # ------------------------------------------------------------------

@@ -451,9 +451,13 @@ async def test_profile_context_only_includes_standing_types(memory_db) -> None:
     )
 
     profile = await engine.build_profile_context()
+    again = await engine.build_profile_context()
     assert "用户偏好直接、务实的工程回答。" in profile
     assert "不要擅自改生产配置。" in profile
     assert "章鱼有三颗心脏" not in profile
+    assert profile == again
+    stored = await engine.list_memories()
+    assert all(m.use_count == 0 for m in stored)
 
 
 async def test_relevant_user_fact_injected_in_turn_not_profile(memory_db) -> None:
