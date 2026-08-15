@@ -1,5 +1,7 @@
 """Prompt-cache breakpoint helpers + Anthropic system/tools/messages wiring."""
 
+from datetime import datetime, timedelta, timezone
+
 from astracore.infrastructure.llm.anthropic import AnthropicAdapter
 from astracore.infrastructure.llm.prompt_cache import (
     allocate_message_cache_slots,
@@ -7,6 +9,9 @@ from astracore.infrastructure.llm.prompt_cache import (
     mark_tools_cache_breakpoint,
 )
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall, ToolResult
+from astracore.modules.chat.domain.session_context import SessionContext
+
+_BJ = timezone(timedelta(hours=8))
 
 
 def test_mark_tools_cache_breakpoint_on_last_tool_only():
@@ -153,6 +158,33 @@ def test_prepare_request_parts_appends_session_without_cache_flag():
     assert parts.messages[0] == {"role": "user", "content": "q"}
     assert parts.messages[-1]["role"] == "user"
     assert "now" in parts.messages[-1]["content"]
+
+
+def test_prepare_request_parts_puts_stable_session_on_system_prefix():
+    adapter = AnthropicAdapter(api_key="test-key")
+    msgs = [
+        Message(role=MessageRole.SYSTEM, content="STATIC"),
+        Message(role=MessageRole.USER, content="hi"),
+    ]
+    ctx = SessionContext.build(
+        active_skill="mini-game",
+        turn_context="进度：第3题",
+        now=datetime(2026, 8, 15, 16, 0, tzinfo=_BJ),
+    )
+    parts = adapter._prepare_cached_request_parts(
+        messages=msgs,
+        tools=None,
+        session_context=ctx,
+        enable_prompt_cache=True,
+    )
+    assert parts.system[0]["text"] == "STATIC"
+    assert parts.system[0]["cache_control"] == {"type": "ephemeral"}
+    assert "mini-game" in parts.system[1]["text"]
+    assert "cache_control" not in parts.system[1]
+    assert "进度：第3题" not in parts.system[1]["text"]
+    assert "进度：第3题" in parts.messages[-1]["content"]
+    assert parts.messages[0]["content"][0]["text"] == "hi"
+    assert parts.messages[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
 
 def test_prepare_request_parts_message_breakpoint_moves_with_history():

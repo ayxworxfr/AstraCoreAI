@@ -10,7 +10,10 @@ from pydantic import BaseModel
 
 from astracore.modules.attachments.domain import AttachmentProcessingError
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall
-from astracore.modules.chat.domain.session_context import as_openai_session_message_content
+from astracore.modules.chat.domain.session_context import (
+    as_stable_session_text,
+    as_volatile_session_message_content,
+)
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
 from astracore.shared.utils.json_utils import repair_json
@@ -240,18 +243,28 @@ class OpenAIAdapter(LLMAdapter):
         messages: list[dict[str, Any]],
         session_context: Any,
     ) -> list[dict[str, Any]]:
-        """Place dynamic session_context at the end of the message list.
+        """Place session context without breaking the cached prefix.
 
-        OpenAI / DeepSeek automatic prompt caching matches from the start of the
-        prompt. Appending datetime / RAG / tool-progress onto ``system`` (or
-        Responses ``instructions``) destroys the entire prefix every round.
-        Trailing user content keeps system + prior turns byte-stable.
+        Stable slice (date / active skill) goes immediately after existing
+        system messages so it is part of the prefix. Volatile slice (RAG /
+        memory / tool-progress) stays at the end.
         """
-        content = as_openai_session_message_content(session_context)
-        if not content:
+        stable = as_stable_session_text(session_context)
+        volatile = as_volatile_session_message_content(session_context)
+        if not stable and not volatile:
             return messages
         out = list(messages)
-        out.append({"role": "user", "content": content})
+        if stable:
+            insert_at = 0
+            for i, msg in enumerate(out):
+                if msg.get("role") == "system":
+                    insert_at = i + 1
+                else:
+                    break
+            role = "system" if insert_at > 0 else "user"
+            out.insert(insert_at, {"role": role, "content": stable})
+        if volatile:
+            out.append({"role": "user", "content": volatile})
         return out
 
     def _responses_input(self, messages: list[Message]) -> tuple[str | None, list[dict[str, Any]]]:

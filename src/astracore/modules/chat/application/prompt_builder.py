@@ -13,19 +13,15 @@ Prompt is split into two segments delivered to the LLM adapter separately:
     <skills>        — L1 skill manifest (one line per skill)
     <user_profile>  — Tier-1 long-term memory (user + global scope)
 
-  Segment 2 — per-turn / per-round session context (``SessionContext``, NOT cached):
-    <session_context>
-        <datetime …/>                        — current Beijing date (day-precision)
-        <knowledge>…</knowledge>             — RAG retrieval results (when enable_rag)
-        <active_skill name="…"/>             — reload reminder for in-progress skill task
-        <recalled_memory>…</recalled_memory> — Tier-2 session/project memory
-        <tool_progress>…</tool_progress>     — tool-loop round guidance (per round)
+  Segment 2 — session context (``SessionContext``), split by stability:
+    cache prefix: <datetime>, <active_skill>
+    trailing:     <knowledge>, <recalled_memory>, <tool_progress>
 
 Segment 1 is produced once in ``ChatPipeline.prepare()`` and frozen into
 ``ChatContext.system_prompt``.  Segment 2 is a ``SessionContext`` value object
 built in ``stream()``; the tool loop calls ``with_tool_round()`` so progress
-notes never touch Segment 1.  Adapters append the rendered XML as a trailing
-user message so the cached prefix stays tools + static system + history.
+notes never touch Segment 1.  Adapters put the stable slice on the system
+prefix and the volatile slice on a trailing user message.
 
 RAG retrieval is a separate async call (``retrieve_rag_context()``) whose result is
 stored in ``ChatContext.rag_context`` and passed to ``build_session_context()`` at
@@ -155,7 +151,7 @@ class SystemPromptBuilder:
         active_skill: str | None,
         rag_context: str | None = None,
     ) -> SessionContext:
-        """Build the per-turn ``SessionContext`` (dynamic, never cache-prefixed).
+        """Build the per-turn ``SessionContext`` (stable prefix + volatile tail).
 
         Recalled memory is wrapped with ``<external_data>`` so the injection-guard
         rule applies — adversarial stored memories cannot hijack behaviour.

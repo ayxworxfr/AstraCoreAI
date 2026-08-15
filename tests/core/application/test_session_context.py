@@ -6,6 +6,8 @@ from astracore.modules.chat.domain.session_context import (
     SessionContext,
     as_openai_session_message_content,
     as_session_text,
+    as_stable_session_text,
+    as_volatile_session_message_content,
     build_tool_progress_xml,
     coerce_session_context,
 )
@@ -30,6 +32,11 @@ def test_build_includes_datetime_and_optional_layers():
     assert "喜欢简洁回答" in xml
     assert "external_data" in xml
     assert "<tool_progress>" not in xml
+    assert "喜欢简洁回答" not in ctx.render_stable()
+    assert "<knowledge>" not in ctx.render_stable()
+    assert 'name="writing-coach"' in ctx.render_stable()
+    assert "<knowledge>doc</knowledge>" in ctx.render_volatile()
+    assert "喜欢简洁回答" in ctx.render_volatile()
 
 
 def test_with_tool_round_does_not_mutate_original():
@@ -57,6 +64,9 @@ def test_as_session_text_and_openai_frame():
     assert "<session_context>" in framed
     assert as_session_text(None) is None
     assert as_openai_session_message_content("  raw  ") == "raw"
+    assert as_stable_session_text(ctx) is not None
+    assert as_volatile_session_message_content(ctx) is None
+    assert as_volatile_session_message_content("  raw  ") == "raw"
 
 
 def test_coerce_session_context_defaults_to_datetime_only():

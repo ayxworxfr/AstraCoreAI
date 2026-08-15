@@ -13,7 +13,10 @@ from astracore.infrastructure.llm.prompt_cache import (
     mark_tools_cache_breakpoint,
 )
 from astracore.modules.chat.domain.message import Message, MessageRole, ToolCall
-from astracore.modules.chat.domain.session_context import as_openai_session_message_content
+from astracore.modules.chat.domain.session_context import (
+    as_stable_session_text,
+    as_volatile_session_message_content,
+)
 from astracore.shared.observability.logger import get_logger
 from astracore.shared.ports.llm import LLMAdapter, LLMResponse, StreamEvent, StreamEventType
 from astracore.shared.utils.json_utils import repair_json
@@ -232,16 +235,31 @@ class AnthropicAdapter(LLMAdapter):
     def _build_system_param(
         system: str | None,
         enable_prompt_cache: bool,
+        stable_session: str | None = None,
     ) -> list[dict[str, Any]] | str | None:
-        """Build the Anthropic API ``system`` parameter (static layer only).
+        """Build the Anthropic API ``system`` parameter.
 
-        Session context must not live here. Message-level cache prefixes include
-        every system block; a per-turn datetime block would invalidate history.
+        Block 0 is the static cacheable prefix. Block 1 is the stable session
+        slice (date / active skill) — no extra breakpoint, so it rides along
+        in the message-level cache without stealing a slot. Volatile session
+        pieces stay out of ``system``.
         """
-        if not system:
+        if not system and not stable_session:
             return None
+        if not system:
+            return stable_session
         if enable_prompt_cache:
-            return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+            blocks: list[dict[str, Any]] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
+            if stable_session:
+                blocks.append({"type": "text", "text": stable_session})
+            return blocks
+        if stable_session:
+            return [
+                {"type": "text", "text": system},
+                {"type": "text", "text": stable_session},
+            ]
         return system
 
     def _prepare_cached_request_parts(
@@ -255,13 +273,14 @@ class AnthropicAdapter(LLMAdapter):
         """Assemble system / messages / tools with prompt-cache breakpoints.
 
         Breakpoint budget (max 4): last tool → static system → history blocks.
-        Dynamic ``session_context`` is appended as a trailing user message
-        *after* breakpoints, so datetime / RAG / tool-progress never enter
-        the cached prefix. DeepSeek automatic prefix cache relies on the
-        same layout even when ``enable_prompt_cache`` is False.
+        Stable session (date / active skill) is system block 1 so it sits on
+        the cached prefix. Volatile session (RAG / memory / tool-progress)
+        is appended after breakpoints.
         """
         system = self._get_system_message(messages)
-        system_param = self._build_system_param(system, enable_prompt_cache)
+        stable = as_stable_session_text(session_context)
+        volatile = as_volatile_session_message_content(session_context)
+        system_param = self._build_system_param(system, enable_prompt_cache, stable)
         converted = self._convert_messages(messages)
         prepared_tools = tools
 
@@ -276,9 +295,8 @@ class AnthropicAdapter(LLMAdapter):
             )
             converted = mark_messages_cache_breakpoints(converted, remaining_slots=slots)
 
-        session_content = as_openai_session_message_content(session_context)
-        if session_content:
-            converted = [*converted, {"role": "user", "content": session_content}]
+        if volatile:
+            converted = [*converted, {"role": "user", "content": volatile}]
 
         return CachedRequestParts(
             system=system_param,

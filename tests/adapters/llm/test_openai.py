@@ -1,6 +1,7 @@
 """Tests for OpenAIAdapter protocol variants."""
 
 import base64
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -9,7 +10,10 @@ import pytest
 from astracore.infrastructure.llm.openai import OpenAIAdapter, _build_openai_user_content
 from astracore.modules.attachments.domain import AttachmentProcessingError
 from astracore.modules.chat.domain.message import Message, MessageRole
+from astracore.modules.chat.domain.session_context import SessionContext
 from astracore.shared.ports.llm import StreamEventType
+
+_BJ = timezone(timedelta(hours=8))
 
 
 @pytest.fixture
@@ -300,6 +304,25 @@ def test_append_session_context_keeps_system_stable(adapter):
     assert round1[-1]["role"] == "user"
     assert "round 1" in round1[-1]["content"]
     assert "round 2" in round2[-1]["content"]
+
+
+def test_append_session_context_puts_stable_after_system(adapter):
+    base = [
+        {"role": "system", "content": "STATIC"},
+        {"role": "user", "content": "hello"},
+    ]
+    ctx = SessionContext.build(
+        active_skill="mini-game",
+        turn_context="进度：第3题",
+        now=datetime(2026, 8, 15, 16, 0, tzinfo=_BJ),
+    )
+    out = adapter._append_session_context(base, ctx)
+    assert out[0] == {"role": "system", "content": "STATIC"}
+    assert out[1]["role"] == "system"
+    assert "mini-game" in out[1]["content"]
+    assert "进度：第3题" not in out[1]["content"]
+    assert out[2] == {"role": "user", "content": "hello"}
+    assert "进度：第3题" in out[-1]["content"]
 
 
 def test_append_session_context_noop_when_empty(adapter):

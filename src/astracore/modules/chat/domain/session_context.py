@@ -1,9 +1,9 @@
-"""SessionContext — 每轮/每轮次动态提示片段（永不进入 prompt-cache 静态前缀）。
+"""SessionContext — 每轮动态提示，按稳定性拆进缓存前缀或消息末尾。
 
-与静态 system（security / identity / skills / user_profile）相对：本对象只承载
-会随 turn 或 tool-loop round 变化的内容。两类协议都把它挂在 **messages 末尾**
-（user 消息），绝不能插进 system：Anthropic 的消息级 cache 前缀包含全部
-system blocks，system[1] 一变，历史缓存整段失效；DeepSeek 自动前缀缓存同理。
+稳定层（datetime / active_skill）：进 system 前缀，同一天、同一技能下可被
+消息级 cache 覆盖。
+易变层（knowledge / recalled_memory / tool_progress）：挂 messages 末尾，
+避免每轮变化打断 tools + static system + history 的前缀命中。
 """
 
 from __future__ import annotations
@@ -130,11 +130,22 @@ class SessionContext:
             if p
         ]
 
+    def stable_parts(self) -> list[str]:
+        return [p for p in (self.datetime_xml, self.active_skill_xml) if p]
+
+    def volatile_parts(self) -> list[str]:
+        return [
+            p for p in (self.knowledge_xml, self.recalled_memory_xml, self.tool_progress_xml) if p
+        ]
+
     def render(self) -> str:
-        chunks = self.parts()
-        if not chunks:
-            return ""
-        return "<session_context>\n" + "\n".join(chunks) + "\n</session_context>"
+        return _wrap_session(self.parts())
+
+    def render_stable(self) -> str:
+        return _wrap_session(self.stable_parts())
+
+    def render_volatile(self) -> str:
+        return _wrap_session(self.volatile_parts())
 
     def render_for_openai_messages(self) -> str:
         """OpenAI/DeepSeek：末尾 user 消息文案（带防误读框，避免被当成新提问）。"""
@@ -142,6 +153,12 @@ class SessionContext:
         if not body:
             return ""
         return _SESSION_FRAME_OPENAI + body
+
+
+def _wrap_session(chunks: list[str]) -> str:
+    if not chunks:
+        return ""
+    return "<session_context>\n" + "\n".join(chunks) + "\n</session_context>"
 
 
 def as_session_text(value: SessionContext | str | None) -> str | None:
@@ -162,6 +179,27 @@ def as_openai_session_message_content(value: SessionContext | str | None) -> str
     if isinstance(value, SessionContext):
         text = value.render_for_openai_messages()
         return text or None
+    text = value.strip()
+    return text or None
+
+
+def as_stable_session_text(value: SessionContext | str | None) -> str | None:
+    """稳定层：仅 SessionContext 可拆；裸字符串没有稳定/易变之分。"""
+    if isinstance(value, SessionContext):
+        text = value.render_stable()
+        return text or None
+    return None
+
+
+def as_volatile_session_message_content(value: SessionContext | str | None) -> str | None:
+    """易变层：SessionContext 只输出 knowledge/memory/progress；裸字符串整段当易变。"""
+    if value is None:
+        return None
+    if isinstance(value, SessionContext):
+        body = value.render_volatile()
+        if not body:
+            return None
+        return _SESSION_FRAME_OPENAI + body
     text = value.strip()
     return text or None
 

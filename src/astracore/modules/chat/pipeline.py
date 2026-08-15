@@ -73,9 +73,17 @@ def _print_prompt_debug(
     ]
     if system_prompt:
         lines += ["  ── SYSTEM PROMPT (static, cached) ──", system_prompt, ""]
-    session_text = as_session_text(session_context)
-    if session_text:
-        lines += ["  ── SESSION CONTEXT (dynamic, not cached) ──", session_text, ""]
+    if isinstance(session_context, SessionContext):
+        stable = session_context.render_stable()
+        volatile = session_context.render_volatile()
+        if stable:
+            lines += ["  ── SESSION CONTEXT (stable, cache prefix) ──", stable, ""]
+        if volatile:
+            lines += ["  ── SESSION CONTEXT (volatile, trailing) ──", volatile, ""]
+    else:
+        session_text = as_session_text(session_context)
+        if session_text:
+            lines += ["  ── SESSION CONTEXT (trailing) ──", session_text, ""]
     lines.append(f"  ── MESSAGES ({len(messages)}) ──")
     for msg in messages:
         role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
