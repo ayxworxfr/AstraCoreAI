@@ -532,9 +532,35 @@ async def test_vector_below_floor_does_not_dump_sql(memory_db) -> None:
 
     context = await engine.build_turn_context(
         session_id=session_id,
-        message="AstraCoreAI 的工作目录在哪",
+        message="今晚吃什么比较清淡",
     )
     assert context == ""
+
+
+async def test_lexical_hit_works_when_vector_returns_nothing(memory_db) -> None:
+    """问句和记忆共享「史记」时，Chroma 空结果不能把字面通道关掉。"""
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryType
+
+    session_id = uuid4()
+    engine = MemoryEngine(
+        SQLMemoryStore(memory_db),
+        vector_adapter=_FakeVectorAdapter(available=True, hits_by_scope={}),
+    )
+    await engine.create_memory(
+        scope=MemoryScope.USER,
+        memory_type=MemoryType.STATE,
+        subject="史记讲读系列",
+        content="有「史记讲读」系列，已写 01-五帝本纪.md ~ 07-项羽本纪.md。",
+        importance=4,
+    )
+
+    hit = await engine.build_turn_context(session_id=session_id, message="我史记读到哪里了？")
+    miss = await engine.build_turn_context(session_id=session_id, message="今晚吃什么比较清淡")
+
+    assert "史记讲读" in hit
+    assert miss == ""
 
 
 async def test_vector_hit_recalls_memory_without_keyword_overlap(memory_db) -> None:

@@ -389,11 +389,11 @@ class MemoryEngine:
         """Build Tier-2 context from memories relevant to the current turn.
 
         Selection is relevance-first:
-        - When Chroma is available, only ``min_score`` hits plus standing
-          rules (constraint/procedure) are injected. Empty hits mean
-          "nothing relevant" — the SQL table is not dumped, and keywords
-          are not used as a second recall channel.
-        - Keywords are the fallback only when Chroma is unavailable.
+        - Vector hits that pass ``min_score``
+        - Keyword / subject overlap (always applied; Chroma being available
+          does not disable this channel)
+        - Standing constraint/procedure always pass
+        - Empty vector results are not a SQL dump of unrelated rows
         - User/global facts are recalled here when relevant; they are not
           dumped into the static Tier-1 profile.
 
@@ -442,24 +442,15 @@ class MemoryEngine:
                 n_results=_DEFAULT_SCOPE_LIMITS[MemoryScope.USER],
             )
 
-        selected_session = self._select_relevant(
-            session_memories,
-            message,
-            session_hits,
-            allow_keywords=not use_vector,
-        )[: _DEFAULT_SCOPE_LIMITS[MemoryScope.SESSION]]
-        selected_project = self._select_relevant(
-            project_memories,
-            message,
-            project_hits,
-            allow_keywords=not use_vector,
-        )[: _DEFAULT_SCOPE_LIMITS[MemoryScope.PROJECT]]
-        selected_longterm = self._select_relevant(
-            longterm_memories,
-            message,
-            longterm_hits,
-            allow_keywords=not use_vector,
-        )[: _DEFAULT_SCOPE_LIMITS[MemoryScope.USER]]
+        selected_session = self._select_relevant(session_memories, message, session_hits)[
+            : _DEFAULT_SCOPE_LIMITS[MemoryScope.SESSION]
+        ]
+        selected_project = self._select_relevant(project_memories, message, project_hits)[
+            : _DEFAULT_SCOPE_LIMITS[MemoryScope.PROJECT]
+        ]
+        selected_longterm = self._select_relevant(longterm_memories, message, longterm_hits)[
+            : _DEFAULT_SCOPE_LIMITS[MemoryScope.USER]
+        ]
 
         selected = selected_session + selected_project + selected_longterm
         if not selected:
@@ -1206,15 +1197,11 @@ class MemoryEngine:
         memory: StructuredMemory,
         keywords: set[str],
         extra_ids: set[str],
-        *,
-        allow_keywords: bool,
     ) -> bool:
         if memory.type in _STANDING_TYPES:
             return True
         if memory.id in extra_ids:
             return True
-        if not allow_keywords:
-            return False
         return bool(keywords) and self._keyword_hits(memory, keywords) > 0
 
     def _select_relevant(
@@ -1222,17 +1209,11 @@ class MemoryEngine:
         memories: list[StructuredMemory],
         message: str,
         extra_ids: set[str] | None = None,
-        *,
-        allow_keywords: bool = True,
     ) -> list[StructuredMemory]:
-        """Keep standing rules plus vector hits and, when allowed, keyword matches."""
+        """Keep standing rules, vector hits, and keyword matches."""
         keywords = self._extract_keywords(message)
         extra = extra_ids or set()
-        selected = [
-            m
-            for m in memories
-            if self._is_relevant(m, keywords, extra, allow_keywords=allow_keywords)
-        ]
+        selected = [m for m in memories if self._is_relevant(m, keywords, extra)]
         return sorted(selected, key=lambda m: self._sort_key(m, keywords))
 
     def _rank_memories(
