@@ -27,10 +27,9 @@ _CATEGORY_LABELS: dict[str, str] = {
 def build_current_time_info(now: datetime | None = None) -> str:
     """生成注入给模型的当前北京时间上下文（XML 自闭合标签格式）。"""
     beijing_now = (now or datetime.now(_BEIJING_TZ)).astimezone(_BEIJING_TZ)
-    iso_now = beijing_now.strftime("%Y-%m-%d %H:%M")
     today = beijing_now.strftime("%Y-%m-%d")
     weekday = _WEEKDAY_CN[beijing_now.weekday()]
-    return f'<datetime now="{iso_now}" today="{today}" weekday="{weekday}" tz="Asia/Shanghai"/>'
+    return f'<datetime today="{today}" weekday="{weekday}" tz="Asia/Shanghai"/>'
 
 
 def build_identity_layer(

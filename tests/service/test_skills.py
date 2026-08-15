@@ -12,7 +12,7 @@ def test_render_skill_prompt_injects_current_beijing_time() -> None:
     )
 
     assert "{{current_time_info}}" not in rendered
-    # XML 自闭合时间标签：<datetime now="..." today="..." weekday="..." tz="Asia/Shanghai"/>
+    # XML 自闭合时间标签：<datetime today="..." weekday="..." tz="Asia/Shanghai"/>
     assert "<datetime " in rendered
     assert 'tz="Asia/Shanghai"' in rendered
     assert 'today="' in rendered

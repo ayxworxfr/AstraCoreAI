@@ -15,7 +15,7 @@ Prompt is split into two segments delivered to the LLM adapter separately:
 
   Segment 2 — per-turn / per-round session context (``SessionContext``, NOT cached):
     <session_context>
-        <datetime …/>                        — current Beijing time (minute-precision)
+        <datetime …/>                        — current Beijing date (day-precision)
         <knowledge>…</knowledge>             — RAG retrieval results (when enable_rag)
         <active_skill name="…"/>             — reload reminder for in-progress skill task
         <recalled_memory>…</recalled_memory> — Tier-2 session/project memory

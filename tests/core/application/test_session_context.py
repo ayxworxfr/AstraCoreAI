@@ -23,7 +23,8 @@ def test_build_includes_datetime_and_optional_layers():
     )
     xml = ctx.render()
     assert xml.startswith("<session_context>")
-    assert 'now="2026-08-05 10:00"' in xml
+    assert 'today="2026-08-05"' in xml
+    assert "now=" not in xml
     assert "<knowledge>doc</knowledge>" in xml
     assert 'name="writing-coach"' in xml
     assert "喜欢简洁回答" in xml
