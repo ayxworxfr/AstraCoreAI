@@ -256,6 +256,7 @@ class AstraCoreClient:
         self._memory_engine = MemoryEngine(
             SQLMemoryStore(cfg.storage.db_url),
             vector_adapter=self._vector_adapter,
+            min_score=cfg.storage.vector.memory_min_score,
         )
         self.memory = MemoryClient(self._memory_engine)
         self.projects = ProjectClient(self._memory_engine)

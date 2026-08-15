@@ -8,6 +8,7 @@ initialization fails, all methods degrade to no-ops / empty results.
 import asyncio
 import logging
 import threading
+from dataclasses import dataclass
 from typing import Any
 
 from astracore.infrastructure.retrieval.chroma_client import get_chroma_client
@@ -17,6 +18,17 @@ from astracore.modules.memory.domain import StructuredMemory
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class MemoryHit:
+    """A single vector-retrieval hit with cosine similarity score."""
+
+    document: str
+    score: float
+    memory_id: str = ""
+    memory_type: str = ""
+    scope: str = ""
+
+
 class MemoryVectorAdapter:
     """Semantic retrieval adapter for structured memories via Chroma.
 
@@ -24,7 +36,7 @@ class MemoryVectorAdapter:
       - ``upsert(memory)``  — write/overwrite a memory vector
       - ``delete(memory_id)`` — remove a single memory vector
       - ``delete_by_conversation(conversation_id, user_id)`` — bulk remove by conversation
-      - ``query(text, ...)`` — return top-N relevant document strings
+      - ``query(text, ...)`` — return score-filtered ``MemoryHit`` list
     """
 
     _COLLECTION_NAME = "astracore_memory"
@@ -144,7 +156,8 @@ class MemoryVectorAdapter:
         session_id: str | None,
         project_id: str | None,
         n_results: int,
-    ) -> list[str]:
+        min_score: float,
+    ) -> list[MemoryHit]:
         conditions: list[dict[str, Any]] = [
             {"user_id": {"$eq": user_id}},
             {"scope": {"$in": scope_filter}},
@@ -167,8 +180,30 @@ class MemoryVectorAdapter:
             # Chroma raises if the collection is empty or filter returns zero candidates
             return []
 
-        docs = results.get("documents", [[]])[0]
-        return [d for d in docs if d]
+        docs = results.get("documents", [[]])[0] or []
+        distances = results.get("distances", [[]])
+        distance_row = distances[0] if distances else [0.0] * len(docs)
+        metas = results.get("metadatas", [[]])
+        meta_row = metas[0] if metas else [{}] * len(docs)
+
+        hits: list[MemoryHit] = []
+        for doc, distance, meta in zip(docs, distance_row, meta_row, strict=False):
+            if not doc:
+                continue
+            score = 1.0 - distance if distance else 1.0
+            if score < min_score:
+                continue
+            meta = meta or {}
+            hits.append(
+                MemoryHit(
+                    document=doc,
+                    score=score,
+                    memory_id=str(meta.get("memory_id", "")),
+                    memory_type=str(meta.get("type", "")),
+                    scope=str(meta.get("scope", "")),
+                )
+            )
+        return hits
 
     # ------------------------------------------------------------------
     # Public async API
@@ -225,6 +260,11 @@ class MemoryVectorAdapter:
                 conversation_id,
             )
 
+    async def is_available(self) -> bool:
+        """True when Chroma initialized successfully; False when degraded."""
+        await self._ensure_init()
+        return bool(self._available)
+
     async def query(
         self,
         text: str,
@@ -234,10 +274,13 @@ class MemoryVectorAdapter:
         session_id: str | None = None,
         project_id: str | None = None,
         n_results: int = 8,
-    ) -> list[str]:
-        """Return top-N semantically relevant memory document strings.
+        min_score: float = 0.5,
+    ) -> list[MemoryHit]:
+        """Return memories whose cosine similarity is at least ``min_score``.
 
-        Returns an empty list when the adapter is unavailable or on error.
+        Returns an empty list when the adapter is unavailable, on error, or
+        when every candidate is below the score floor. An empty result means
+        "nothing relevant", not "index missing".
         """
         await self._ensure_init()
         if not self._available:
@@ -253,6 +296,7 @@ class MemoryVectorAdapter:
                     session_id=session_id,
                     project_id=project_id,
                     n_results=n_results,
+                    min_score=min_score,
                 ),
             )
         except Exception:

@@ -247,7 +247,7 @@ class ChatPipeline:
     # ------------------------------------------------------------------
 
     async def _build_turn_context(self, session_id: UUID, message: str, user_id: str) -> str:
-        """Build Tier-2 turn context (session+project scope, Chroma or SQL fallback)."""
+        """Build Tier-2 turn context from memories relevant to the current message."""
         try:
             if self._injected_memory_engine is not None:
                 return await self._injected_memory_engine.build_turn_context(
@@ -257,6 +257,7 @@ class ChatPipeline:
                 SQLMemoryStore(self._config.storage.db_url),
                 user_id=user_id,
                 vector_adapter=self._vector_adapter,
+                min_score=self._config.storage.vector.memory_min_score,
             )
             return await engine.build_turn_context(session_id=session_id, message=message)
         except Exception:

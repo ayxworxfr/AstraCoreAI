@@ -80,12 +80,11 @@ async def test_build_turn_context_formats_session_and_project_memories(memory_db
     await engine.create_memory(
         scope=MemoryScope.PROJECT,
         memory_type=MemoryType.STATE,
-        content="AstraCoreAI 使用 FastAPI Service 和 React SPA。",
+        content="AstraCoreAI Memory 使用混合检索。",
         project_id=project.id,
         importance=4,
     )
 
-    # No Chroma in tests → SQL ILIKE fallback (query="" matches all)
     context = await engine.build_turn_context(
         session_id=session_id,
         message="继续设计 Memory Engine",
@@ -93,11 +92,11 @@ async def test_build_turn_context_formats_session_and_project_memories(memory_db
 
     assert "【记忆快照】" in context
     assert "Memory 系统采用混合 project 识别。" in context
-    assert "AstraCoreAI 使用 FastAPI Service 和 React SPA。" in context
+    assert "AstraCoreAI Memory 使用混合检索。" in context
 
 
 async def test_rank_memories_filters_zero_hit_low_importance(memory_db) -> None:
-    """零命中 + 低重要度的记忆在有关键词命中时应被过滤掉；高重要度和加锁记忆始终保留。"""
+    """无关事实即使高重要度/加锁也不注入；constraint 作为站立规则始终保留。"""
     from astracore.infrastructure.memory.store import SQLMemoryStore
     from astracore.modules.memory.application.engine import MemoryEngine
     from astracore.modules.memory.domain import MemoryScope, MemoryType
@@ -105,7 +104,6 @@ async def test_rank_memories_filters_zero_hit_low_importance(memory_db) -> None:
     session_id = uuid4()
     engine = MemoryEngine(SQLMemoryStore(memory_db))
 
-    # 关键词命中：importance=3，应被保留
     await engine.create_memory(
         scope=MemoryScope.SESSION,
         memory_type=MemoryType.STATE,
@@ -113,7 +111,6 @@ async def test_rank_memories_filters_zero_hit_low_importance(memory_db) -> None:
         session_id=session_id,
         importance=3,
     )
-    # 零命中 + importance=3（低于阈值 4）：应被过滤
     await engine.create_memory(
         scope=MemoryScope.SESSION,
         memory_type=MemoryType.STATE,
@@ -121,7 +118,6 @@ async def test_rank_memories_filters_zero_hit_low_importance(memory_db) -> None:
         session_id=session_id,
         importance=3,
     )
-    # 零命中 + importance=5（高重要度）：始终保留
     await engine.create_memory(
         scope=MemoryScope.SESSION,
         memory_type=MemoryType.CONSTRAINT,
@@ -129,16 +125,15 @@ async def test_rank_memories_filters_zero_hit_low_importance(memory_db) -> None:
         session_id=session_id,
         importance=5,
     )
-    # 零命中 + importance=2（最低）：应被过滤
     await engine.create_memory(
         scope=MemoryScope.SESSION,
         memory_type=MemoryType.FACT,
         content="冰箱可以冻饮料。",
         session_id=session_id,
-        importance=2,
+        importance=5,
+        locked=True,
     )
 
-    # message 关键词可命中第 1 条，其余均无命中
     context = await engine.build_turn_context(
         session_id=session_id,
         message="继续设计 Memory Engine 的检索方案",
@@ -396,3 +391,171 @@ async def test_subjects_match_short_ascii_does_not_false_match(memory_db) -> Non
     subjects = {m.subject for m in stored}
     assert "AI" in subjects
     assert "AstraCoreAI" in subjects
+
+
+async def test_unrelated_memories_not_injected_when_no_keyword_hit(memory_db) -> None:
+    """问完全无关的问题时，不把会话里的事实整批倒进上下文。"""
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryType
+
+    session_id = uuid4()
+    engine = MemoryEngine(SQLMemoryStore(memory_db))
+    await engine.create_memory(
+        scope=MemoryScope.SESSION,
+        memory_type=MemoryType.FACT,
+        content="当前项目工作目录是 D:/project/study/AstraCoreAI",
+        session_id=session_id,
+        importance=5,
+    )
+    await engine.create_memory(
+        scope=MemoryScope.SESSION,
+        memory_type=MemoryType.STATE,
+        content="游戏卧底词是冰柜。",
+        session_id=session_id,
+        importance=4,
+    )
+
+    context = await engine.build_turn_context(
+        session_id=session_id,
+        message="今晚吃什么比较清淡",
+    )
+
+    assert context == ""
+
+
+async def test_profile_context_only_includes_standing_types(memory_db) -> None:
+    """Tier-1 只注入约束/规范/偏好，不把用户级事实写进静态 system。"""
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryType
+
+    engine = MemoryEngine(SQLMemoryStore(memory_db))
+    await engine.create_memory(
+        scope=MemoryScope.USER,
+        memory_type=MemoryType.PREFERENCE,
+        content="用户偏好直接、务实的工程回答。",
+        importance=4,
+    )
+    await engine.create_memory(
+        scope=MemoryScope.USER,
+        memory_type=MemoryType.CONSTRAINT,
+        content="不要擅自改生产配置。",
+        importance=5,
+    )
+    await engine.create_memory(
+        scope=MemoryScope.USER,
+        memory_type=MemoryType.FACT,
+        content="章鱼有三颗心脏。",
+        importance=5,
+    )
+
+    profile = await engine.build_profile_context()
+    assert "用户偏好直接、务实的工程回答。" in profile
+    assert "不要擅自改生产配置。" in profile
+    assert "章鱼有三颗心脏" not in profile
+
+
+async def test_relevant_user_fact_injected_in_turn_not_profile(memory_db) -> None:
+    """用户级事实按问题召回，进 Tier-2 而不是每轮画像。"""
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryType
+
+    session_id = uuid4()
+    engine = MemoryEngine(SQLMemoryStore(memory_db))
+    await engine.create_memory(
+        scope=MemoryScope.USER,
+        memory_type=MemoryType.FACT,
+        content="章鱼有三颗心脏。",
+        importance=5,
+    )
+
+    profile = await engine.build_profile_context()
+    related = await engine.build_turn_context(
+        session_id=session_id, message="章鱼的循环系统是怎样的"
+    )
+    unrelated = await engine.build_turn_context(
+        session_id=session_id, message="帮我看看这段 FastAPI 路由"
+    )
+
+    assert profile == ""
+    assert "章鱼有三颗心脏" in related
+    assert "相关长期记忆" in related
+    assert unrelated == ""
+
+
+class _FakeVectorAdapter:
+    def __init__(self, *, available: bool, hits_by_scope: dict[str, set[str]] | None = None):
+        self._available = available
+        self._hits_by_scope = hits_by_scope or {}
+        self.queries: list[dict[str, Any]] = []
+
+    async def is_available(self) -> bool:
+        return self._available
+
+    async def upsert(self, memory: Any) -> None:
+        return None
+
+    async def query(self, text: str, **kwargs: Any) -> list[Any]:
+        from astracore.infrastructure.memory.vector import MemoryHit
+
+        self.queries.append({"text": text, **kwargs})
+        ids: set[str] = set()
+        for scope in kwargs.get("scope_filter", []):
+            ids.update(self._hits_by_scope.get(scope, set()))
+        return [MemoryHit(document=memory_id, score=0.9, memory_id=memory_id) for memory_id in ids]
+
+
+async def test_vector_below_floor_does_not_dump_sql(memory_db) -> None:
+    """Chroma 可用但没有过线命中时，不能退回成 SQL 全量倾倒。"""
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryType
+
+    session_id = uuid4()
+    engine = MemoryEngine(
+        SQLMemoryStore(memory_db),
+        vector_adapter=_FakeVectorAdapter(available=True, hits_by_scope={}),
+    )
+    await engine.create_memory(
+        scope=MemoryScope.SESSION,
+        memory_type=MemoryType.FACT,
+        content="当前项目工作目录是 D:/project/study/AstraCoreAI",
+        session_id=session_id,
+        importance=5,
+    )
+
+    context = await engine.build_turn_context(
+        session_id=session_id,
+        message="AstraCoreAI 的工作目录在哪",
+    )
+    assert context == ""
+
+
+async def test_vector_hit_recalls_memory_without_keyword_overlap(memory_db) -> None:
+    """语义命中可以召回关键词对不上的相关记忆。"""
+    from astracore.infrastructure.memory.store import SQLMemoryStore
+    from astracore.modules.memory.application.engine import MemoryEngine
+    from astracore.modules.memory.domain import MemoryScope, MemoryType
+
+    session_id = uuid4()
+    store = SQLMemoryStore(memory_db)
+    engine = MemoryEngine(store)
+    memory = await engine.create_memory(
+        scope=MemoryScope.SESSION,
+        memory_type=MemoryType.FACT,
+        content="用户确认采用混合检索而不是纯关键词。",
+        session_id=session_id,
+        importance=3,
+    )
+    engine_with_vector = MemoryEngine(
+        store,
+        vector_adapter=_FakeVectorAdapter(available=True, hits_by_scope={"session": {memory.id}}),
+    )
+
+    context = await engine_with_vector.build_turn_context(
+        session_id=session_id,
+        message="recall architecture choice",
+    )
+    assert "混合检索而不是纯关键词" in context

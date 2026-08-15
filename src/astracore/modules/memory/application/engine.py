@@ -104,10 +104,24 @@ _CJK_CHAR = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
 
 _DEFAULT_SCOPE_LIMITS: dict[MemoryScope, int] = {
     MemoryScope.SESSION: 6,
-    MemoryScope.PROJECT: 6,
+    MemoryScope.PROJECT: 4,
     MemoryScope.USER: 4,
     MemoryScope.GLOBAL: 4,
 }
+
+# 先多取候选再按相关度筛选，避免「按重要度截断」把相关低分记忆挡在门外
+_CANDIDATE_LIMITS: dict[MemoryScope, int] = {
+    MemoryScope.SESSION: 24,
+    MemoryScope.PROJECT: 16,
+    MemoryScope.USER: 50,
+    MemoryScope.GLOBAL: 20,
+}
+
+# Tier-1 永久画像：描述用户是谁、AI 该怎么做。事实/状态不进静态 system。
+_PROFILE_TYPES = frozenset({MemoryType.CONSTRAINT, MemoryType.PROCEDURE, MemoryType.PREFERENCE})
+# Tier-2 无条件保留：会话/项目级行为约束，与当前问题无关也必须遵守
+_STANDING_TYPES = frozenset({MemoryType.CONSTRAINT, MemoryType.PROCEDURE})
+_DEFAULT_MIN_SCORE = 0.5
 
 
 def _format_memory_doc(memory: StructuredMemory) -> str:
@@ -140,10 +154,12 @@ class MemoryEngine:
         *,
         user_id: str = "default",
         vector_adapter: "MemoryVectorAdapter | None" = None,
+        min_score: float = _DEFAULT_MIN_SCORE,
     ) -> None:
         self._store = store
         self._user_id = user_id
         self._vector_adapter = vector_adapter
+        self._min_score = min_score
 
     # ------------------------------------------------------------------
     # Project management
@@ -303,24 +319,33 @@ class MemoryEngine:
     # ------------------------------------------------------------------
 
     async def build_profile_context(self, *, max_chars: int = 800) -> str:
-        """Build Tier-1 context from user+global scope memories (SQL full load).
+        """Build Tier-1 context from standing user/global profile memories.
 
-        Returns an empty string when no relevant memories exist.
+        Only constraint / procedure / preference are injected here — they are
+        identity and behavior rules, independent of the current question.
+        Topical facts stay out of the cacheable system prefix and are recalled
+        in ``build_turn_context`` when relevant.
+
+        Returns an empty string when no profile memories exist.
         """
         user_memories = await self._store.list_memories(
             scope=MemoryScope.USER,
             user_id=self._user_id,
             status=MemoryStatus.ACTIVE,
-            limit=50,
+            limit=_CANDIDATE_LIMITS[MemoryScope.USER],
         )
         global_memories = await self._store.list_memories(
             scope=MemoryScope.GLOBAL,
             user_id=self._user_id,
             status=MemoryStatus.ACTIVE,
-            limit=20,
+            limit=_CANDIDATE_LIMITS[MemoryScope.GLOBAL],
         )
 
-        all_memories = self._dedupe(user_memories + global_memories)
+        all_memories = [
+            memory
+            for memory in self._dedupe(user_memories + global_memories)
+            if memory.type in _PROFILE_TYPES
+        ]
         if not all_memories:
             return ""
 
@@ -337,7 +362,11 @@ class MemoryEngine:
         for memory_type in sorted(grouped, key=lambda t: _TYPE_META[t].order):
             title = _TYPE_META[memory_type].title
             lines.extend(["", f"### {title}"])
-            for memory in grouped[memory_type]:
+            ordered = sorted(
+                grouped[memory_type],
+                key=lambda m: (-m.importance, m.updated_at.isoformat()),
+            )
+            for memory in ordered:
                 lines.append(f"- {memory.content}")
 
         context = "\n".join(lines).strip()
@@ -357,69 +386,97 @@ class MemoryEngine:
         message: str,
         max_chars: int = 1200,
     ) -> str:
-        """Build Tier-2 context from session+project scope memories (Chroma or SQL fallback).
+        """Build Tier-2 context from memories relevant to the current turn.
+
+        Selection is relevance-first:
+        - When Chroma is available, only ``min_score`` hits plus standing
+          rules (constraint/procedure) are injected. Empty hits mean
+          "nothing relevant" — the SQL table is not dumped, and keywords
+          are not used as a second recall channel.
+        - Keywords are the fallback only when Chroma is unavailable.
+        - User/global facts are recalled here when relevant; they are not
+          dumped into the static Tier-1 profile.
 
         Returns an empty string when no relevant memories exist.
         """
         binding = await self._store.get_conversation_binding(session_id)
-        session_docs: list[str] = []
-        project_docs: list[str] = []
-
-        if self._vector_adapter is not None:
-            session_docs = await self._vector_adapter.query(
-                message,
-                user_id=self._user_id,
-                scope_filter=["session"],
-                session_id=str(session_id),
-                n_results=6,
-            )
-            if binding is not None:
-                project_docs = await self._vector_adapter.query(
-                    message,
-                    user_id=self._user_id,
-                    scope_filter=["project"],
-                    project_id=binding.project_id,
-                    n_results=4,
-                )
-
-        # SQL fallback: always used when Chroma is unavailable OR returned empty results.
-        # Covers memories created/updated without Chroma sync (e.g. via the REST API on an
-        # older deployment) so they are never silently dropped from Tier-2 context.
-        if not session_docs:
-            session_memories = await self._store.list_memories(
-                scope=MemoryScope.SESSION,
-                session_id=session_id,
-                user_id=self._user_id,
-                status=MemoryStatus.ACTIVE,
-                limit=_DEFAULT_SCOPE_LIMITS[MemoryScope.SESSION],
-            )
-            ranked_session = self._rank_memories(session_memories, message)
-            session_docs = [_format_memory_doc(m) for m in ranked_session]
-            await self._store.touch_memories([m.id for m in ranked_session])
-        if binding is not None and not project_docs:
+        session_memories = await self._store.list_memories(
+            scope=MemoryScope.SESSION,
+            session_id=session_id,
+            user_id=self._user_id,
+            status=MemoryStatus.ACTIVE,
+            limit=_CANDIDATE_LIMITS[MemoryScope.SESSION],
+        )
+        project_memories: list[StructuredMemory] = []
+        if binding is not None:
             project_memories = await self._store.list_memories(
                 scope=MemoryScope.PROJECT,
                 project_id=binding.project_id,
                 user_id=self._user_id,
                 status=MemoryStatus.ACTIVE,
-                limit=_DEFAULT_SCOPE_LIMITS[MemoryScope.PROJECT],
+                limit=_CANDIDATE_LIMITS[MemoryScope.PROJECT],
             )
-            ranked_project = self._rank_memories(project_memories, message)
-            project_docs = [_format_memory_doc(m) for m in ranked_project]
-            await self._store.touch_memories([m.id for m in ranked_project])
+        longterm_memories = await self._list_topical_longterm()
 
-        if not session_docs and not project_docs:
+        use_vector = self._vector_adapter is not None and await self._vector_adapter.is_available()
+        session_hits: set[str] = set()
+        project_hits: set[str] = set()
+        longterm_hits: set[str] = set()
+        if use_vector:
+            session_hits = await self._query_hit_ids(
+                message,
+                scope_filter=["session"],
+                session_id=str(session_id),
+                n_results=_DEFAULT_SCOPE_LIMITS[MemoryScope.SESSION],
+            )
+            if binding is not None:
+                project_hits = await self._query_hit_ids(
+                    message,
+                    scope_filter=["project"],
+                    project_id=binding.project_id,
+                    n_results=_DEFAULT_SCOPE_LIMITS[MemoryScope.PROJECT],
+                )
+            longterm_hits = await self._query_hit_ids(
+                message,
+                scope_filter=["user", "global"],
+                n_results=_DEFAULT_SCOPE_LIMITS[MemoryScope.USER],
+            )
+
+        selected_session = self._select_relevant(
+            session_memories,
+            message,
+            session_hits,
+            allow_keywords=not use_vector,
+        )[: _DEFAULT_SCOPE_LIMITS[MemoryScope.SESSION]]
+        selected_project = self._select_relevant(
+            project_memories,
+            message,
+            project_hits,
+            allow_keywords=not use_vector,
+        )[: _DEFAULT_SCOPE_LIMITS[MemoryScope.PROJECT]]
+        selected_longterm = self._select_relevant(
+            longterm_memories,
+            message,
+            longterm_hits,
+            allow_keywords=not use_vector,
+        )[: _DEFAULT_SCOPE_LIMITS[MemoryScope.USER]]
+
+        selected = selected_session + selected_project + selected_longterm
+        if not selected:
             return ""
 
+        await self._store.touch_memories([memory.id for memory in selected])
+
         lines = ["【记忆快照】"]
-        if session_docs:
+        if selected_session:
             lines.extend(["", "### 当前会话状态"])
-            for doc in session_docs:
-                lines.append(f"- {doc}")
-        if project_docs:
+            lines.extend(f"- {_format_memory_doc(m)}" for m in selected_session)
+        if selected_project:
             lines.extend(["", "### 项目上下文"])
-            for doc in project_docs:
-                lines.append(f"- {doc}")
+            lines.extend(f"- {_format_memory_doc(m)}" for m in selected_project)
+        if selected_longterm:
+            lines.extend(["", "### 相关长期记忆"])
+            lines.extend(f"- {_format_memory_doc(m)}" for m in selected_longterm)
 
         context = "\n".join(lines).strip()
         if len(context) > max_chars:
@@ -1080,6 +1137,47 @@ class MemoryEngine:
                     lines.append(content)
         return "；".join(lines)[:1200]
 
+    async def _list_topical_longterm(self) -> list[StructuredMemory]:
+        """User/global memories that are not standing profile types."""
+        user_memories = await self._store.list_memories(
+            scope=MemoryScope.USER,
+            user_id=self._user_id,
+            status=MemoryStatus.ACTIVE,
+            limit=_CANDIDATE_LIMITS[MemoryScope.USER],
+        )
+        global_memories = await self._store.list_memories(
+            scope=MemoryScope.GLOBAL,
+            user_id=self._user_id,
+            status=MemoryStatus.ACTIVE,
+            limit=_CANDIDATE_LIMITS[MemoryScope.GLOBAL],
+        )
+        return [
+            memory
+            for memory in self._dedupe(user_memories + global_memories)
+            if memory.type not in _PROFILE_TYPES
+        ]
+
+    async def _query_hit_ids(
+        self,
+        message: str,
+        *,
+        scope_filter: list[str],
+        session_id: str | None = None,
+        project_id: str | None = None,
+        n_results: int,
+    ) -> set[str]:
+        assert self._vector_adapter is not None
+        hits = await self._vector_adapter.query(
+            message,
+            user_id=self._user_id,
+            scope_filter=scope_filter,
+            session_id=session_id,
+            project_id=project_id,
+            n_results=n_results,
+            min_score=self._min_score,
+        )
+        return {hit.memory_id for hit in hits if hit.memory_id}
+
     def _extract_keywords(self, message: str) -> set[str]:
         """Extract search keywords: ASCII words (len≥2) + CJK bigrams for Chinese matching."""
         words = {part for part in re.split(r"\W+", message.lower()) if len(part) >= 2}
@@ -1087,32 +1185,62 @@ class MemoryEngine:
             words.update(chunk[i : i + 2] for i in range(len(chunk) - 1))
         return words
 
+    def _keyword_hits(self, memory: StructuredMemory, keywords: set[str]) -> int:
+        text = ((memory.subject or "") + " " + memory.content).lower()
+        return sum(1 for keyword in keywords if keyword in text)
+
+    def _sort_key(
+        self, memory: StructuredMemory, keywords: set[str]
+    ) -> tuple[int, int, float, str]:
+        relevance = self._keyword_hits(memory, keywords)
+        locked_bonus = 2 if memory.locked else 0
+        return (
+            _TYPE_META[memory.type].order,
+            -(memory.importance + locked_bonus + relevance),
+            -memory.confidence,
+            memory.updated_at.isoformat(),
+        )
+
+    def _is_relevant(
+        self,
+        memory: StructuredMemory,
+        keywords: set[str],
+        extra_ids: set[str],
+        *,
+        allow_keywords: bool,
+    ) -> bool:
+        if memory.type in _STANDING_TYPES:
+            return True
+        if memory.id in extra_ids:
+            return True
+        if not allow_keywords:
+            return False
+        return bool(keywords) and self._keyword_hits(memory, keywords) > 0
+
+    def _select_relevant(
+        self,
+        memories: list[StructuredMemory],
+        message: str,
+        extra_ids: set[str] | None = None,
+        *,
+        allow_keywords: bool = True,
+    ) -> list[StructuredMemory]:
+        """Keep standing rules plus vector hits and, when allowed, keyword matches."""
+        keywords = self._extract_keywords(message)
+        extra = extra_ids or set()
+        selected = [
+            m
+            for m in memories
+            if self._is_relevant(m, keywords, extra, allow_keywords=allow_keywords)
+        ]
+        return sorted(selected, key=lambda m: self._sort_key(m, keywords))
+
     def _rank_memories(
         self, memories: list[StructuredMemory], message: str
     ) -> list[StructuredMemory]:
+        """Sort memories for compaction. Does not drop items."""
         keywords = self._extract_keywords(message)
-
-        def _relevance(memory: StructuredMemory) -> int:
-            text = ((memory.subject or "") + " " + memory.content).lower()
-            return sum(1 for keyword in keywords if keyword in text)
-
-        def _score(memory: StructuredMemory, relevance: int) -> tuple[int, int, float, str]:
-            locked_bonus = 2 if memory.locked else 0
-            return (
-                _TYPE_META[memory.type].order,
-                -(memory.importance + locked_bonus + relevance),
-                -memory.confidence,
-                memory.updated_at.isoformat(),
-            )
-
-        scored = [(m, _relevance(m)) for m in memories]
-
-        # When there are keyword hits, suppress zero-hit low-importance memories.
-        # Locked memories and high-importance (>=4) always pass regardless of relevance.
-        if keywords and any(rel > 0 for _, rel in scored):
-            scored = [(m, rel) for m, rel in scored if rel > 0 or m.locked or m.importance >= 4]
-
-        return [m for m, _ in sorted(scored, key=lambda x: _score(x[0], x[1]))]
+        return sorted(memories, key=lambda m: self._sort_key(m, keywords))
 
     def _dedupe(self, memories: list[StructuredMemory]) -> list[StructuredMemory]:
         seen: set[str] = set()
